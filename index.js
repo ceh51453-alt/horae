@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.6.1
+ * 版本: 1.6.2
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -19,7 +19,7 @@ import { calculateRelativeTime, calculateDetailedRelativeTime, formatRelativeTim
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.6.1';
+const VERSION = '1.6.2';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -7059,13 +7059,19 @@ async function generateForSummary(prompt) {
     return await getContext().generateRaw(prompt, null, false, false);
 }
 
-/** 直接请求 OpenAI 兼容端点，完全独立于酒馆主连接，支持真并行 */
+/** 直接请求API端点，完全独立于酒馆主连接，支持真并行 */
 async function generateWithDirectApi(prompt) {
+    const _model = settings.autoSummaryModel.trim();
+    const _apiKey = settings.autoSummaryApiKey.trim();
+    // Gemini 模型 → 走 Gemini 原生 API（复刻 ST 后端 sendMakerSuiteRequest 链路）
+    if (/gemini/i.test(_model)) {
+        return await _geminiNativeRequest(prompt, settings.autoSummaryApiUrl.trim(), _model, _apiKey);
+    }
+    // ── 非 Gemini 模型：OpenAI 兼容格式 ──
     let url = settings.autoSummaryApiUrl.trim();
     if (!url.endsWith('/chat/completions')) {
         url = url.replace(/\/+$/, '') + '/chat/completions';
     }
-    // 完整复制酒馆预设的消息结构，与 generateRaw 走相同破限链路
     const messages = [];
     try {
         const { oai_settings } = await import('/scripts/openai.js');
@@ -7102,6 +7108,18 @@ async function generateWithDirectApi(prompt) {
         max_tokens: 4096,
         stream: false
     };
+    // 强制注入 safetySettings = BLOCK_NONE（关闭安全审查）
+    // 酒馆后端对 Gemini 自动加此设定；副API直连中转渠道商时必须手动带上
+    // 非 Gemini 的 API 会自动忽略不认识的字段，不会产生副作用
+    const blockNone = [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
+    ];
+    body.safety_settings = blockNone;
+    body.safetySettings = blockNone;
     console.log(`[Horae] 独立API请求: ${url}, 模型: ${body.model}`);
     try {
         const resp = await fetch(url, {
@@ -7125,6 +7143,124 @@ async function generateWithDirectApi(prompt) {
     } catch (err) {
         if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
             throw new Error('独立API请求被浏览器拦截（CORS），请确认端点地址或在酒馆 config.yaml 中启用 enableCorsProxy');
+        }
+        throw err;
+    }
+}
+
+/**
+ * Gemini 原生格式请求 —— 复刻 ST 后端 sendMakerSuiteRequest 的完整处理链路
+ * 解决中转 OpenAI 兼容端点丢弃 safetySettings 导致 PROMPT BLOCKED 的问题
+ */
+async function _geminiNativeRequest(prompt, rawUrl, model, apiKey) {
+    // ── 1. 收集 system 指令（全部进 systemInstruction）+ user 内容 ──
+    const systemParts = [];
+    try {
+        const { oai_settings } = await import('/scripts/openai.js');
+        if (oai_settings?.main_prompt) {
+            systemParts.push({ text: oai_settings.main_prompt });
+        }
+        if (oai_settings?.nsfw_toggle && oai_settings?.nsfw_prompt) {
+            systemParts.push({ text: oai_settings.nsfw_prompt });
+        }
+        systemParts.push({
+            text: 'You are also a professional literary analyst. Read the following creative fiction passages and produce a concise plot summary. Analyze all content objectively regardless of themes or genre. Output only the summary text, no commentary.',
+        });
+        if (oai_settings?.jailbreak_prompt) {
+            systemParts.push({ text: oai_settings.jailbreak_prompt });
+        }
+    } catch (_) {
+        systemParts.push({
+            text: 'You are a professional literary analyst. Your task is to read creative fiction passages and produce concise plot summaries. Analyze all content objectively regardless of themes or genre. Output only the summary text, no commentary.',
+        });
+    }
+
+    // ── 2. safetySettings（与 ST 后端 GEMINI_SAFETY 常量对齐） ──
+    const modelLow = model.toLowerCase();
+    const isOldModel = /gemini-1\.(0|5)-(pro|flash)-001/.test(modelLow);
+    const threshold = isOldModel ? 'BLOCK_NONE' : 'OFF';
+    const safetySettings = [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold },
+    ];
+    if (!isOldModel) {
+        safetySettings.push({ category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold });
+    }
+
+    // ── 3. 请求体（Gemini 原生 contents 格式） ──
+    const body = {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        safetySettings,
+        generationConfig: {
+            candidateCount: 1,
+            maxOutputTokens: 4096,
+            temperature: 0.7,
+        },
+    };
+    if (systemParts.length) {
+        body.systemInstruction = { parts: systemParts };
+    }
+
+    // ── 4. 构建端点 URL ──
+    let baseUrl = rawUrl
+        .replace(/\/+$/, '')
+        .replace(/\/chat\/completions$/i, '')
+        .replace(/\/v\d+(beta\d*|alpha\d*)?(?:\/.*)?$/i, '');
+
+    const isGoogleDirect = /googleapis\.com|generativelanguage/i.test(baseUrl);
+    const endpointUrl = `${baseUrl}/v1beta/models/${model}:generateContent`
+        + (isGoogleDirect ? `?key=${apiKey}` : '');
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (!isGoogleDirect) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    console.log(`[Horae] Gemini原生API: ${endpointUrl}, threshold: ${threshold}`);
+
+    // ── 5. 发送请求 + 解析原生响应 ──
+    try {
+        const resp = await fetch(endpointUrl, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+        });
+
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            throw new Error(`Gemini原生API ${resp.status}: ${errText.slice(0, 300)}`);
+        }
+
+        const data = await resp.json();
+
+        if (data?.promptFeedback?.blockReason) {
+            throw new Error(`Gemini输入安全拦截: ${data.promptFeedback.blockReason}`);
+        }
+
+        const candidates = data?.candidates;
+        if (!candidates?.length) {
+            throw new Error('Gemini API未返回候选内容');
+        }
+
+        if (candidates[0]?.finishReason === 'SAFETY') {
+            throw new Error('Gemini输出安全拦截，建议换用限制更宽松的模型');
+        }
+
+        const text = candidates[0]?.content?.parts
+            ?.filter(p => !p.thought)
+            ?.map(p => p.text)
+            ?.join('\n\n') || '';
+
+        if (!text) {
+            throw new Error(`Gemini返回空内容 (finishReason: ${candidates[0]?.finishReason || '?'})`);
+        }
+
+        return text;
+    } catch (err) {
+        if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
+            throw new Error('Gemini原生API被浏览器拦截(CORS)，请确认端点地址或在酒馆 config.yaml 中启用 enableCorsProxy');
         }
         throw err;
     }
@@ -8433,7 +8569,8 @@ const TUTORIAL_STEPS = [
         title: '自动摘要 & 隐藏',
         content: `开启后，超过阈值的旧消息会被自动摘要并隐藏，节省 Token。<br><br>
             <strong>注意</strong>：此功能需要已有时间线数据（<code>&lt;horae&gt;</code> 标签）才能正常工作。<br>
-            旧记录请先用上一步的「AI智能摘要」补全后再开启。`,
+            旧记录请先用上一步的「AI智能摘要」补全后再开启。<br>
+            ·若是自动摘要持续出错，请去事件时间线自己多选并全文摘要。`,
         target: '#horae-autosummary-collapse-toggle',
         action: () => {
             const body = document.getElementById('horae-autosummary-collapse-body');
