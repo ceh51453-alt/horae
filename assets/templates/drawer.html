@@ -10,7 +10,7 @@
                 <i class="fa-regular fa-clock"></i>
                 Horae 时光记忆
             </div>
-            <span class="horae-version">v1.6.2</span>
+            <span class="horae-version">v1.6.3</span>
         </div>
         
         <!-- 标签页导航 -->
@@ -674,7 +674,7 @@
 
                         <div class="horae-prompt-editor-group" style="margin-top: 12px;">
                             <div class="horae-prompt-editor-header">
-                                <span>剧情压缩提示词</span>
+                                <span>剧情压缩提示词（手动压缩）</span>
                                 <button id="horae-btn-reset-compress-prompt" class="horae-btn-reset-prompt" title="恢复默认">
                                     <i class="fa-solid fa-rotate-left"></i> 恢复默认
                                 </button>
@@ -682,6 +682,19 @@
                             <textarea id="horae-custom-compress-prompt" class="horae-prompt-textarea" rows="6" placeholder="留空使用默认提示词。可用 {{events}} 代表事件文本，{{fulltext}} 代表全文，{{user}} 代表主角名..."></textarea>
                             <div class="horae-prompt-char-count">
                                 <span id="horae-compress-prompt-count">0</span> 字符
+                            </div>
+                        </div>
+
+                        <div class="horae-prompt-editor-group" style="margin-top: 12px;">
+                            <div class="horae-prompt-editor-header">
+                                <span>自动摘要提示词（自动摘要&隐藏）</span>
+                                <button id="horae-btn-reset-auto-summary-prompt" class="horae-btn-reset-prompt" title="恢复默认">
+                                    <i class="fa-solid fa-rotate-left"></i> 恢复默认
+                                </button>
+                            </div>
+                            <textarea id="horae-custom-auto-summary-prompt" class="horae-prompt-textarea" rows="6" placeholder="留空使用默认提示词。可用 {{events}} 代表事件概要，{{fulltext}} 代表全文，{{user}} 代表主角名..."></textarea>
+                            <div class="horae-prompt-char-count">
+                                <span id="horae-auto-summary-prompt-count">0</span> 字符
                             </div>
                         </div>
 
@@ -779,7 +792,7 @@
                 </div>
                 
                 <div class="horae-about">
-                    <p>Horae v1.6.2 | 作者: SenriYuki</p>
+                    <p>Horae v1.6.3 | 作者: SenriYuki</p>
                     <p>基于时间锚点的AI记忆增强系统</p>
                 </div>
             </div>

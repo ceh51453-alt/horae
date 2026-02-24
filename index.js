@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.6.2
+ * 版本: 1.6.3
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -19,7 +19,7 @@ import { calculateRelativeTime, calculateDetailedRelativeTime, formatRelativeTim
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.6.2';
+const VERSION = '1.6.3';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -96,6 +96,7 @@ const DEFAULT_SETTINGS = {
     customBatchPrompt: '',       // 自定义AI摘要提示词（空=使用默认）
     customAnalysisPrompt: '',    // 自定义AI分析提示词（空=使用默认）
     customCompressPrompt: '',    // 自定义剧情压缩提示词（空=使用默认）
+    customAutoSummaryPrompt: '', // 自定义自动摘要提示词（空=使用默认；独立于手动压缩）
     aiScanIncludeNpc: false,     // AI摘要是否提取NPC
     aiScanIncludeAffection: false, // AI摘要是否提取好感度
     aiScanIncludeScene: false,    // AI摘要是否提取场景记忆
@@ -768,9 +769,12 @@ function updateTimelineDisplay() {
             const summaryEntry = summaryId ? summaries.find(s => s.id === summaryId) : null;
             const isActive = summaryEntry?.active;
             const rangeStr = summaryEntry ? `#${summaryEntry.range[0]}-#${summaryEntry.range[1]}` : '';
-            // 有 summaryId 的摘要事件带切换/删除按钮
+            // 有 summaryId 的摘要事件带切换/删除/编辑按钮
             const toggleBtns = summaryId ? `
                 <div class="horae-summary-actions">
+                    <button class="horae-summary-edit-btn" data-summary-id="${summaryId}" data-message-id="${e.messageIndex}" data-event-index="${e.eventIndex || 0}" title="编辑摘要内容">
+                        <i class="fa-solid fa-pen"></i>
+                    </button>
                     <button class="horae-summary-toggle-btn" data-summary-id="${summaryId}" title="${isActive ? '切换为原始时间线' : '切换为摘要'}">
                         <i class="fa-solid ${isActive ? 'fa-expand' : 'fa-compress'}"></i>
                     </button>
@@ -791,7 +795,7 @@ function updateTimelineDisplay() {
                     <div class="horae-timeline-meta">${rangeStr ? rangeStr + ' · ' : ''}${summaryEntry?.auto ? '自动' : ''}摘要 · 消息 #${e.messageIndex}</div>
                 </div>
                 ${toggleBtns}
-                <button class="horae-item-edit-btn" data-edit-type="event" data-message-id="${e.messageIndex}" data-event-index="${e.eventIndex || 0}" title="编辑" style="${timelineMultiSelectMode || summaryId ? 'display:none' : ''}">
+                <button class="horae-item-edit-btn" data-edit-type="event" data-message-id="${e.messageIndex}" data-event-index="${e.eventIndex || 0}" title="编辑" style="${timelineMultiSelectMode ? 'display:none' : ''}${!summaryId ? '' : 'display:none'}">
                     <i class="fa-solid fa-pen"></i>
                 </button>
             </div>
@@ -835,6 +839,7 @@ function updateTimelineDisplay() {
             });
         } else {
             item.addEventListener('click', (e) => {
+                if (_timelineLongPressFired) { _timelineLongPressFired = false; return; }
                 if (e.target.closest('.horae-item-edit-btn') || e.target.closest('.horae-summary-actions')) return;
                 scrollToMessage(item.dataset.messageId);
             });
@@ -859,6 +864,12 @@ function updateTimelineDisplay() {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             deleteSummary(btn.dataset.summaryId);
+        });
+    });
+    listEl.querySelectorAll('.horae-summary-edit-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openSummaryEditModal(btn.dataset.summaryId, parseInt(btn.dataset.messageId), parseInt(btn.dataset.eventIndex));
         });
     });
     
@@ -965,6 +976,63 @@ async function deleteSummary(summaryId) {
     await getContext().saveChat();
     updateTimelineDisplay();
     showToast('摘要已删除，原始事件已恢复', 'success');
+}
+
+/** 打开摘要编辑弹窗，允许用户手动修改摘要内容 */
+function openSummaryEditModal(summaryId, messageId, eventIndex) {
+    closeEditModal();
+    const chat = horaeManager.getChat();
+    const firstMeta = chat?.[0]?.horae_meta;
+    const summaryEntry = firstMeta?.autoSummaries?.find(s => s.id === summaryId);
+    const meta = chat[messageId]?.horae_meta;
+    const evtsArr = meta?.events || [];
+    const evt = evtsArr[eventIndex];
+    if (!evt) { showToast('找不到该摘要事件', 'error'); return; }
+    const currentText = evt.summary || '';
+
+    const modalHtml = `
+        <div id="horae-edit-modal" class="horae-modal${isLightMode() ? ' horae-light' : ''}">
+            <div class="horae-modal-content">
+                <div class="horae-modal-header">
+                    <i class="fa-solid fa-pen"></i> 编辑摘要
+                </div>
+                <div class="horae-modal-body horae-edit-modal-body">
+                    <div class="horae-edit-field">
+                        <label>摘要内容</label>
+                        <textarea id="horae-summary-edit-text" rows="10" style="width:100%;min-height:180px;font-size:13px;line-height:1.6;">${escapeHtml(currentText)}</textarea>
+                    </div>
+                </div>
+                <div class="horae-modal-footer">
+                    <button id="horae-summary-edit-save" class="horae-btn primary">
+                        <i class="fa-solid fa-check"></i> 保存
+                    </button>
+                    <button id="horae-summary-edit-cancel" class="horae-btn">
+                        <i class="fa-solid fa-xmark"></i> 取消
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    preventModalBubble();
+
+    document.getElementById('horae-edit-modal').addEventListener('click', (e) => {
+        if (e.target.id === 'horae-edit-modal') closeEditModal();
+    });
+
+    document.getElementById('horae-summary-edit-save').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const newText = document.getElementById('horae-summary-edit-text').value.trim();
+        if (!newText) { showToast('摘要内容不能为空', 'warning'); return; }
+        evt.summary = newText;
+        if (summaryEntry) summaryEntry.summaryText = newText;
+        await getContext().saveChat();
+        closeEditModal();
+        updateTimelineDisplay();
+        showToast('摘要已更新', 'success');
+    });
+
+    document.getElementById('horae-summary-edit-cancel').addEventListener('click', () => closeEditModal());
 }
 
 /**
@@ -1150,9 +1218,12 @@ async function deleteSelectedAgenda() {
 // ============================================
 
 /** 时间线长按开始（弹出插入菜单） */
+let _timelineLongPressFired = false;
 function startTimelineLongPress(e, eventKey) {
     if (timelineMultiSelectMode) return;
+    _timelineLongPressFired = false;
     timelineLongPressTimer = setTimeout(() => {
+        _timelineLongPressFired = true;
         e.preventDefault?.();
         showTimelineContextMenu(e, eventKey);
     }, 800);
@@ -1699,15 +1770,20 @@ async function compressSelectedTimelineEvents() {
         firstMsg.horae_meta.autoSummaries.push(summaryEntry);
         
         // 标记原始事件为已压缩（不删除），兼容旧 meta.event 单数格式
-        for (const e of events) {
-            const meta = chat[e.msgIdx]?.horae_meta;
+        // 标记所有涉及消息的全部事件，避免同一消息中未选中的事件泄露
+        const compressedMsgIndices = [...new Set(events.map(e => e.msgIdx))];
+        for (const msgIdx of compressedMsgIndices) {
+            const meta = chat[msgIdx]?.horae_meta;
             if (!meta) continue;
             if (meta.event && !meta.events) {
                 meta.events = [meta.event];
                 delete meta.event;
             }
-            if (meta.events?.[e.evtIdx]) {
-                meta.events[e.evtIdx]._compressedBy = summaryId;
+            if (!meta.events) continue;
+            for (let j = 0; j < meta.events.length; j++) {
+                if (meta.events[j] && !meta.events[j].isSummary) {
+                    meta.events[j]._compressedBy = summaryId;
+                }
             }
         }
         
@@ -1726,7 +1802,6 @@ async function compressSelectedTimelineEvents() {
         }
         
         // 隐藏被压缩的消息楼层
-        const compressedMsgIndices = [...new Set(events.map(e => e.msgIdx))];
         await setMessagesHidden(chat, compressedMsgIndices, true);
         
         await context.saveChat();
@@ -2306,7 +2381,23 @@ function openRelationshipEditModal(editIndex = null) {
         }
         
         if (isEdit) {
-            rels[editIndex] = { from, to, type, note };
+            const oldRel = rels[editIndex];
+            rels[editIndex] = { from, to, type, note, _userEdited: true };
+            // 同步更新各消息中的关系数据，防止 rebuildRelationships 复原旧值
+            const chat = horaeManager.getChat();
+            for (let i = 1; i < chat.length; i++) {
+                const meta = chat[i]?.horae_meta;
+                if (!meta?.relationships?.length) continue;
+                let changed = false;
+                for (let ri = 0; ri < meta.relationships.length; ri++) {
+                    const r = meta.relationships[ri];
+                    if (r.from === oldRel.from && r.to === oldRel.to) {
+                        meta.relationships[ri] = { from, to, type, note };
+                        changed = true;
+                    }
+                }
+                if (changed) injectHoraeTagToMessage(i, meta);
+            }
         } else {
             rels.push({ from, to, type, note });
         }
@@ -2579,13 +2670,12 @@ function openItemEditModal(itemName) {
             const meta = chat[i].horae_meta;
             if (meta?.items?.[itemName]) {
                 if (nameChanged) {
-                    // 名称改变：删除旧名，创建新名
                     meta.items[newName] = { ...meta.items[itemName], ...newData };
                     delete meta.items[itemName];
                 } else {
-                    // 名称未变：直接更新
                     Object.assign(meta.items[itemName], newData);
                 }
+                injectHoraeTagToMessage(i, meta);
             }
         }
         
@@ -2883,6 +2973,7 @@ function openNpcEditModal(npcName) {
             const meta = chat[i].horae_meta;
             if (meta?.npcs?.[npcName]) {
                 Object.assign(meta.npcs[npcName], newData);
+                injectHoraeTagToMessage(i, meta);
             }
         }
         
@@ -4614,8 +4705,9 @@ function applyThemeMode() {
     const mode = settings.themeMode || 'dark';
     const theme = resolveTheme(mode);
     const isLight = mode === 'light' || !!(theme && theme.isLight);
+    const hasCustomVars = !!(theme && theme.variables);
 
-    // 切换 horae-light 类
+    // 切换 horae-light 类（日间模式需要此类激活 UI 细节样式如 checkbox 边框等）
     const targets = [
         document.getElementById('horae_drawer'),
         ...document.querySelectorAll('.horae-message-panel'),
@@ -4625,7 +4717,7 @@ function applyThemeMode() {
 
     // 注入主题变量
     let themeStyleEl = document.getElementById('horae-theme-vars');
-    if (theme && theme.variables) {
+    if (hasCustomVars) {
         if (!themeStyleEl) {
             themeStyleEl = document.createElement('style');
             themeStyleEl.id = 'horae-theme-vars';
@@ -4634,7 +4726,11 @@ function applyThemeMode() {
         const vars = Object.entries(theme.variables)
             .map(([k, v]) => `  ${k}: ${v};`)
             .join('\n');
-        const selectors = '#horae_drawer,\n.horae-message-panel,\n.horae-modal,\n.horae-context-menu,\n.horae-progress-overlay';
+        // 日间自定义主题：必须追加 .horae-light 选择器以覆盖 style.css 中同名类的默认变量
+        const needsLightOverride = isLight && mode !== 'light';
+        const selectors = needsLightOverride
+            ? '#horae_drawer,\n#horae_drawer.horae-light,\n.horae-message-panel,\n.horae-message-panel.horae-light,\n.horae-modal,\n.horae-modal.horae-light,\n.horae-context-menu,\n.horae-context-menu.horae-light,\n.horae-progress-overlay,\n.horae-progress-overlay.horae-light'
+            : '#horae_drawer,\n.horae-message-panel,\n.horae-modal,\n.horae-context-menu,\n.horae-progress-overlay';
         themeStyleEl.textContent = `${selectors} {\n${vars}\n}`;
     } else {
         if (themeStyleEl) themeStyleEl.remove();
@@ -4865,24 +4961,50 @@ function _tdGenerateVars(hue, sat, brightness, accentHex, colorLight) {
 
 function _tdBuildImageCSS(images, opacities, bgHex, drawerBg) {
     const parts = [];
-    if (images.header) {
-        parts.push(`#horae_drawer .drawer-header { background: url(${images.header}) center/cover no-repeat !important; }`);
+    // 顶部图标（#horae_drawer）
+    if (images.drawer && bgHex) {
+        const c = _tdHexToRgb(drawerBg || bgHex);
+        const a = (1 - (opacities.drawer || 30) / 100).toFixed(2);
+        parts.push(`#horae_drawer {
+  background-image: linear-gradient(rgba(${c.r},${c.g},${c.b},${a}), rgba(${c.r},${c.g},${c.b},${a})), url('${images.drawer}') !important;
+  background-size: auto, cover !important;
+  background-position: center, center !important;
+  background-repeat: no-repeat, no-repeat !important;
+}`);
     }
-    // 抽屉背景
+    // 抽屉头部图片
+    if (images.header) {
+        parts.push(`#horae_drawer .drawer-header {
+  background-image: url('${images.header}') !important;
+  background-size: cover !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+}`);
+    }
+    // 抽屉背景图片
     const bodyBg = drawerBg || bgHex;
     if (images.body && bodyBg) {
         const c = _tdHexToRgb(bodyBg);
         const a = (1 - (opacities.body || 30) / 100).toFixed(2);
-        parts.push(`.horae-tab-contents { background: linear-gradient(rgba(${c.r},${c.g},${c.b},${a}), rgba(${c.r},${c.g},${c.b},${a})), url(${images.body}) center/cover no-repeat !important; }`);
+        parts.push(`.horae-tab-contents {
+  background-image: linear-gradient(rgba(${c.r},${c.g},${c.b},${a}), rgba(${c.r},${c.g},${c.b},${a})), url('${images.body}') !important;
+  background-size: auto, cover !important;
+  background-position: center, center !important;
+  background-repeat: no-repeat, no-repeat !important;
+}`);
     } else if (drawerBg) {
         parts.push(`.horae-tab-contents { background-color: ${drawerBg} !important; }`);
     }
-    // 底部消息栏
+    // 底部消息栏图片 — 仅作用于收缩的 toggle 条，展开内容不叠加图片
     if (images.panel && bgHex) {
         const c = _tdHexToRgb(bgHex);
         const a = (1 - (opacities.panel || 30) / 100).toFixed(2);
-        parts.push(`.horae-message-panel { background: linear-gradient(rgba(${c.r},${c.g},${c.b},${a}), rgba(${c.r},${c.g},${c.b},${a})), url(${images.panel}) center/cover no-repeat !important; }`);
-        parts.push(`.horae-message-panel .horae-panel-content { background: rgba(${c.r},${c.g},${c.b},0.80) !important; }`);
+        parts.push(`.horae-message-panel > .horae-panel-toggle {
+  background-image: linear-gradient(rgba(${c.r},${c.g},${c.b},${a}), rgba(${c.r},${c.g},${c.b},${a})), url('${images.panel}') !important;
+  background-size: auto, cover !important;
+  background-position: center, center !important;
+  background-repeat: no-repeat, no-repeat !important;
+}`);
     }
     return parts.join('\n');
 }
@@ -4897,8 +5019,8 @@ function openThemeDesigner() {
     const initHsl = _tdParseColorHsl(priStr);
 
     // 尝试从当前自定义主题恢复全部设置
-    let savedImages = { header: '', body: '', panel: '' };
-    let savedImgOp = { header: 50, body: 30, panel: 30 };
+    let savedImages = { drawer: '', header: '', body: '', panel: '' };
+    let savedImgOp = { drawer: 30, header: 50, body: 30, panel: 30 };
     let savedName = '', savedAuthor = '', savedDrawerBg = '';
     let savedDesigner = null;
     const curTheme = resolveTheme(settings.themeMode || 'dark');
@@ -4985,9 +5107,10 @@ function openThemeDesigner() {
                     <i class="fa-solid fa-image"></i> 装饰图片
                     <i class="fa-solid fa-chevron-down htd-arrow"></i>
                 </div>
-                <div id="htd-img-body" style="display:none;">
+                <div id="htd-imgs-section" style="display:none;">
+                    ${imgHtml('drawer', '顶部图标')}
                     ${imgHtml('header', '抽屉头部')}
-                    ${imgHtml('body', '抽屉背景')}
+                    ${imgHtml('body', '抽屉内容背景')}
                     <div class="htd-img-group">
                         <div class="htd-img-label">抽屉背景底色</div>
                         <div class="htd-field">
@@ -5116,8 +5239,8 @@ function openThemeDesigner() {
         if (show) buildFine();
     }, { signal: sig });
     modal.querySelector('#htd-img-t').addEventListener('click', () => {
-        const body = modal.querySelector('#htd-img-body');
-        body.style.display = body.style.display === 'none' ? 'block' : 'none';
+        const sec = modal.querySelector('#htd-imgs-section');
+        sec.style.display = sec.style.display === 'none' ? 'block' : 'none';
     }, { signal: sig });
 
     // ---- Fine pickers ----
@@ -5149,7 +5272,7 @@ function openThemeDesigner() {
     }
 
     // ---- Image inputs ----
-    ['header', 'body', 'panel'].forEach(key => {
+    ['drawer', 'header', 'body', 'panel'].forEach(key => {
         const urlIn = modal.querySelector(`#htd-img-${key}`);
         const opSl = modal.querySelector(`#htd-imgsl-${key}`);
         const pv = modal.querySelector(`#htd-imgpv-${key}`);
@@ -5243,8 +5366,8 @@ function openThemeDesigner() {
     modal.querySelector('#htd-reset').addEventListener('click', () => {
         st.hue = 265; st.sat = 84; st.colorLight = 50; st.bright = 25; st.accent = '#f59e0b';
         st.overrides = {}; st.drawerBg = '';
-        st.images = { header: '', body: '', panel: '' };
-        st.imgOp = { header: 50, body: 30, panel: 30 };
+        st.images = { drawer: '', header: '', body: '', panel: '' };
+        st.imgOp = { drawer: 30, header: 50, body: 30, panel: 30 };
         hueInd.style.left = `${(265 / 360) * 100}%`;
         hueInd.style.background = `hsl(265, 100%, 50%)`;
         modal.querySelector('#htd-sat').value = 84; modal.querySelector('#htd-satv').textContent = '84';
@@ -5253,10 +5376,11 @@ function openThemeDesigner() {
         modal.querySelector('#htd-accent').value = '#f59e0b';
         modal.querySelector('#htd-accent-hex').textContent = '#f59e0b';
         modal.querySelector('#htd-dbg-hex').textContent = '跟随主题';
-        ['header', 'body', 'panel'].forEach(k => {
+        ['drawer', 'header', 'body', 'panel'].forEach(k => {
             const u = modal.querySelector(`#htd-img-${k}`); if (u) u.value = '';
-            const s = modal.querySelector(`#htd-imgsl-${k}`); if (s) s.value = k === 'header' ? 50 : 30;
-            const v = modal.querySelector(`#htd-imgop-${k}`); if (v) v.textContent = k === 'header' ? '50' : '30';
+            const defOp = k === 'header' ? 50 : 30;
+            const s = modal.querySelector(`#htd-imgsl-${k}`); if (s) s.value = defOp;
+            const v = modal.querySelector(`#htd-imgop-${k}`); if (v) v.textContent = String(defOp);
             const p = modal.querySelector(`#htd-imgpv-${k}`); if (p) p.style.display = 'none';
         });
         const fBody = modal.querySelector('#htd-fine-body');
@@ -6570,15 +6694,15 @@ function initSettingsEvents() {
         saveSettings();
         $('#horae-auto-summary-api-options').toggle(this.checked);
     });
-    $('#horae-setting-auto-summary-api-url').on('input', function() {
+    $('#horae-setting-auto-summary-api-url').on('input change', function() {
         settings.autoSummaryApiUrl = this.value;
         saveSettings();
     });
-    $('#horae-setting-auto-summary-api-key').on('input', function() {
+    $('#horae-setting-auto-summary-api-key').on('input change', function() {
         settings.autoSummaryApiKey = this.value;
         saveSettings();
     });
-    $('#horae-setting-auto-summary-model').on('input', function() {
+    $('#horae-setting-auto-summary-model').on('input change', function() {
         settings.autoSummaryModel = this.value;
         saveSettings();
     });
@@ -6727,6 +6851,24 @@ function initSettingsEvents() {
         const def = getDefaultCompressPrompt();
         $('#horae-custom-compress-prompt').val(def);
         $('#horae-compress-prompt-count').text(def.length);
+        showToast('已恢复默认提示词', 'success');
+    });
+
+    // 自动摘要提示词
+    $('#horae-custom-auto-summary-prompt').on('input', function() {
+        const val = this.value;
+        settings.customAutoSummaryPrompt = (val.trim() === getDefaultAutoSummaryPrompt().trim()) ? '' : val;
+        $('#horae-auto-summary-prompt-count').text(val.length);
+        saveSettings();
+    });
+
+    $('#horae-btn-reset-auto-summary-prompt').on('click', () => {
+        if (!confirm('确定恢复自动摘要提示词为默认值？')) return;
+        settings.customAutoSummaryPrompt = '';
+        saveSettings();
+        const def = getDefaultAutoSummaryPrompt();
+        $('#horae-custom-auto-summary-prompt').val(def);
+        $('#horae-auto-summary-prompt-count').text(def.length);
         showToast('已恢复默认提示词', 'success');
     });
 
@@ -6893,6 +7035,7 @@ function syncSettingsToUI() {
     const batchPromptVal = settings.customBatchPrompt || getDefaultBatchPrompt();
     const analysisPromptVal = settings.customAnalysisPrompt || getDefaultAnalysisPrompt();
     const compressPromptVal = settings.customCompressPrompt || getDefaultCompressPrompt();
+    const autoSumPromptVal = settings.customAutoSummaryPrompt || getDefaultAutoSummaryPrompt();
     const tablesPromptVal = settings.customTablesPrompt || horaeManager.getDefaultTablesPrompt();
     const locationPromptVal = settings.customLocationPrompt || horaeManager.getDefaultLocationPrompt();
     const relPromptVal = settings.customRelationshipPrompt || horaeManager.getDefaultRelationshipPrompt();
@@ -6901,6 +7044,7 @@ function syncSettingsToUI() {
     $('#horae-custom-batch-prompt').val(batchPromptVal);
     $('#horae-custom-analysis-prompt').val(analysisPromptVal);
     $('#horae-custom-compress-prompt').val(compressPromptVal);
+    $('#horae-custom-auto-summary-prompt').val(autoSumPromptVal);
     $('#horae-custom-tables-prompt').val(tablesPromptVal);
     $('#horae-custom-location-prompt').val(locationPromptVal);
     $('#horae-custom-relationship-prompt').val(relPromptVal);
@@ -6909,6 +7053,7 @@ function syncSettingsToUI() {
     $('#horae-batch-prompt-count').text(batchPromptVal.length);
     $('#horae-analysis-prompt-count').text(analysisPromptVal.length);
     $('#horae-compress-prompt-count').text(compressPromptVal.length);
+    $('#horae-auto-summary-prompt-count').text(autoSumPromptVal.length);
     $('#horae-tables-prompt-count').text(tablesPromptVal.length);
     $('#horae-location-prompt-count').text(locationPromptVal.length);
     $('#horae-relationship-prompt-count').text(relPromptVal.length);
@@ -7053,10 +7198,49 @@ let _autoSummaryRanThisTurn = false;
  * useProfile=false 时直接调用 generateRaw（并行安全）
  */
 async function generateForSummary(prompt) {
-    if (settings.autoSummaryUseCustomApi && settings.autoSummaryApiUrl && settings.autoSummaryApiKey && settings.autoSummaryModel) {
+    // 从 DOM 补读一次副API设置，防止浏览器自动填充未触发 input 事件导致设置为空
+    _syncSubApiSettingsFromDom();
+    const useCustom = settings.autoSummaryUseCustomApi;
+    const hasUrl = !!(settings.autoSummaryApiUrl && settings.autoSummaryApiUrl.trim());
+    const hasKey = !!(settings.autoSummaryApiKey && settings.autoSummaryApiKey.trim());
+    const hasModel = !!(settings.autoSummaryModel && settings.autoSummaryModel.trim());
+    console.log(`[Horae] generateForSummary: useCustom=${useCustom}, hasUrl=${hasUrl}, hasKey=${hasKey}, hasModel=${hasModel}`);
+    if (useCustom && hasUrl && hasKey && hasModel) {
         return await generateWithDirectApi(prompt);
     }
+    if (useCustom && (!hasUrl || !hasKey || !hasModel)) {
+        const missing = [!hasUrl && 'API地址', !hasKey && 'API密钥', !hasModel && '模型名称'].filter(Boolean).join('、');
+        console.warn(`[Horae] 副API已勾选但缺少: ${missing}，回退主API`);
+        showToast(`副API缺少${missing}，已回退主API`, 'warning');
+    }
     return await getContext().generateRaw(prompt, null, false, false);
+}
+
+function _syncSubApiSettingsFromDom() {
+    try {
+        const urlEl = document.getElementById('horae-setting-auto-summary-api-url');
+        const keyEl = document.getElementById('horae-setting-auto-summary-api-key');
+        const modelEl = document.getElementById('horae-setting-auto-summary-model');
+        const checkEl = document.getElementById('horae-setting-auto-summary-custom-api');
+        let changed = false;
+        if (checkEl && checkEl.checked !== settings.autoSummaryUseCustomApi) {
+            settings.autoSummaryUseCustomApi = checkEl.checked;
+            changed = true;
+        }
+        if (urlEl && urlEl.value && urlEl.value !== settings.autoSummaryApiUrl) {
+            settings.autoSummaryApiUrl = urlEl.value;
+            changed = true;
+        }
+        if (keyEl && keyEl.value && keyEl.value !== settings.autoSummaryApiKey) {
+            settings.autoSummaryApiKey = keyEl.value;
+            changed = true;
+        }
+        if (modelEl && modelEl.value && modelEl.value !== settings.autoSummaryModel) {
+            settings.autoSummaryModel = modelEl.value;
+            changed = true;
+        }
+        if (changed) saveSettings();
+    } catch (_) {}
 }
 
 /** 直接请求API端点，完全独立于酒馆主连接，支持真并行 */
@@ -7376,14 +7560,12 @@ async function checkAutoSummary() {
         const sourceText = fullTexts.join('\n\n');
         
         const eventText = bufferEvents.map(e => `[${e.level}] ${e.date}${e.time ? ' ' + e.time : ''}: ${e.summary}`).join('\n');
-        const fullTemplate = settings.customCompressPrompt || getDefaultCompressPrompt();
-        const section = parseCompressPrompt(fullTemplate, 'fulltext');
-        const prompt = section
+        const autoSumTemplate = settings.customAutoSummaryPrompt || getDefaultAutoSummaryPrompt();
+        const prompt = autoSumTemplate
             .replace(/\{\{events\}\}/gi, eventText)
             .replace(/\{\{fulltext\}\}/gi, sourceText)
             .replace(/\{\{count\}\}/gi, String(bufferEvents.length))
-            .replace(/\{\{user\}\}/gi, userName)
-            + '\n\n【重要】只输出纯文本摘要，禁止输出任何XML标签（如<horae>、<horaeevent>等）。';
+            .replace(/\{\{user\}\}/gi, userName);
         
         const response = await generateForSummary(prompt);
         if (!response?.trim()) {
@@ -7484,6 +7666,24 @@ function getDefaultCompressPrompt() {
 - 按时间顺序叙述，保留重要转折点和关键细节
 - 人名、地名必须保留原文
 - 输出纯文本摘要，不要添加任何标记或格式
+- 保留人物的关键对话和情绪变化
+- {{user}} 是主角名
+- 语言风格：简洁客观的叙事体`;
+}
+
+/** 默认的自动摘要提示词（独立于手动压缩，由副API使用） */
+function getDefaultAutoSummaryPrompt() {
+    return `你是剧情压缩助手。请阅读以下对话记录，将其压缩为一段精炼的剧情摘要（150-300字），保留关键信息和因果关系。
+
+{{fulltext}}
+
+已有事件概要（辅助参考，不要仅依赖此列表）：
+{{events}}
+
+要求：
+- 按时间顺序叙述，保留重要转折点和关键细节
+- 人名、地名必须保留原文
+- 输出纯文本摘要，不要添加任何标记或格式（禁止<horae>等XML标签）
 - 保留人物的关键对话和情绪变化
 - {{user}} 是主角名
 - 语言风格：简洁客观的叙事体`;

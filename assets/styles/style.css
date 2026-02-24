@@ -763,7 +763,8 @@
 }
 
 .horae-summary-toggle-btn,
-.horae-summary-delete-btn {
+.horae-summary-delete-btn,
+.horae-summary-edit-btn {
     background: transparent;
     border: none;
     cursor: pointer;
@@ -776,6 +777,7 @@
 
 .horae-summary-toggle-btn { color: var(--horae-info, #2563eb); }
 .horae-summary-delete-btn { color: var(--horae-danger); }
+.horae-summary-edit-btn { color: var(--horae-accent, #f59e0b); }
 
 .horae-btn-inline-toggle {
     flex-shrink: 0;
@@ -785,7 +787,8 @@
 }
 
 .horae-summary-toggle-btn:hover,
-.horae-summary-delete-btn:hover {
+.horae-summary-delete-btn:hover,
+.horae-summary-edit-btn:hover {
     opacity: 1;
 }
 

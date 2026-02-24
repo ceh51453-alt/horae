@@ -862,12 +862,23 @@ class HoraeManager {
     parseHoraeTag(message) {
         if (!message) return null;
         
-        let match = message.match(/<horae>([\s\S]*?)<\/horae>/i);
+        // 提取所有 <horae> 块并选择包含有效字段的块（防止其他插件生成的同名标签干扰）
+        let match = null;
+        const allHoraeMatches = [...message.matchAll(/<horae>([\s\S]*?)<\/horae>/gi)];
+        const horaeFieldPattern = /^(time|timestamp|location|atmosphere|scene_desc|characters|costume|item[!]*|item-|event|affection|npc|agenda|agenda-|rel|mood):/m;
+        if (allHoraeMatches.length > 1) {
+            match = allHoraeMatches.find(m => horaeFieldPattern.test(m[1])) || allHoraeMatches[0];
+        } else if (allHoraeMatches.length === 1) {
+            match = allHoraeMatches[0];
+        }
         if (!match) {
             match = message.match(/<!--horae([\s\S]*?)-->/i);
         }
         
-        const eventMatch = message.match(/<horaeevent>([\s\S]*?)<\/horaeevent>/i);
+        const allEventMatches = [...message.matchAll(/<horaeevent>([\s\S]*?)<\/horaeevent>/gi)];
+        const eventMatch = allEventMatches.length > 1
+            ? (allEventMatches.find(m => /^event:/m.test(m[1])) || allEventMatches[0])
+            : allEventMatches[0] || null;
         const tableMatches = [...message.matchAll(/<horaetable[:：]\s*(.+?)>([\s\S]*?)<\/horaetable>/gi)];
         
         if (!match && !eventMatch && tableMatches.length === 0) return null;
@@ -1235,6 +1246,7 @@ class HoraeManager {
         for (const rel of newRels) {
             const idx = existing.findIndex(r => r.from === rel.from && r.to === rel.to);
             if (idx >= 0) {
+                if (existing[idx]._userEdited) continue;
                 existing[idx].type = rel.type;
                 if (rel.note) existing[idx].note = rel.note;
             } else {
@@ -1249,7 +1261,9 @@ class HoraeManager {
         if (!chat?.length) return;
         const firstMsg = chat[0];
         if (!firstMsg.horae_meta) firstMsg.horae_meta = createEmptyMeta();
-        firstMsg.horae_meta.relationships = [];
+        // 保留用户手动编辑的关系，其余重建
+        const userEdited = (firstMsg.horae_meta.relationships || []).filter(r => r._userEdited);
+        firstMsg.horae_meta.relationships = [...userEdited];
         for (let i = 1; i < chat.length; i++) {
             const rels = chat[i]?.horae_meta?.relationships;
             if (rels?.length) this._mergeRelationships(rels);
