@@ -575,6 +575,8 @@
         "eventLevel": "Event Level",
         "eventSummary": "Event Summary",
         "summaryContent": "Summary Content",
+        "summaryRange": "Covered Floor Range",
+        "summaryRangeHint": "Floors in this range will be skipped by auto-summary",
         "name": "Name",
         "icon": "Icon (emoji)",
         "importance": "Importance",

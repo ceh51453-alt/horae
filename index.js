@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.11.2
+ * 版本: 1.11.3
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -21,7 +21,7 @@ import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLan
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.11.2';
+const VERSION = '1.11.3';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -1773,6 +1773,10 @@ function openTimelineInsertEventModal(refMsgIdx, refEvtIdx, isAbove) {
 
 /** 打开插入摘要弹窗 */
 function openTimelineSummaryModal(refMsgIdx, refEvtIdx, isAbove) {
+    const chat = horaeManager.getChat();
+    const chatLen = chat?.length || 0;
+    const defaultFrom = Math.max(0, refMsgIdx - 10);
+    const defaultTo = refMsgIdx;
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -1783,6 +1787,17 @@ function openTimelineSummaryModal(refMsgIdx, refEvtIdx, isAbove) {
                     <div class="horae-edit-field">
                         <label>${t('label.summaryContent')}</label>
                         <textarea id="insert-summary-text" rows="5" placeholder="${t('ui.insertSummaryPlaceholder')}"></textarea>
+                    </div>
+                    <div class="horae-edit-field" style="margin-top:8px;">
+                        <label>${t('label.summaryRange')}</label>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <span>#</span>
+                            <input type="number" id="insert-summary-from" min="0" max="${chatLen - 1}" value="${defaultFrom}" style="width:70px;" class="horae-input" />
+                            <span>~</span>
+                            <span>#</span>
+                            <input type="number" id="insert-summary-to" min="0" max="${chatLen - 1}" value="${defaultTo}" style="width:70px;" class="horae-input" />
+                            <span style="opacity:0.6;font-size:0.85em;">(${t('label.summaryRangeHint')})</span>
+                        </div>
                     </div>
                 </div>
                 <div class="horae-modal-footer">
@@ -1805,20 +1820,42 @@ function openTimelineSummaryModal(refMsgIdx, refEvtIdx, isAbove) {
         const summaryText = document.getElementById('insert-summary-text').value.trim();
         if (!summaryText) { showToast(t('toast.enterContent'), 'warning'); return; }
         
+        const rangeFrom = parseInt(document.getElementById('insert-summary-from').value) || 0;
+        const rangeTo = parseInt(document.getElementById('insert-summary-to').value) || refMsgIdx;
+        const rMin = Math.max(0, Math.min(rangeFrom, rangeTo));
+        const rMax = Math.min(chatLen - 1, Math.max(rangeFrom, rangeTo));
+
+        const summaryId = `ms_${Date.now()}`;
         const newEvent = {
             is_important: true,
             level: '摘要',
             summary: summaryText,
-            isSummary: true
+            isSummary: true,
+            _summaryId: summaryId
         };
         
-        const chat = horaeManager.getChat();
+        if (!chat?.length) { closeEditModal(); return; }
         const meta = chat[refMsgIdx]?.horae_meta;
         if (!meta) { closeEditModal(); return; }
         if (!meta.events) meta.events = [];
         
         const insertIdx = isAbove ? refEvtIdx + 1 : refEvtIdx;
         meta.events.splice(insertIdx, 0, newEvent);
+
+        // 在 chat[0] 登记范围，让自动摘要跳过这些楼层
+        const firstMsg = chat[0];
+        if (!firstMsg.horae_meta) firstMsg.horae_meta = createEmptyMeta();
+        if (!firstMsg.horae_meta.autoSummaries) firstMsg.horae_meta.autoSummaries = [];
+        firstMsg.horae_meta.autoSummaries.push({
+            id: summaryId,
+            range: [rMin, rMax],
+            summaryText,
+            originalEvents: [],
+            active: true,
+            createdAt: new Date().toISOString(),
+            auto: false,
+            manual: true
+        });
         
         await getContext().saveChat();
         closeEditModal();
@@ -12475,11 +12512,22 @@ async function checkAutoSummary() {
             }
         }
         
+        // 兜底：扫描所有消息，找出含有手动插入摘要(isSummary)事件的消息索引
+        const manualSummaryMsgIndices = new Set();
+        for (let i = 0; i < cutoff; i++) {
+            const evts = chat[i]?.horae_meta?.events;
+            if (!evts?.length) continue;
+            if (evts.some(e => e.isSummary && !e._compressedBy)) {
+                manualSummaryMsgIndices.add(i);
+            }
+        }
+
         const bufferMsgIndices = [];
         let bufferTokens = 0;
         for (let i = 0; i < cutoff; i++) {
             if (chat[i]?.is_hidden || summarizedIndices.has(i)) continue;
             if (chat[i]?.horae_meta?._skipHorae) continue;
+            if (manualSummaryMsgIndices.has(i)) continue;
             if (!chat[i]?.is_user && isEmptyOrCodeLayer(chat[i]?.mes)) continue;
             bufferMsgIndices.push(i);
             if (bufferMode === 'tokens') {
@@ -12579,7 +12627,7 @@ async function checkAutoSummary() {
             const msg = chat[idx];
             const d = msg?.horae_meta?.timestamp?.story_date || '';
             const t = msg?.horae_meta?.timestamp?.story_time || '';
-            return `【#${idx}${d ? ' ' + d : ''}${t ? ' ' + t : ''}】\n${msg?.mes || ''}`;
+            return `【#${idx}${d ? ' ' + d : ''}${t ? ' ' + t : ''}】\n${_stripConfiguredTags(msg?.mes || '')}`;
         });
         const sourceText = fullTexts.join('\n\n');
         
@@ -14168,6 +14216,17 @@ function onMessageRendered(messageId) {
 function _sanitizeLeakedHoraeTags(messageEl) {
     const mesBody = messageEl.querySelector('.mes_text');
     if (!mesBody) return;
+
+    // Phase 1: 拆解浏览器将 <horae> 等未知标签解析成的真实 DOM 元素
+    const ghostEls = mesBody.querySelectorAll('horae, horaeevent, horaerpg, horaetable');
+    for (const el of ghostEls) {
+        while (el.firstChild) el.parentNode.insertBefore(el.firstChild, el);
+        el.remove();
+    }
+    // 拆解后合并相邻文本节点，恢复完整文本流
+    mesBody.normalize();
+
+    // Phase 2: 清理文本节点中残留的 horae 标签文字
     const walker = document.createTreeWalker(mesBody, NodeFilter.SHOW_TEXT, null, false);
     const horaePat = /<\/?horae(?:event|rpg|table[:\uff1a]?[^>]*)?>/gi;
     let node;

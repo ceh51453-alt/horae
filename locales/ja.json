@@ -581,6 +581,8 @@
         "eventLevel": "イベントレベル",
         "eventSummary": "イベント要約",
         "summaryContent": "要約内容",
+        "summaryRange": "対象フロア範囲",
+        "summaryRangeHint": "この範囲のフロアは自動要約でスキップされます",
         "name": "名前",
         "icon": "アイコン（絵文字）",
         "importance": "重要度",

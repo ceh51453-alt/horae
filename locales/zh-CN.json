@@ -575,6 +575,8 @@
         "eventLevel": "事件级别",
         "eventSummary": "事件摘要",
         "summaryContent": "摘要内容",
+        "summaryRange": "覆盖楼层范围",
+        "summaryRangeHint": "此范围内的楼层将不再被自动摘要处理",
         "name": "名称",
         "icon": "图标 (emoji)",
         "importance": "重要程度",

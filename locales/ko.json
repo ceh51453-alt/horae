@@ -576,6 +576,8 @@
         "eventLevel": "이벤트 레벨",
         "eventSummary": "이벤트 요약",
         "summaryContent": "요약 내용",
+        "summaryRange": "적용 층 범위",
+        "summaryRangeHint": "이 범위의 층은 자동 요약에서 건너뜁니다",
         "name": "이름",
         "icon": "아이콘 (이모지)",
         "importance": "중요도",
