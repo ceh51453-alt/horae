@@ -22,7 +22,7 @@ let _pluginBasePath = '';
 let _zhFallback = null;
 let _enFallback = null;
 
-const SUPPORTED_LANGS = ['zh-CN', 'zh-TW', 'en', 'ko', 'ja'];
+const SUPPORTED_LANGS = ['zh-CN', 'zh-TW', 'en', 'ko', 'ja', 'ru'];
 const DEFAULT_LANG = 'en';
 const ZH_LANGS = new Set(['zh-CN', 'zh-TW']);
 
@@ -35,6 +35,7 @@ function _normalizeLang(raw) {
     if (lower.startsWith('en')) return 'en';
     if (lower.startsWith('ko')) return 'ko';
     if (lower.startsWith('ja')) return 'ja';
+    if (lower.startsWith('ru')) return 'ru';
     return null;
 }
 
@@ -151,18 +152,22 @@ export function isSimplifiedChinese() {
 }
 
 /**
+ * 检测实际生效的 AI 输出语言代码
+ * 优先级：aiOutputLanguage → uiLanguage → 自动检测的当前语言 → 'en'
+ */
+export function detectEffectiveAiLang(settings) {
+    const aiLang = settings?.aiOutputLanguage || 'auto';
+    if (aiLang !== 'auto' && SUPPORTED_LANGS.includes(aiLang)) return aiLang;
+    const uiLang = settings?.uiLanguage || 'auto';
+    if (uiLang !== 'auto' && SUPPORTED_LANGS.includes(uiLang)) return uiLang;
+    return _currentLang || DEFAULT_LANG;
+}
+
+/**
  * 检测实际生效的 AI 输出语言是否为中文
  */
 export function detectEffectiveAiLangIsZh(settings) {
-    const aiLang = settings?.aiOutputLanguage || 'auto';
-    if (aiLang !== 'auto') {
-        return aiLang === 'zh-CN' || aiLang === 'zh-TW';
-    }
-    const uiLang = settings?.uiLanguage || 'auto';
-    if (uiLang !== 'auto') {
-        return uiLang === 'zh-CN' || uiLang === 'zh-TW';
-    }
-    return ZH_LANGS.has(_currentLang);
+    return ZH_LANGS.has(detectEffectiveAiLang(settings));
 }
 
 function _pickFallback(lang) {

@@ -4,7 +4,7 @@
  */
 
 import { parseStoryDate, calculateRelativeTime, calculateDetailedRelativeTime, generateTimeReference, formatRelativeTime, formatFullDateTime } from '../utils/timeUtils.js';
-import { detectEffectiveAiLangIsZh } from './i18n.js';
+import { detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './i18n.js';
 
 /**
  * @typedef {Object} HoraeTimestamp
@@ -117,19 +117,38 @@ class HoraeManager {
         this.settings = settings;
     }
 
+    /** 获取 AI 输出语言代码 (zh-CN / zh-TW / en / ja / ko / ru) */
+    _getAiOutputLang() {
+        return detectEffectiveAiLang(this.settings);
+    }
+
+    /** AI 输出语言是否为中文（简体/繁体） */
+    _isAiOutputChinese() {
+        return detectEffectiveAiLangIsZh(this.settings);
+    }
+
     /** 根据 AI 输出语言获取事件摘要的字数/字符限制描述 */
     _getEventCharLimit() {
-        const lang = this.settings?.aiOutputLanguage || 'auto';
-        const eff = (lang === 'auto') ? (this.settings?.uiLanguage || 'auto') : lang;
-        if (eff === 'zh-CN' || eff === 'zh-TW' || eff === 'auto') return '30-50字';
-        if (eff === 'ko') return '50-80자';
-        if (eff === 'ja') return '40-70文字';
+        const lang = this._getAiOutputLang();
+        if (lang === 'zh-CN' || lang === 'zh-TW') return '30-50字';
+        if (lang === 'ko') return '50-80자';
+        if (lang === 'ja') return '40-70文字';
+        if (lang === 'ru') return '80-150 символов';
         return '80-130 chars';
     }
 
-    /** AI 输出语言是否为中文（简体/繁体/自动默认） */
-    _isAiOutputChinese() {
-        return detectEffectiveAiLangIsZh(this.settings);
+    /** 根据语言返回用户/角色默认名 */
+    _getDefaultNames() {
+        const lang = this._getAiOutputLang();
+        const userName = this.context?.name1;
+        const charName = this.context?.name2;
+        const defaults = {
+            'zh-CN': ['主角', '角色'], 'zh-TW': ['主角', '角色'],
+            'ja': ['主人公', 'キャラ'], 'ko': ['주인공', '캐릭터'],
+            'ru': ['протагонист', 'персонаж'],
+        };
+        const [du, dc] = defaults[lang] || ['protagonist', 'character'];
+        return [userName || du, charName || dc];
     }
 
     /** 获取当前聊天记录 */
@@ -527,9 +546,24 @@ class HoraeManager {
     generateCompactPrompt(skipLast = 0) {
         const state = this.getLatestState(skipLast);
         const lines = [];
+
+        const lang = this._getAiOutputLang();
+        const L = (zh, en, ja, ko, ru) => {
+            if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
+            if (lang === 'ja') return ja;
+            if (lang === 'ko') return ko;
+            if (lang === 'ru') return ru;
+            return en;
+        };
         
         // 状态快照头
-        lines.push('[当前状态快照——对比本回合剧情，仅在<horae>中输出发生实质变化的字段]');
+        lines.push(L(
+            '[当前状态快照——对比本回合剧情，仅在<horae>中输出发生实质变化的字段]',
+            '[Current State Snapshot — compare with this round\'s plot, only output substantively changed fields in <horae>]',
+            '[現在の状態スナップショット——今回のストーリーと比較し、実質的に変化したフィールドのみ<horae>に出力]',
+            '[현재 상태 스냅샷——이번 라운드의 스토리와 비교하여 실질적으로 변경된 필드만 <horae>에 출력]',
+            '[Снимок текущего состояния — сравните с сюжетом этого раунда, выводите в <horae> только существенно изменившиеся поля]',
+        ));
         
         const sendTimeline = this.settings?.sendTimeline !== false;
         const sendCharacters = this.settings?.sendCharacters !== false;
@@ -538,24 +572,22 @@ class HoraeManager {
         // 时间
         if (state.timestamp.story_date) {
             const fullDateTime = formatFullDateTime(state.timestamp.story_date, state.timestamp.story_time);
-            lines.push(`[时间|${fullDateTime}]`);
+            lines.push(`[${L('时间','Time','時間','시간','Время')}|${fullDateTime}]`);
             
             // 时间参考
             if (sendTimeline) {
                 const timeRef = generateTimeReference(state.timestamp.story_date);
                 if (timeRef && timeRef.type === 'standard') {
-                    // 标准日历
-                    lines.push(`[时间参考|昨天=${timeRef.yesterday}|前天=${timeRef.dayBefore}|3天前=${timeRef.threeDaysAgo}]`);
+                    lines.push(`[${L('时间参考','Time Ref','時間参考','시간 참조','Время (справка)')}|${L('昨天','yesterday','昨日','어제','вчера')}=${timeRef.yesterday}|${L('前天','day before','一昨日','그저께','позавчера')}=${timeRef.dayBefore}|${L('3天前','3 days ago','3日前','3일 전','3 дня назад')}=${timeRef.threeDaysAgo}]`);
                 } else if (timeRef && timeRef.type === 'fantasy') {
-                    // 奇幻日历
-                    lines.push(`[时间参考|奇幻日历模式，参见剧情轨迹中的相对时间标记]`);
+                    lines.push(`[${L('时间参考','Time Ref','時間参考','시간 참조','Время (справка)')}|${L('奇幻日历模式，参见剧情轨迹中的相对时间标记','Fantasy calendar mode, see relative time markers in story timeline','ファンタジー暦モード、ストーリー軌跡の相対時間マーカーを参照','판타지 달력 모드, 스토리 궤적의 상대 시간 마커 참조','Режим фэнтезийного календаря, см. относительные метки времени в сюжетной линии')}]`);
                 }
             }
         }
         
         // 场景
         if (state.scene.location) {
-            let sceneStr = `[场景|${state.scene.location}`;
+            let sceneStr = `[${L('场景','Scene','シーン','장면','Сцена')}|${state.scene.location}`;
             if (state.scene.atmosphere) {
                 sceneStr += `|${state.scene.atmosphere}`;
             }
@@ -567,14 +599,13 @@ class HoraeManager {
                 const loc = state.scene.location;
                 const entry = this._findLocationMemory(loc, locMem, state._previousLocation);
                 if (entry?.desc) {
-                    lines.push(`[场景记忆|${entry.desc}]`);
+                    lines.push(`[${L('场景记忆','Scene Memory','シーン記憶','장면 기억','Память сцены')}|${entry.desc}]`);
                 }
-                // 附带父级地点描述（如「酒馆·大厅」→ 同时发送「酒馆」的描述）
                 const sepMatch = loc.match(/[·・\-\/\|]/);
                 if (sepMatch) {
                     const parent = loc.substring(0, sepMatch.index).trim();
                     if (parent && locMem[parent] && locMem[parent].desc && parent !== entry?._matchedName) {
-                        lines.push(`[场景记忆:${parent}|${locMem[parent].desc}]`);
+                        lines.push(`[${L('场景记忆','Scene Memory','シーン記憶','장면 기억','Память сцены')}:${parent}|${locMem[parent].desc}]`);
                     }
                 }
             }
@@ -597,7 +628,7 @@ class HoraeManager {
                         charStrs.push(char);
                     }
                 }
-                lines.push(`[在场|${charStrs.join('|')}]`);
+                lines.push(`[${L('在场','Present','出席','참석','Присутствуют')}|${charStrs.join('|')}]`);
             }
             
             // 情绪状态（仅在场角色，变化驱动）
@@ -609,7 +640,7 @@ class HoraeManager {
                     }
                 }
                 if (moodEntries.length > 0) {
-                    lines.push(`[情绪|${moodEntries.join('|')}]`);
+                    lines.push(`[${L('情绪','Mood','感情','감정','Настроение')}|${moodEntries.join('|')}]`);
                 }
             }
             
@@ -617,7 +648,7 @@ class HoraeManager {
             if (this.settings?.sendRelationships) {
                 const rels = this.getRelationshipsForCharacters(presentChars);
                 if (rels.length > 0) {
-                    lines.push('\n[关系网络]');
+                    lines.push(`\n[${L('关系网络','Relationship Network','関係ネットワーク','관계 네트워크','Сеть отношений')}]`);
                     for (const r of rels) {
                         const noteStr = r.note ? `(${r.note})` : '';
                         lines.push(`${r.from}→${r.to}: ${r.type}${noteStr}`);
@@ -641,11 +672,11 @@ class HoraeManager {
             }
             const unequipped = items.filter(([name]) => !equippedNames.has(name));
             if (unequipped.length > 0) {
-                lines.push('\n[物品清单]');
+                lines.push(`\n[${L('物品清单','Item List','アイテムリスト','아이템 목록','Список предметов')}]`);
                 for (const [name, info] of unequipped) {
                     const id = info._id || '???';
                     const icon = info.icon || '';
-                    const imp = (info.importance === '!!' || info.importance === '关键' || info.importance === '關鍵') ? '关键' : (info.importance === '!' || info.importance === '重要') ? '重要' : '';
+                    const imp = (info.importance === '!!' || info.importance === '关键' || info.importance === '關鍵') ? L('关键','critical','重要','핵심','критич.') : (info.importance === '!' || info.importance === '重要') ? L('重要','important','重要','중요','важно') : '';
                     const desc = info.description ? ` | ${info.description}` : '';
                     const holder = info.holder || '';
                     const loc = info.location ? `@${info.location}` : '';
@@ -653,7 +684,7 @@ class HoraeManager {
                     lines.push(`#${id} ${icon}${name}${impTag}${desc} = ${holder}${loc}`);
                 }
             } else {
-                lines.push('\n[物品清单] (空)');
+                lines.push(`\n[${L('物品清单','Item List','アイテムリスト','아이템 목록','Список предметов')}] (${L('空','empty','空','비어있음','пусто')})`);
             }
         }
         
@@ -662,13 +693,13 @@ class HoraeManager {
             const affections = Object.entries(state.affection).filter(([_, v]) => v !== 0);
             if (affections.length > 0) {
                 const affStr = affections.map(([k, v]) => `${k}:${v > 0 ? '+' : ''}${v}`).join('|');
-                lines.push(`[好感|${affStr}]`);
+                lines.push(`[${L('好感','Affection','好感度','호감도','Расположение')}|${affStr}]`);
             }
             
             // NPC信息
             const npcs = Object.entries(state.npcs);
             if (npcs.length > 0) {
-                lines.push('\n[已知NPC]');
+                lines.push(`\n[${L('已知NPC','Known NPCs','既知NPC','알려진 NPC','Известные NPC')}]`);
                 for (const [name, info] of npcs) {
                     const id = info._id || '?';
                     const app = info.appearance || '';
@@ -681,16 +712,16 @@ class HoraeManager {
                     }
                     // 扩展字段
                     const extras = [];
-                    if (info._aliases?.length) extras.push(`曾用名:${info._aliases.join('/')}`);
-                    if (info.gender) extras.push(`性别:${info.gender}`);
+                    if (info._aliases?.length) extras.push(`${L('曾用名','aliases','旧名','이전 이름','псевдонимы')}:${info._aliases.join('/')}`);
+                    if (info.gender) extras.push(`${L('性别','gender','性別','성별','пол')}:${info.gender}`);
                     if (info.age) {
                         const ageResult = this.calcCurrentAge(info, state.timestamp.story_date);
-                        extras.push(`年龄:${ageResult.display}`);
+                        extras.push(`${L('年龄','age','年齢','나이','возраст')}:${ageResult.display}`);
                     }
-                    if (info.race) extras.push(`种族:${info.race}`);
-                    if (info.job) extras.push(`职业:${info.job}`);
-                    if (info.birthday) extras.push(`生日:${info.birthday}`);
-                    if (info.note) extras.push(`补充:${info.note}`);
+                    if (info.race) extras.push(`${L('种族','race','種族','종족','раса')}:${info.race}`);
+                    if (info.job) extras.push(`${L('职业','occupation','職業','직업','профессия')}:${info.job}`);
+                    if (info.birthday) extras.push(`${L('生日','birthday','誕生日','생일','день рождения')}:${info.birthday}`);
+                    if (info.note) extras.push(`${L('补充','notes','備考','비고','примечания')}:${info.note}`);
                     if (extras.length > 0) npcStr += `~${extras.join('~')}`;
                     lines.push(npcStr);
                 }
@@ -728,7 +759,7 @@ class HoraeManager {
         }
         const activeAgenda = allAgendaItems.filter(a => !a.done);
         if (activeAgenda.length > 0) {
-            lines.push('\n[待办事项]');
+            lines.push(`\n[${L('待办事项','Agenda','予定事項','할 일 목록','Список дел')}]`);
             for (const item of activeAgenda) {
                 const datePrefix = item.date ? `${item.date} ` : '';
                 lines.push(`· ${datePrefix}${item.text}`);
@@ -784,7 +815,7 @@ class HoraeManager {
             };
 
             if (sendBars && Object.keys(rpg.bars).length > 0) {
-                lines.push('\n[RPG状态]');
+                lines.push(`\n[${L('RPG状态','RPG Status','RPGステータス','RPG 상태','RPG-статус')}]`);
                 for (const [name, bars] of Object.entries(rpg.bars)) {
                     if (_cUoB && name !== userName) continue;
                     if (filterRpg && !rpgAllowed.has(name)) continue;
@@ -794,14 +825,14 @@ class HoraeManager {
                         parts.push(`${label} ${val[0]}/${val[1]}`);
                     }
                     const sts = rpg.status?.[name];
-                    if (sts?.length > 0) parts.push(`状态:${sts.join('/')}`);
+                    if (sts?.length > 0) parts.push(`${L('状态','status','ステータス','상태','статус')}:${sts.join('/')}`);
                     if (parts.length > 0) lines.push(`${_ctxPre(name, _cUoB)}${parts.join(' | ')}`);
                 }
                 for (const [name, effects] of Object.entries(rpg.status || {})) {
                     if (rpg.bars[name] || effects.length === 0) continue;
                     if (_cUoB && name !== userName) continue;
                     if (filterRpg && !rpgAllowed.has(name)) continue;
-                    lines.push(`${_ctxPre(name, _cUoB)}状态:${effects.join('/')}`);
+                    lines.push(`${_ctxPre(name, _cUoB)}${L('状态','status','ステータス','상태','статус')}:${effects.join('/')}`);
                 }
             }
 
@@ -809,7 +840,7 @@ class HoraeManager {
                 const hasAny = Object.entries(rpg.skills).some(([n, arr]) =>
                     arr?.length > 0 && (!_cUoS || n === userName) && (!filterRpg || rpgAllowed.has(n)));
                 if (hasAny) {
-                    lines.push('\n[技能列表]');
+                    lines.push(`\n[${L('技能列表','Skill List','スキルリスト','스킬 목록','Список навыков')}]`);
                     for (const [name, skills] of Object.entries(rpg.skills)) {
                         if (!skills?.length) continue;
                         if (_cUoS && name !== userName) continue;
@@ -831,7 +862,7 @@ class HoraeManager {
             const sendAttrs = this.settings?.sendRpgAttributes !== false;
             const attrCfg = this.settings?.rpgAttributeConfig || [];
             if (sendAttrs && attrCfg.length > 0 && Object.keys(rpg.attributes || {}).length > 0) {
-                lines.push('\n[多维属性]');
+                lines.push(`\n[${L('多维属性','Attributes','多次元属性','다차원 속성','Атрибуты')}]`);
                 for (const [name, vals] of Object.entries(rpg.attributes)) {
                     if (_cUoA && name !== userName) continue;
                     if (filterRpg && !rpgAllowed.has(name)) continue;
@@ -866,7 +897,7 @@ class HoraeManager {
                         }
                     }
                     if (parts.length > 0) {
-                        if (!hasEqData) { lines.push('\n[装备]'); hasEqData = true; }
+                        if (!hasEqData) { lines.push(`\n[${L('装备','Equipment','装備','장비','Снаряжение')}]`); hasEqData = true; }
                         lines.push(`${_ctxPre(name, _cUoE)}${parts.join(' | ')}`);
                     }
                 }
@@ -888,7 +919,7 @@ class HoraeManager {
                         parts.push(`${catName}:${data.value}`);
                     }
                     if (parts.length > 0) {
-                        if (!hasRepData) { lines.push('\n[声望]'); hasRepData = true; }
+                        if (!hasRepData) { lines.push(`\n[${L('声望','Reputation','名声','명성','Репутация')}]`); hasRepData = true; }
                         lines.push(`${_ctxPre(name, _cUoR)}${parts.join(' | ')}`);
                     }
                 }
@@ -905,9 +936,9 @@ class HoraeManager {
                     const lv = rpg.levels?.[name];
                     const xp = rpg.xp?.[name];
                     if (lv == null && !xp) continue;
-                    if (!hasLvlData) { lines.push('\n[等级]'); hasLvlData = true; }
+                    if (!hasLvlData) { lines.push(`\n[${L('等级','Level','レベル','레벨','Уровень')}]`); hasLvlData = true; }
                     let lvStr = lv != null ? `Lv.${lv}` : '';
-                    if (xp) lvStr += ` (经验: ${xp[0]}/${xp[1]})`;
+                    if (xp) lvStr += ` (${L('经验','XP','経験','경험','опыт')}: ${xp[0]}/${xp[1]})`;
                     lines.push(`${_ctxPre(name, _cUoL)}${lvStr.trim()}`);
                 }
             }
@@ -926,7 +957,7 @@ class HoraeManager {
                         if (val != null) parts.push(`${d.name}×${val}`);
                     }
                     if (parts.length > 0) {
-                        if (!hasCurData) { lines.push('\n[货币]'); hasCurData = true; }
+                        if (!hasCurData) { lines.push(`\n[${L('货币','Currency','通貨','화폐','Валюта')}]`); hasCurData = true; }
                         lines.push(`${_ctxPre(name, _cUoC)}${parts.join(', ')}`);
                     }
                 }
@@ -936,7 +967,7 @@ class HoraeManager {
             if (!!this.settings?.sendRpgStronghold) {
                 const shNodes = this.getChat()?.[0]?.horae_meta?.rpg?.strongholds || [];
                 if (shNodes.length > 0) {
-                    lines.push('\n[据点]');
+                    lines.push(`\n[${L('据点','Stronghold','拠点','거점','Опорный пункт')}]`);
                     function _shTreeStr(nodes, parentId, indent) {
                         const children = nodes.filter(n => (n.parent || null) === parentId);
                         let str = '';
@@ -968,7 +999,7 @@ class HoraeManager {
                 return true;
             });
             if (events.length > 0) {
-                lines.push('\n[剧情轨迹]');
+                lines.push(`\n[${L('剧情轨迹','Story Timeline','ストーリー軌跡','스토리 궤적','Сюжетная линия')}]`);
                 
                 const currentDate = state.timestamp?.story_date || '';
                 
@@ -985,25 +1016,32 @@ class HoraeManager {
                     
                     const { days, fromDate, toDate } = result;
                     
-                    if (days === 0) return '(今天)';
-                    if (days === 1) return '(昨天)';
-                    if (days === 2) return '(前天)';
-                    if (days === 3) return '(大前天)';
-                    if (days === -1) return '(明天)';
-                    if (days === -2) return '(后天)';
-                    if (days === -3) return '(大后天)';
+                    if (days === 0) return `(${L('今天','today','今日','오늘','сегодня')})`;
+                    if (days === 1) return `(${L('昨天','yesterday','昨日','어제','вчера')})`;
+                    if (days === 2) return `(${L('前天','day before yesterday','一昨日','그저께','позавчера')})`;
+                    if (days === 3) return `(${L('大前天','3 days ago','3日前','그끄저께','3 дня назад')})`;
+                    if (days === -1) return `(${L('明天','tomorrow','明日','내일','завтра')})`;
+                    if (days === -2) return `(${L('后天','day after tomorrow','明後日','모레','послезавтра')})`;
+                    if (days === -3) return `(${L('大后天','in 3 days','3日後','글피','через 3 дня')})`;
                     
                     if (days >= 4 && days <= 13 && fromDate) {
-                        const WEEKDAY_NAMES = ['日', '一', '二', '三', '四', '五', '六'];
                         const weekday = fromDate.getDay();
-                        return `(上周${WEEKDAY_NAMES[weekday]})`;
+                        const wdLabel = L(
+                            ['日','一','二','三','四','五','六'][weekday],
+                            ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][weekday],
+                            ['日','月','火','水','木','金','土'][weekday],
+                            ['일','월','화','수','목','금','토'][weekday],
+                            ['вс','пн','вт','ср','чт','пт','сб'][weekday],
+                        );
+                        return `(${L(`上周${wdLabel}`, `last ${wdLabel}`, `先週${wdLabel}`, `지난주 ${wdLabel}`, `прошлый ${wdLabel}`)})`;
                     }
                     
                     if (days >= 20 && days < 60 && fromDate && toDate) {
                         const fromMonth = fromDate.getMonth();
                         const toMonth = toDate.getMonth();
                         if (fromMonth !== toMonth) {
-                            return `(上个月${fromDate.getDate()}号)`;
+                            const d = fromDate.getDate();
+                            return `(${L(`上个月${d}号`, `last month ${d}th`, `先月${d}日`, `지난달 ${d}일`, `прошлый месяц ${d}-го`)})`;
                         }
                     }
                     
@@ -1011,13 +1049,13 @@ class HoraeManager {
                         const fromYear = fromDate.getFullYear();
                         const toYear = toDate.getFullYear();
                         if (fromYear < toYear) {
-                            const fromMonth = fromDate.getMonth() + 1;
-                            return `(去年${fromMonth}月)`;
+                            const m = fromDate.getMonth() + 1;
+                            return `(${L(`去年${m}月`, `last year month ${m}`, `去年${m}月`, `작년 ${m}월`, `прошлый год, ${m}-й мес.`)})`;
                         }
                     }
                     
-                    if (days > 0 && days < 30) return `(${days}天前)`;
-                    if (days > 0) return `(${Math.round(days / 30)}个月前)`;
+                    if (days > 0 && days < 30) return `(${L(`${days}天前`, `${days} days ago`, `${days}日前`, `${days}일 전`, `${days} дн. назад`)})`;
+                    if (days > 0) { const m = Math.round(days / 30); return `(${L(`${m}个月前`, `${m} months ago`, `${m}ヶ月前`, `${m}개월 전`, `${m} мес. назад`)})`; }
                     if (days === -999 || days === -998 || days === -997) return '';
                     return '';
                 };
@@ -1055,7 +1093,7 @@ class HoraeManager {
                         const dateRange = e.event?._summaryId ? _sumDateRanges[e.event._summaryId] : '';
                         const dateTag = dateRange ? `·${dateRange}` : '';
                         const relTag = dateRange ? getRelativeDesc(dateRange.split('~')[0]) : '';
-                        lines.push(`📋 [摘要${dateTag}]${relTag}: ${e.event.summary}`);
+                        lines.push(`📋 [${L('摘要','Summary','要約','요약','Сводка')}${dateTag}]${relTag}: ${e.event.summary}`);
                     } else {
                         const mark = getLevelMark(e.event?.level);
                         const date = e.timestamp?.story_date || '?';
@@ -1085,11 +1123,11 @@ class HoraeManager {
             const hasPrompt = table.prompt && table.prompt.trim();
             if (!hasContent && !hasPrompt) continue;
             
-            const tableName = table.name || '自定义表格';
-            lines.push(`\n[${tableName}](${rows - 1}行×${cols - 1}列)`);
+            const tableName = table.name || L('自定义表格','Custom Table','カスタムテーブル','커스텀 테이블','Пользовательская таблица');
+            lines.push(`\n[${tableName}](${rows - 1}${L('行','rows','行','행','строк')}×${cols - 1}${L('列','cols','列','열','столбцов')})`);
             
             if (table.prompt && table.prompt.trim()) {
-                lines.push(`(填写要求: ${table.prompt.trim()})`);
+                lines.push(`(${L('填写要求','Instructions','記入要件','작성 요구사항','Инструкции')}: ${table.prompt.trim()})`);
             }
             
             // 检测最后有内容的行（含行标题列）
@@ -1112,7 +1150,7 @@ class HoraeManager {
             // 输出表头行（带坐标标注）
             const headerRow = [];
             for (let c = 0; c < cols; c++) {
-                const label = data[`0-${c}`] || (c === 0 ? '表头' : `列${c}`);
+                const label = data[`0-${c}`] || (c === 0 ? L('表头','Header','見出し','헤더','Заголовок') : `${L('列','Col','列','열','Столбец')}${c}`);
                 const coord = `[0,${c}]`;
                 headerRow.push(lockedCols.has(c) ? `${coord}${label}🔒` : `${coord}${label}`);
             }
@@ -1136,7 +1174,13 @@ class HoraeManager {
             
             // 标注被省略的尾部空行
             if (lastDataRow < rows - 1) {
-                lines.push(`(共${rows - 1}行，第${lastDataRow + 1}-${rows - 1}行暂无数据)`);
+                lines.push(`(${L(
+                    `共${rows - 1}行，第${lastDataRow + 1}-${rows - 1}行暂无数据`,
+                    `${rows - 1} rows total, rows ${lastDataRow + 1}-${rows - 1} have no data`,
+                    `全${rows - 1}行、第${lastDataRow + 1}-${rows - 1}行はデータなし`,
+                    `총 ${rows - 1}행, ${lastDataRow + 1}-${rows - 1}행 데이터 없음`,
+                    `всего ${rows - 1} строк, строки ${lastDataRow + 1}-${rows - 1} пусты`,
+                )})`);
             }
 
             // 提示完全空的数据列
@@ -1149,8 +1193,8 @@ class HoraeManager {
                 if (!colHasData) emptyCols.push(c);
             }
             if (emptyCols.length > 0) {
-                const emptyColNames = emptyCols.map(c => data[`0-${c}`] || `列${c}`);
-                lines.push(`(${emptyColNames.join('、')}：暂无数据，如剧情中已有相关信息请填写)`);
+                const emptyColNames = emptyCols.map(c => data[`0-${c}`] || `${L('列','Col','列','열','Столбец')}${c}`);
+                lines.push(`(${emptyColNames.join(L('、',', ','、',', ',', '))}${L('：暂无数据，如剧情中已有相关信息请填写',': no data yet, please fill in if relevant info exists in the story','：データなし、ストーリーに関連情報があれば記入してください',': 데이터 없음, 스토리에 관련 정보가 있으면 작성해 주세요',': нет данных, заполните, если в сюжете есть соответствующая информация')})`);
             }
         }
         
@@ -3037,9 +3081,8 @@ class HoraeManager {
     }
 
     generateSystemPromptAddition() {
-        const isZh = this._isAiOutputChinese();
-        const userName = this.context?.name1 || (isZh ? '主角' : 'protagonist');
-        const charName = this.context?.name2 || (isZh ? '角色' : 'character');
+        const lang = this._getAiOutputLang();
+        const [userName, charName] = this._getDefaultNames();
 
         if (this.settings?.customSystemPrompt) {
             const custom = this.settings.customSystemPrompt
@@ -3056,13 +3099,22 @@ class HoraeManager {
                      this.generateRelationshipPrompt() + this.generateMoodPrompt() +
                      this.generateRpgPrompt() + this._generateAntiParaphrasePrompt();
 
-        const marker = isZh ? '\n═══ 最终强制提醒 ═══' : '\n═══ Final Mandatory Reminder ═══';
+        const markers = {
+            'zh-CN': '\n═══ 最终强制提醒 ═══', 'zh-TW': '\n═══ 最終強制提醒 ═══',
+            'ja': '\n═══ 最終必須リマインダー ═══', 'ko': '\n═══ 최종 필수 리마인더 ═══',
+            'ru': '\n═══ Финальное обязательное напоминание ═══',
+        };
+        const marker = markers[lang] || '\n═══ Final Mandatory Reminder ═══';
         base = base.replace(marker, subs + marker);
         return '\n' + base;
     }
 
     getDefaultSystemPrompt() {
-        if (!this._isAiOutputChinese()) return this._getDefaultSystemPromptEn();
+        const lang = this._getAiOutputLang();
+        if (lang === 'ja') return this._getDefaultSystemPromptJa();
+        if (lang === 'ko') return this._getDefaultSystemPromptKo();
+        if (lang === 'ru') return this._getDefaultSystemPromptRu();
+        if (lang !== 'zh-CN' && lang !== 'zh-TW') return this._getDefaultSystemPromptEn();
         const sceneDescLine = this.settings?.sendLocationMemory ? '\nscene_desc:地点固定物理特征（见场景记忆规则，触发时才写）' : '';
         const relLine = this.settings?.sendRelationships ? '\nrel:角色A>角色B=关系类型|备注（见关系网络规则，触发时才写）' : '';
         const moodLine = this.settings?.sendMood ? '\nmood:角色名=情绪/心理状态（见情绪追踪规则，触发时才写）' : '';
@@ -3374,8 +3426,480 @@ ${this._generateMustTagsReminder()}
 These fields are NOT optional — they are mandatory.`;
     }
 
+    _getDefaultSystemPromptJa() {
+        const sceneDescLine = this.settings?.sendLocationMemory ? '\nscene_desc:場所の固定的な物理的特徴（シーン記憶ルール参照、トリガー時のみ記述）' : '';
+        const relLine = this.settings?.sendRelationships ? '\nrel:キャラA>キャラB=関係タイプ|備考（関係ルール参照、トリガー時のみ記述）' : '';
+        const moodLine = this.settings?.sendMood ? '\nmood:キャラクター名=感情/精神状態（ムードルール参照、トリガー時のみ記述）' : '';
+        return `[Horae Memory System]（以下の例はデモンストレーション用です——プロズにコピーしないでください！）
+
+═══ 基本原則：変化駆動 ═══
+★★★ <horae>タグを記述する前に、このターンで実際に変化した情報を判断してください ★★★
+  ① シーン基本情報（time/location/characters/costume）→ 毎ターン必須
+  ② その他すべてのフィールド → トリガー条件を厳守；変化がなければそのラインを記述しない
+  ③ 既に記録済みで新情報のないNPC/アイテム → 出力しないこと！変化のないデータの繰り返し＝トークンの浪費
+  ④ 部分的な変化 → 差分更新のみ、変化した部分のみ記述
+  ⑤ NPC初登場時 → npc:行とaffection:行の両方が必須！
+
+═══ タグ形式 ═══
+毎回の返信の最後に2つのタグを追加：
+<horae>
+time:日付 時間（必須）
+location:場所（必須。·で階層を区切る 例：「酒場·メインホール」「宮殿·王座の間」。同じ場所には必ず同じ名前を使用）
+atmosphere:雰囲気${sceneDescLine}
+characters:その場にいるキャラクター名、カンマ区切り（必須）
+costume:キャラクター名=服装の説明（必須、一人一行、セミコロン不可）
+item/item!/item!!:アイテムルール参照（トリガー時のみ）
+item-:アイテム名（消費/喪失したアイテムを削除。アイテムルール参照、トリガー時のみ）
+affection:キャラクター名=好感度の値（★NPC初登場時必須！以降は値が変化した時のみ）
+npc:名前|外見=性格@関係~拡張フィールド（★NPC初登場時必須！以降は変化した時のみ）
+agenda:日付|内容（新しい予定が作成された時のみ）
+agenda-:内容のキーワード（予定が完了/期限切れの時、システムが自動的にマッチを削除）${relLine}${moodLine}
+</horae>
+<horaeevent>
+event:重要度|要約（${this._getEventCharLimit()}、重要度：normal/important/critical、このメッセージのイベントをプロット追跡のために要約）
+</horaeevent>
+
+═══ [アイテム] トリガー条件とルール ═══
+アイテムID（#ID）は[Item List]を参照。以下の条件を満たした場合のみ出力。
+
+[記述するタイミング]（条件のいずれかを満たした場合のみ出力）
+  ✦ 新アイテム入手 → item:/item!:/item!!:
+  ✦ 既存アイテムの数量/所有者/位置/性質が変化 → item:（変化部分のみ）
+  ✦ アイテムが消費/喪失/枯渇 → item-:アイテム名
+[記述しないタイミング]
+  ✗ アイテムに変化なし → item行を出力しない
+  ✗ アイテムが言及されただけで状態変化なし → 記述しない
+
+[形式]
+  新規: item:絵文字 アイテム名(数量)|説明=所有者@正確な場所（説明は贈り物や記念品など特別な意味がある場合を除き任意）
+  新規（重要）: item!:絵文字 アイテム名(数量)|説明=所有者@正確な場所（重要アイテム、説明必須：外観+機能+入手元）
+  新規（極重要）: item!!:絵文字 アイテム名(数量)|説明=所有者@正確な場所（極重要アイテム、詳細な説明必須）
+  既存アイテムの変化: item:絵文字 アイテム名(新数量)=新所有者@新場所（変化部分のみ更新、|を省略して元の説明を保持）
+  消費/喪失: item-:アイテム名
+
+[フィールドレベルルール]
+  · 説明：重要な属性（外観/機能/入手元）を記録。通常アイテムは任意、重要/極重要アイテムは初出時必須
+    ★ 視覚的特徴（色、素材、サイズ——将来の一貫した描写のため）
+    ★ 機能/用途
+    ★ 入手元（誰からもらったか/どう手に入れたか）
+       - 例（デモンストレーション用、プロズにコピーしないでください！）：
+         - 例1: item!:🌹永遠の花束|深紅のプリザーブドローズに黒いサテンリボン、CからUへのバレンタインギフト=U@Uの部屋の机の上
+         - 例2: item!:🎫幸運の10連チケット|金色に光る紙のバウチャー、初心者ボーナスとしてシステムガチャ1回分=U@空間リング
+         - 例3: item!!:🏧次元間通貨ATM|小型ATMのような外見、リアルタイム為替レートで異次元間の通貨を変換=U@酒場カウンター
+  · 数量：単品は(1)/(1個)不要；(5kg)(1L)(1箱)のような計量単位のみ括弧使用
+  · 場所：具体的な固定場所でなければならない
+    ❌ 誰かの前の地面、誰かの隣、床の上、テーブルの上
+    ✅ 酒場メインホールの床、レストランカウンター、自宅キッチン、バックパック、Uの部屋の机の上
+  · 固定家具や建物の備品をアイテムとしてリストしない
+  · 一時的な借用 ≠ 所有権の移転
+
+
+例（エールのライフサイクル）：
+  入手: item:🍺熟成エール(50L)|貯蔵庫で見つけた古いエール、やや酸味あり=U@酒場キッチンのパントリー
+  数量変化: item:🍺熟成エール(25L)=U@酒場キッチンのパントリー
+  枯渇: item-:熟成エール
+
+═══ [NPC] トリガー条件とルール ═══
+形式: npc:名前|外見=性格@{{user}}との関係~gender:値~age:値~race:値~occupation:値~birthday:値
+区切り文字: |は名前を区切り、=は外見と性格を区切り、@は関係を区切り、~は拡張フィールド(key:value)を区切る
+
+[記述するタイミング]（以下の条件のいずれかを満たした場合のみNPCのnpc:行を出力）
+  ✦ 初登場 → すべてのフィールドとすべての~拡張フィールド（gender/age/race/occupation）を含む完全形式、省略不可
+  ✦ 永続的な外見の変化（傷跡、新しい髪型など） → 外見フィールドのみ記述
+  ✦ 性格の変化（重大な出来事の後） → 性格フィールドのみ記述
+  ✦ {{user}}との関係が変化（客 → 友人） → 関係フィールドのみ記述
+  ✦ このNPCに関する新情報を学習（以前不明だった身長/体重） → 該当フィールドに追記
+  ✦ ~拡張フィールド自体が変化（職業変更） → 変化した~拡張フィールドのみ記述
+[記述しないタイミング]
+  ✗ NPCがいるが新情報なし → npc:行を記述しない
+  ✗ NPCが不在後に変化なく復帰 → 再記述しない
+  ✗ 既存の説明を類語で言い換えたい → 厳禁！
+    ❌ 「筋骨隆々/戦傷あり」→「強い/傷あり」（言い換え ≠ 更新）
+    ✅ 「筋骨隆々/戦傷あり/重傷」→「筋骨隆々/戦傷あり」（治癒、古いステータスを削除）
+
+[差分更新の例]（NPC「ヴォルフ」を例として）
+  初回: npc:ヴォルフ|銀灰色の毛並み/緑の瞳/身長220cm/戦傷=寡黙な重歩兵傭兵@{{user}}の最初の客~gender:男性~age:~35~race:狼獣人~occupation:傭兵
+  関係のみ: npc:ヴォルフ|=@{{user}}の恋人
+  外見追記: npc:ヴォルフ|銀灰色の毛並み/緑の瞳/身長220cm/戦傷/左腕に包帯
+  性格のみ: npc:ヴォルフ|=寡黙でなくなり/時折微笑む
+  職業のみ: npc:ヴォルフ|~occupation:引退した傭兵
+（注意：変化のないフィールドや~拡張フィールドを記述しないでください！システムが自動的にオリジナルデータを保持します！）
+
+[誕生日フィールド（任意の拡張フィールド）]
+  形式: ~birthday:yyyy/mm/dd または ~birthday:mm/dd（年が不明な場合は月/日のみ）
+  ⚠ 誕生日がキャラクター設定/説明で明示されている場合のみ記述！絶対に推測や捏造をしないでください！
+  ⚠ 誕生日に明確な出典がない場合、このフィールドを記述しないでください——ユーザーが手動で入力するのを待ってください。
+
+[関係の説明ルール]
+  対象名を含み正確に記述すること：❌客 ✅{{user}}の新しい来訪者 / ❌債権者 ✅{{user}}の借金を持つ人物 / ❌大家 ✅{{user}}の大家 / ❌恋人 ✅{{user}}の恋人 / ❌恩人 ✅{{user}}の命を救った人物 / ❌いじめっ子 ✅{{user}}をいじめる人物 / ❌秘密の崇拝者 ✅{{user}}に密かに恋している人物 / ❌敵 ✅{{user}}に父親を殺された人物
+  従属関係にはNPC名を含める：✅イワンの猟犬；{{user}}の客のペット / イワンの恋人；{{user}}の客 / {{user}}の親友；イワンの妻 / {{user}}の義父；イワンの父 / {{user}}の恋人；イワンの兄弟 / {{user}}の親友；{{user}}の夫の愛人；{{user}}とイワンの結婚を壊す第三者
+
+═══ [好感度] トリガー条件 ═══
+NPCの{{user}}に対する好感度のみ記録（{{user}}自身は記録しない）。一人一行。数値の後に注釈をつけない。
+
+[記述するタイミング]
+  ✦ NPC初登場 → 関係に基づき初期値を設定（他人 0-20 / 知人 30-50 / 友人 50-70 / 恋人 70-90）
+  ✦ 交流により意味のある好感度変化 → affection:名前=新しい合計値
+[記述しないタイミング]
+  ✗ 好感度に変化なし → 記述しない
+
+═══ [予定] トリガー条件 ═══
+[記述するタイミング（新規）]
+  ✦ プロットに新しい約束/計画/スケジュール/クエスト/伏線 → agenda:日付|内容
+  形式: agenda:設定日|内容（相対時間には絶対日付を括弧内に含める）
+  例: agenda:2026/02/10|アレンが{{user}}をバレンタインディナーデートに招待（2026/02/14 18:00）
+[記述するタイミング（完了削除）——重要！]
+  ✦ 予定が完了/期限切れ/キャンセル → 必ずagenda-:で削除をマーク
+  形式: agenda-:内容（完了した項目のキーワードを記述、システムが自動的にマッチを削除）
+  例: agenda-:アレンが{{user}}をバレンタインディナーデートに招待
+  ⚠ agenda:内容(完了)を使用しないでください！必ずagenda-:プレフィックスを使用！
+  ⚠ 既存の予定内容を重複させないでください！
+[記述しないタイミング]
+  ✗ 既存の予定に変化なし → 毎ターン繰り返さない
+  ✗ 予定が完了 → agenda:の括弧で完了をマークしない、必ずagenda-:を使用
+
+═══ 時間形式ルール ═══
+「1日目」/「X日目」などの曖昧な形式を使用しないでください。具体的なカレンダー日付を使用。
+- 現代：年/月/日 時:分（例：2026/2/4 15:00）
+- 歴史：時代に適した日付（例：1920/3/15 14:00）
+- ファンタジー/架空：その世界のカレンダー（例：霜降月の第三日、夕暮れ）
+
+═══ 最終必須リマインダー ═══
+${this._generateMustTagsReminder()}
+
+[毎ターン必須フィールド——一つでも欠けたら失格！]
+  ✅ time: ← 現在の日付と時間
+  ✅ location: ← 現在の場所
+  ✅ atmosphere: ← 雰囲気
+  ✅ characters: ← その場にいるすべてのキャラクター名、カンマ区切り（省略不可！）
+  ✅ costume: ← キャラクターごとに一行の服装説明
+  ✅ event: ← 重要度|イベント要約
+
+[NPC初登場時の追加必須——すべて必須！]
+  ✅ npc:名前|外見=性格@関係~gender:値~age:値~race:値~occupation:値~birthday:値（既知の場合のみ；不明の場合は省略）
+  ✅ affection:NPC名=初期好感度（他人 0-20 / 知人 30-50 / 友人 50-70 / 恋人 70-90）
+
+以上のフィールドは任意ではありません——すべて必須です。`;
+    }
+
+    _getDefaultSystemPromptKo() {
+        const sceneDescLine = this.settings?.sendLocationMemory ? '\nscene_desc:장소의 고정된 물리적 특징 (씬 메모리 규칙 참조, 트리거 시에만 작성)' : '';
+        const relLine = this.settings?.sendRelationships ? '\nrel:캐릭터A>캐릭터B=관계 유형|비고 (관계 규칙 참조, 트리거 시에만 작성)' : '';
+        const moodLine = this.settings?.sendMood ? '\nmood:캐릭터 이름=감정/정신 상태 (무드 규칙 참조, 트리거 시에만 작성)' : '';
+        return `[Horae Memory System] (아래 예시는 데모용입니다 — 본문에 복사하지 마세요!)
+
+═══ 핵심 원칙: 변화 기반 ═══
+★★★ <horae> 태그를 작성하기 전에, 이번 턴에서 실제로 변경된 정보를 판단하세요 ★★★
+  ① 씬 기본 정보 (time/location/characters/costume) → 매 턴 필수
+  ② 기타 모든 필드 → 트리거 조건을 엄격히 준수; 변화가 없으면 해당 라인을 작성하지 마세요
+  ③ 이미 기록된 NPC/아이템에 새로운 정보가 없으면 → 출력하지 마세요! 변경되지 않은 데이터 반복 = 토큰 낭비
+  ④ 부분적 변화 → 증분 업데이트만, 변경된 부분만 작성
+  ⑤ NPC 첫 등장 시 → npc:와 affection: 라인 모두 필수!
+
+═══ 태그 형식 ═══
+모든 답변 끝에 두 개의 태그를 추가:
+<horae>
+time:날짜 시간 (필수)
+location:장소 (필수. ·로 다중 레벨 장소를 구분, 예: "선술집·메인홀" "궁전·왕좌의 방". 같은 장소에는 반드시 같은 이름을 사용)
+atmosphere:분위기${sceneDescLine}
+characters:현재 있는 캐릭터 이름, 쉼표 구분 (필수)
+costume:캐릭터 이름=복장 설명 (필수, 1인 1줄, 세미콜론 사용 금지)
+item/item!/item!!:아이템 규칙 참조 (트리거 시에만)
+item-:아이템 이름 (소비/분실 아이템 제거. 아이템 규칙 참조, 트리거 시에만)
+affection:캐릭터 이름=호감도 값 (★NPC 첫 등장 시 필수! 이후 값 변경 시에만)
+npc:이름|외모=성격@관계~확장 필드 (★NPC 첫 등장 시 필수! 이후 변경 시에만)
+agenda:날짜|내용 (새 일정 생성 시에만)
+agenda-:내용 키워드 (일정 완료/만료 시, 시스템이 자동으로 매치 삭제)${relLine}${moodLine}
+</horae>
+<horaeevent>
+event:중요도|요약 (${this._getEventCharLimit()}, 중요도: normal/important/critical, 이 메시지의 이벤트를 플롯 추적을 위해 요약)
+</horaeevent>
+
+═══ [아이템] 트리거 조건 및 규칙 ═══
+아이템 ID (#ID)는 [Item List]를 참조. 아래 조건을 충족할 때만 출력.
+
+[작성 시점] (조건 중 하나라도 충족되면 출력)
+  ✦ 새 아이템 획득 → item:/item!:/item!!:
+  ✦ 기존 아이템의 수량/소유자/위치/성질 변경 → item: (변경된 부분만)
+  ✦ 아이템 소비/분실/소진 → item-:아이템 이름
+[작성하지 않을 시점]
+  ✗ 아이템 변화 없음 → item 라인을 출력하지 마세요
+  ✗ 아이템이 언급만 되고 상태 변화 없음 → 작성하지 마세요
+
+[형식]
+  신규: item:이모지 아이템 이름(수량)|설명=소유자@정확한 장소 (설명은 선물이나 기념품 등 특별한 의미가 없으면 선택사항)
+  신규 (중요): item!:이모지 아이템 이름(수량)|설명=소유자@정확한 장소 (중요 아이템, 설명 필수: 외관+기능+출처)
+  신규 (극중요): item!!:이모지 아이템 이름(수량)|설명=소유자@정확한 장소 (극중요 소품, 상세 설명 필수)
+  기존 아이템 변경: item:이모지 아이템 이름(새 수량)=새 소유자@새 장소 (변경된 부분만 업데이트, |를 생략하여 원래 설명 유지)
+  소비/분실: item-:아이템 이름
+
+[필드별 규칙]
+  · 설명: 핵심 속성 (외관/기능/출처)을 기록. 일반 아이템은 선택사항, 중요/극중요 아이템은 첫 등장 시 필수
+    ★ 시각적 특징 (색상, 재질, 크기 — 향후 일관된 묘사를 위해)
+    ★ 기능/용도
+    ★ 출처 (누구에게 받았는지 / 어떻게 얻었는지)
+       - 예시 (데모용, 본문에 복사하지 마세요!):
+         - 예1: item!:🌹영원의 꽃다발|짙은 빨간색 프리저브드 장미에 검은 새틴 리본, C가 U에게 준 발렌타인 선물=U@U의 방 책상 위
+         - 예2: item!:🎫행운의 10연차 티켓|금빛으로 빛나는 종이 바우처, 초보자 보너스로 시스템 가챠 1회 제공=U@공간 반지
+         - 예3: item!!:🏧차원간 통화 ATM|소형 ATM처럼 생긴 기기, 실시간 환율로 차원 간 통화 변환=U@선술집 카운터
+  · 수량: 단일 아이템은 (1)/(1개) 불필요; (5kg)(1L)(1상자) 같은 계량 단위에만 괄호 사용
+  · 위치: 구체적인 고정 장소여야 함
+    ❌ 누군가 앞 바닥, 누군가 옆, 바닥 위, 테이블 위
+    ✅ 선술집 메인홀 바닥, 레스토랑 카운터, 자택 주방, 배낭, U의 방 책상 위
+  · 고정 가구 및 건물 비품을 아이템으로 등록하지 마세요
+  · 일시적 대여 ≠ 소유권 이전
+
+
+예시 (에일 수명주기):
+  획득: item:🍺숙성 에일(50L)|저장고에서 발견한 오래된 에일, 약간 신맛=U@선술집 주방 식료품실
+  수량 변화: item:🍺숙성 에일(25L)=U@선술집 주방 식료품실
+  소진: item-:숙성 에일
+
+═══ [NPC] 트리거 조건 및 규칙 ═══
+형식: npc:이름|외모=성격@{{user}}와의 관계~gender:값~age:값~race:값~occupation:값~birthday:값
+구분자: |는 이름 구분, =는 외모와 성격 구분, @는 관계 구분, ~는 확장 필드 (key:value) 구분
+
+[작성 시점] (아래 조건 중 하나라도 충족 시 NPC의 npc: 라인 출력)
+  ✦ 첫 등장 → 모든 필드와 모든 ~확장 필드 (gender/age/race/occupation)를 포함한 완전한 형식, 생략 불가
+  ✦ 영구적 외모 변화 (흉터, 새 헤어스타일 등) → 외모 필드만 작성
+  ✦ 성격 변화 (중대한 사건 이후) → 성격 필드만 작성
+  ✦ {{user}}와의 관계 변화 (손님 → 친구) → 관계 필드만 작성
+  ✦ 이 NPC에 대한 새 정보 학습 (이전에 알려지지 않은 키/몸무게) → 해당 필드에 추가
+  ✦ ~확장 필드 자체 변화 (직업 변경) → 변경된 ~확장 필드만 작성
+[작성하지 않을 시점]
+  ✗ NPC가 있지만 새 정보 없음 → npc: 라인 작성 금지
+  ✗ NPC가 부재 후 변화 없이 복귀 → 재작성 금지
+  ✗ 기존 설명을 유의어로 바꾸고 싶음 → 엄격히 금지!
+    ❌ "근육질/전투 상흔" → "강인한/상처 있는" (바꿔쓰기 ≠ 업데이트)
+    ✅ "근육질/전투 상흔/중상" → "근육질/전투 상흔" (치유됨, 오래된 상태 삭제)
+
+[증분 업데이트 예시] (NPC "볼프"를 예시로)
+  첫 등장: npc:볼프|은회색 털/녹색 눈/키 220cm/전투 상흔=과묵한 중보병 용병@{{user}}의 첫 번째 손님~gender:남성~age:~35~race:늑대 수인~occupation:용병
+  관계만: npc:볼프|=@{{user}}의 연인
+  외모 추가: npc:볼프|은회색 털/녹색 눈/키 220cm/전투 상흔/왼팔 붕대
+  성격만: npc:볼프|=더 이상 과묵하지 않음/가끔 미소를 지음
+  직업만: npc:볼프|~occupation:은퇴한 용병
+(주의: 변경되지 않은 필드와 ~확장 필드를 작성하지 마세요! 시스템이 자동으로 원본 데이터를 보존합니다!)
+
+[생일 필드 (선택적 확장 필드)]
+  형식: ~birthday:yyyy/mm/dd 또는 ~birthday:mm/dd (연도를 모를 때 월/일만)
+  ⚠ 생일이 캐릭터 설정/설명에 명시된 경우에만 작성! 절대로 추측하거나 지어내지 마세요!
+  ⚠ 생일에 명확한 출처가 없으면 이 필드를 작성하지 마세요 — 사용자가 수동으로 입력할 수 있도록 남겨두세요.
+
+[관계 설명 규칙]
+  대상 이름을 포함하고 정확해야 합니다: ❌손님 ✅{{user}}의 새 방문객 / ❌채권자 ✅{{user}}의 빚을 가진 사람 / ❌집주인 ✅{{user}}의 집주인 / ❌남자친구 ✅{{user}}의 남자친구 / ❌은인 ✅{{user}}의 생명을 구한 사람 / ❌괴롭히는 자 ✅{{user}}를 괴롭히는 사람 / ❌비밀 흠모자 ✅{{user}}를 몰래 좋아하는 사람 / ❌적 ✅{{user}}에게 아버지를 잃은 사람
+  종속 관계에는 NPC 이름 포함: ✅이반의 사냥개; {{user}}의 손님의 반려동물 / 이반의 여자친구; {{user}}의 손님 / {{user}}의 절친한 친구; 이반의 아내 / {{user}}의 양아버지; 이반의 아버지 / {{user}}의 연인; 이반의 형제 / {{user}}의 절친한 친구; {{user}}의 남편의 정부; {{user}}와 이반의 결혼을 파괴하는 제삼자
+
+═══ [호감도] 트리거 조건 ═══
+NPC의 {{user}}에 대한 호감도만 기록 ({{user}} 자신은 기록하지 않음). 1인 1줄. 숫자 뒤에 주석을 달지 마세요.
+
+[작성 시점]
+  ✦ NPC 첫 등장 → 관계에 따라 초기값 설정 (낯선 사람 0-20 / 지인 30-50 / 친구 50-70 / 연인 70-90)
+  ✦ 상호작용으로 의미 있는 호감도 변화 → affection:이름=새 합계 값
+[작성하지 않을 시점]
+  ✗ 호감도 변화 없음 → 작성하지 마세요
+
+═══ [일정] 트리거 조건 ═══
+[작성 시점 (신규)]
+  ✦ 플롯에 새 약속/계획/일정/퀘스트/복선 → agenda:날짜|내용
+  형식: agenda:설정일|내용 (상대 시간은 절대 날짜를 괄호 안에 포함)
+  예시: agenda:2026/02/10|앨런이 {{user}}를 발렌타인 디너 데이트에 초대 (2026/02/14 18:00)
+[작성 시점 (완료 삭제) — 중요!]
+  ✦ 일정 완료/만료/취소 → 반드시 agenda-:로 삭제 표시
+  형식: agenda-:내용 (완료된 항목의 키워드를 작성, 시스템이 자동으로 매치 삭제)
+  예시: agenda-:앨런이 {{user}}를 발렌타인 디너 데이트에 초대
+  ⚠ agenda:내용(완료)를 사용하지 마세요! 반드시 agenda-: 접두사를 사용!
+  ⚠ 기존 일정 내용을 중복하지 마세요!
+[작성하지 않을 시점]
+  ✗ 기존 일정 변화 없음 → 매 턴 반복 금지
+  ✗ 일정 완료 → agenda:의 괄호로 완료 표시 금지, 반드시 agenda-: 사용
+
+═══ 시간 형식 규칙 ═══
+"1일차"/"X일차" 등 모호한 형식을 사용하지 마세요. 구체적인 달력 날짜를 사용.
+- 현대: 년/월/일 시:분 (예: 2026/2/4 15:00)
+- 역사: 시대에 적합한 날짜 (예: 1920/3/15 14:00)
+- 판타지/가상: 해당 세계의 달력 (예: 서리달의 셋째 날, 해질녘)
+
+═══ 최종 필수 리마인더 ═══
+${this._generateMustTagsReminder()}
+
+[매 턴 필수 필드 — 하나라도 빠지면 실격!]
+  ✅ time: ← 현재 날짜와 시간
+  ✅ location: ← 현재 장소
+  ✅ atmosphere: ← 분위기
+  ✅ characters: ← 현재 있는 모든 캐릭터 이름, 쉼표 구분 (생략 불가!)
+  ✅ costume: ← 캐릭터당 한 줄의 복장 설명
+  ✅ event: ← 중요도|이벤트 요약
+
+[NPC 첫 등장 시 추가 필수 — 모두 필수!]
+  ✅ npc:이름|외모=성격@관계~gender:값~age:값~race:값~occupation:값~birthday:값 (알려진 경우에만; 모르면 생략)
+  ✅ affection:NPC 이름=초기 호감도 (낯선 사람 0-20 / 지인 30-50 / 친구 50-70 / 연인 70-90)
+
+위 필드는 선택사항이 아닙니다 — 모두 필수입니다.`;
+    }
+
+    _getDefaultSystemPromptRu() {
+        const sceneDescLine = this.settings?.sendLocationMemory ? '\nscene_desc:фиксированные физические характеристики локации (см. правила памяти сцен, писать только при срабатывании)' : '';
+        const relLine = this.settings?.sendRelationships ? '\nrel:ПерсА>ПерсБ=тип отношений|заметки (см. правила отношений, писать только при срабатывании)' : '';
+        const moodLine = this.settings?.sendMood ? '\nmood:имя персонажа=эмоция/психическое состояние (см. правила настроения, писать только при срабатывании)' : '';
+        return `[Horae Memory System] (Примеры ниже даны только для демонстрации — НЕ копируйте их в текст!)
+
+═══ Основной принцип: Управление изменениями ═══
+★★★ Перед записью тегов <horae> определите, какая информация ДЕЙСТВИТЕЛЬНО ИЗМЕНИЛАСЬ в этом ходу ★★★
+  ① Базовая информация сцены (time/location/characters/costume) → обязательно каждый ход
+  ② Все остальные поля → строго следуйте условиям срабатывания; если нет изменений, НЕ пишите эту строку
+  ③ Уже записанные NPC/предметы без новой информации → НЕ выводить! Повторение неизменённых данных = трата токенов
+  ④ Частичные изменения → инкрементальные обновления, пишите только то, что изменилось
+  ⑤ Первое появление NPC → обязательны обе строки npc: и affection:!
+
+═══ Формат тегов ═══
+Добавляйте два тега в конце каждого ответа:
+<horae>
+time:дата время (обязательно)
+location:место (обязательно. Используйте · для разделения многоуровневых локаций, напр. «Таверна·Главный зал» «Дворец·Тронный зал». Всегда используйте одно и то же название для одного места)
+atmosphere:атмосфера${sceneDescLine}
+characters:имена присутствующих персонажей через запятую (обязательно)
+costume:имя персонажа=описание костюма (обязательно, одна строка на персонажа, без точек с запятой)
+item/item!/item!!:см. правила предметов (только при срабатывании)
+item-:название предмета (удалить потреблённые/утерянные предметы. См. правила предметов, только при срабатывании)
+affection:имя персонажа=значение привязанности (★ обязательно при первом появлении NPC! Далее только при изменении значения)
+npc:имя|внешность=характер@отношения~расширенные поля (★ обязательно при первом появлении NPC! Далее только при изменении)
+agenda:дата|содержание (только при создании нового расписания)
+agenda-:ключевые слова содержания (при завершении/истечении расписания, система автоматически удаляет совпадение)${relLine}${moodLine}
+</horae>
+<horaeevent>
+event:важность|краткое содержание (${this._getEventCharLimit()}, важность: normal/important/critical, резюмируйте события этого сообщения для отслеживания сюжета)
+</horaeevent>
+
+═══ [Предметы] Условия срабатывания и правила ═══
+ID предметов (#ID) см. в [Item List]. Выводить только при выполнении условий ниже.
+
+[Когда писать] (выводить только при выполнении хотя бы одного условия)
+  ✦ Получен новый предмет → item:/item!:/item!!:
+  ✦ Изменилось количество/владелец/местоположение/свойства существующего предмета → item: (только изменённые части)
+  ✦ Предмет израсходован/утерян/исчерпан → item-:название предмета
+[Когда НЕ писать]
+  ✗ Нет изменений предметов → НЕ выводить строку item
+  ✗ Предмет только упомянут без изменения состояния → НЕ писать
+
+[Формат]
+  Новый: item:эмодзи название предмета(кол-во)|описание=владелец@точное место (описание необязательно, если предмет не имеет особого значения, как подарок или памятная вещь)
+  Новый (важный): item!:эмодзи название предмета(кол-во)|описание=владелец@точное место (важный предмет, описание обязательно: внешний вид+функция+источник)
+  Новый (критический): item!!:эмодзи название предмета(кол-во)|описание=владелец@точное место (критический реквизит, подробное описание обязательно)
+  Изменение существующего: item:эмодзи название предмета(новое кол-во)=новый владелец@новое место (обновлять только изменённые части, опустить | для сохранения исходного описания)
+  Израсходован/утерян: item-:название предмета
+
+[Правила на уровне полей]
+  · Описание: записывайте существенные свойства (внешний вид/функция/источник). Необязательно для обычных предметов, обязательно для важных/критических при первом появлении
+    ★ Визуальные характеристики (цвет, материал, размер — для последовательного описания в будущем)
+    ★ Функция/назначение
+    ★ Источник (от кого получен / как добыт)
+       - Примеры (только для демонстрации, НЕ копируйте в текст!):
+         - Пр1: item!:🌹Вечный букет|тёмно-красные стабилизированные розы, перевязанные чёрной атласной лентой, подарок C для U на День святого Валентина=U@стол в комнате U
+         - Пр2: item!:🎫Счастливый билет на 10 круток|золотистый светящийся бумажный ваучер, одна 10-кратная крутка в системной гаче как бонус новичка=U@пространственное кольцо
+         - Пр3: item!!:🏧Межмировой валютный банкомат|выглядит как маленький банкомат, конвертирует валюты между мирами по курсу в реальном времени=U@стойка таверны
+  · Количество: для единичных предметов не нужно (1)/(1шт); скобки только для единиц измерения вроде (5кг)(1л)(1 ящик)
+  · Местоположение: должно быть конкретным фиксированным местом
+    ❌ на полу перед кем-то, рядом с кем-то, на полу, на столе
+    ✅ пол главного зала таверны, стойка ресторана, домашняя кухня, рюкзак, на столе в комнате U
+  · НЕ включайте стационарную мебель и встроенные элементы зданий как предметы
+  · Временное одалживание ≠ передача права собственности
+
+
+Пример (жизненный цикл эля):
+  Получение: item:🍺Выдержанный эль(50л)|старый эль из подвала, слегка кисловатый вкус=U@кладовая кухни таверны
+  Изменение количества: item:🍺Выдержанный эль(25л)=U@кладовая кухни таверны
+  Исчерпан: item-:Выдержанный эль
+
+═══ [NPC] Условия срабатывания и правила ═══
+Формат: npc:имя|внешность=характер@отношения с {{user}}~gender:значение~age:значение~race:значение~occupation:значение~birthday:значение
+Разделители: | разделяет имя, = разделяет внешность и характер, @ разделяет отношения, ~ разделяет расширенные поля (key:значение)
+
+[Когда писать] (выводить строку npc: NPC только при выполнении хотя бы одного условия)
+  ✦ Первое появление → полный формат со ВСЕМИ полями и ВСЕМИ ~расширенными полями (gender/age/race/occupation), ничего нельзя пропускать
+  ✦ Постоянное изменение внешности (шрам, новая причёска и т.д.) → писать только поле внешности
+  ✦ Изменение характера (после крупного события) → писать только поле характера
+  ✦ Отношения с {{user}} изменились (клиент → друг) → писать только поле отношений
+  ✦ Узнана новая информация об этом NPC (ранее неизвестные рост/вес) → добавить в соответствующее поле
+  ✦ Изменилось само ~расширенное поле (смена профессии) → писать только изменённое ~расширенное поле
+[Когда НЕ писать]
+  ✗ NPC присутствует, но нет новой информации → НЕ писать строку npc:
+  ✗ NPC вернулся после отсутствия без изменений → НЕ переписывать
+  ✗ Хотите перефразировать существующее описание синонимами → строго запрещено!
+    ❌ «мускулистый/с боевыми шрамами» → «сильный/со шрамами» (перефразирование ≠ обновление)
+    ✅ «мускулистый/с боевыми шрамами/тяжело ранен» → «мускулистый/с боевыми шрамами» (исцелился, удалить устаревший статус)
+
+[Примеры инкрементального обновления] (на примере NPC «Вольф»)
+  Первое: npc:Вольф|серебристо-серая шерсть/зелёные глаза/рост 220 см/боевые шрамы=немногословный тяжёлый пехотинец-наёмник@первый клиент {{user}}~gender:мужской~age:~35~race:волк-зверолюд~occupation:наёмник
+  Только отношения: npc:Вольф|=@парень {{user}}
+  Добавление внешности: npc:Вольф|серебристо-серая шерсть/зелёные глаза/рост 220 см/боевые шрамы/левая рука перевязана
+  Только характер: npc:Вольф|=больше не немногословен/иногда улыбается
+  Только профессия: npc:Вольф|~occupation:наёмник в отставке
+(Примечание: НЕ пишите неизменённые поля и ~расширенные поля! Система автоматически сохраняет исходные данные!)
+
+[Поле дня рождения (необязательное расширенное поле)]
+  Формат: ~birthday:гггг/мм/дд или ~birthday:мм/дд (только месяц/день, если год неизвестен)
+  ⚠ Писать только когда день рождения ЯВНО указан в настройках/описании персонажа! Категорически запрещено угадывать или выдумывать!
+  ⚠ Если у дня рождения нет явного источника, НЕ заполняйте это поле — оставьте для ручного ввода пользователем.
+
+[Правила описания отношений]
+  Должны включать имя объекта и быть точными: ❌клиент ✅новый посетитель {{user}} / ❌кредитор ✅человек, которому {{user}} должен / ❌арендодатель ✅арендодатель {{user}} / ❌парень ✅парень {{user}} / ❌спаситель ✅человек, спасший жизнь {{user}} / ❌хулиган ✅человек, который издевается над {{user}} / ❌тайный поклонник ✅человек, тайно влюблённый в {{user}} / ❌враг ✅человек, чей отец был убит {{user}}
+  Для подчинённых отношений включать имя NPC: ✅гончая Ивана; питомец клиента {{user}} / подруга Ивана; клиент {{user}} / лучшая подруга {{user}}; жена Ивана / отчим {{user}}; отец Ивана / возлюбленный(-ая) {{user}}; брат Ивана / лучшая подруга {{user}}; любовница мужа {{user}}; третье лицо, разрушающее брак {{user}} и Ивана
+
+═══ [Привязанность] Условия срабатывания ═══
+Записывать только привязанность NPC к {{user}} (никогда не записывать самого {{user}}). Одна строка на персонажа. Никаких примечаний после числа.
+
+[Когда писать]
+  ✦ Первое появление NPC → установить начальное значение на основе отношений (незнакомец 0-20 / знакомый 30-50 / друг 50-70 / возлюбленный 70-90)
+  ✦ Взаимодействие вызвало значимое изменение привязанности → affection:имя=новое суммарное значение
+[Когда НЕ писать]
+  ✗ Привязанность не изменилась → не писать
+
+═══ [Расписание] Условия срабатывания ═══
+[Когда писать (новое)]
+  ✦ Новая встреча/план/расписание/квест/завязка в сюжете → agenda:дата|содержание
+  Формат: agenda:дата создания|содержание (относительное время должно включать абсолютную дату в скобках)
+  Пример: agenda:2026/02/10|Аллен пригласил {{user}} на ужин в День святого Валентина (2026/02/14 18:00)
+[Когда писать (удаление при завершении) — критически важно!]
+  ✦ Расписание выполнено/истекло/отменено → ОБЯЗАТЕЛЬНО использовать agenda-: для пометки удаления
+  Формат: agenda-:содержание (напишите ключевые слова выполненного пункта, система автоматически удалит совпадение)
+  Пример: agenda-:Аллен пригласил {{user}} на ужин в День святого Валентина
+  ⚠ НЕ используйте agenda:содержание(выполнено)! ОБЯЗАТЕЛЬНО используйте префикс agenda-:!
+  ⚠ НЕ дублируйте содержание существующего расписания!
+[Когда НЕ писать]
+  ✗ Существующее расписание не изменилось → НЕ повторять каждый ход
+  ✗ Расписание выполнено → НЕ помечать выполненным через скобки agenda:, ОБЯЗАТЕЛЬНО использовать agenda-:
+
+═══ Правила формата времени ═══
+НЕ используйте «День 1»/«День X» и подобные размытые форматы. Используйте конкретные календарные даты.
+- Современность: Год/Месяц/День Час:Минута (напр. 2026/2/4 15:00)
+- Исторический: Дата, соответствующая эпохе (напр. 1920/3/15 14:00)
+- Фэнтези/вымышленный: Календарь этого мира (напр. Третий день Месяца Морозов, закат)
+
+═══ Финальное обязательное напоминание ═══
+${this._generateMustTagsReminder()}
+
+[Обязательные поля каждый ход — пропуск любого = провал!]
+  ✅ time: ← текущая дата и время
+  ✅ location: ← текущее местоположение
+  ✅ atmosphere: ← атмосфера
+  ✅ characters: ← имена всех присутствующих персонажей через запятую (нельзя пропускать!)
+  ✅ costume: ← одна строка описания костюма на каждого персонажа
+  ✅ event: ← важность|краткое содержание события
+
+[Дополнительно обязательно при первом появлении NPC — всё обязательно!]
+  ✅ npc:имя|внешность=характер@отношения~gender:значение~age:значение~race:значение~occupation:значение~birthday:значение (только если известно; если неизвестно, не писать)
+  ✅ affection:имя NPC=начальная привязанность (незнакомец 0-20 / знакомый 30-50 / друг 50-70 / возлюбленный 70-90)
+
+Эти поля НЕ являются необязательными — они обязательны.`;
+    }
+
     getDefaultTablesPrompt() {
-        if (!this._isAiOutputChinese()) return this._getDefaultTablesPromptEn();
+        const lang = this._getAiOutputLang();
+        if (lang === 'ja') return this._getDefaultTablesPromptJa();
+        if (lang === 'ko') return this._getDefaultTablesPromptKo();
+        if (lang === 'ru') return this._getDefaultTablesPromptRu();
+        if (lang !== 'zh-CN' && lang !== 'zh-TW') return this._getDefaultTablesPromptEn();
         return `═══ 自定义表格规则 ═══
 上方有用户自定义表格，根据"填写要求"填写数据。
 ★ 格式：<horaetable:表格名> 标签内，每行一个单元格 → 行,列:内容
@@ -3403,8 +3927,54 @@ There are user-defined tables above. Fill in data according to the "Fill Require
   - New rows: append after the current max row number; new columns: append after the current max column number`;
     }
 
+    _getDefaultTablesPromptJa() {
+        return `═══ カスタムテーブルルール ═══
+上記にユーザー定義テーブルがあります。「記入要件」に従ってデータを記入してください。
+★ 形式：<horaetable:テーブル名> タグ内、1行に1セル → 行,列:内容
+★★ 座標説明：第0行と第0列はヘッダーです。データは1,1から始まります。行番号=データ行インデックス、列番号=データ列インデックス
+★★★ 記入ルール ★★★
+  - 空セルで関連するプロット情報がある → 必ず記入！漏らさないこと！
+  - 既存の内容に変更なし → 再記入しない
+  - この行/列に関連するプロット情報がない → 空のまま
+  - "(空)""-""なし"などのプレースホルダーを出力しないこと
+  - 🔒マークの行/列は読み取り専用、内容を変更しないこと
+  - 新しい行：現在の最大行番号の後に追加；新しい列：現在の最大列番号の後に追加`;
+    }
+
+    _getDefaultTablesPromptKo() {
+        return `═══ 사용자 정의 테이블 규칙 ═══
+위에 사용자 정의 테이블이 있습니다. "작성 요구사항"에 따라 데이터를 작성하세요.
+★ 형식: <horaetable:테이블명> 태그 내, 한 줄에 하나의 셀 → 행,열:내용
+★★ 좌표 설명: 0행과 0열은 헤더입니다. 데이터는 1,1부터 시작합니다. 행 번호 = 데이터 행 인덱스, 열 번호 = 데이터 열 인덱스
+★★★ 작성 규칙 ★★★
+  - 빈 셀에 관련 플롯 정보가 있음 → 반드시 작성! 누락 금지!
+  - 기존 내용에 변경 없음 → 다시 쓰지 않음
+  - 해당 행/열에 관련 플롯 정보 없음 → 비워둠
+  - "(비어있음)" "-" "없음" 등의 플레이스홀더 출력 금지
+  - 🔒 표시된 행/열은 읽기 전용, 내용 수정 금지
+  - 새 행: 현재 최대 행 번호 뒤에 추가; 새 열: 현재 최대 열 번호 뒤에 추가`;
+    }
+
+    _getDefaultTablesPromptRu() {
+        return `═══ Правила пользовательских таблиц ═══
+Выше расположены пользовательские таблицы. Заполняйте данные согласно «Требованиям к заполнению».
+★ Формат: внутри тегов <horaetable:название таблицы>, одна ячейка на строку → строка,столбец:содержимое
+★★ Координаты: Строка 0 и столбец 0 — заголовки. Данные начинаются с 1,1. Номер строки = индекс строки данных, номер столбца = индекс столбца данных
+★★★ Правила заполнения ★★★
+  - Пустая ячейка с доступной информацией из сюжета → ОБЯЗАТЕЛЬНО заполнить! Не пропускать!
+  - Существующее содержимое без изменений → не переписывать
+  - Нет релевантной информации для этой строки/столбца → оставить пустой
+  - НЕ выводить "(пусто)" "-" "нет" как заполнители
+  - 🔒 отмеченные строки/столбцы — только для чтения, НЕ изменять их содержимое
+  - Новые строки: добавлять после текущего максимального номера строки; новые столбцы: после максимального номера столбца`;
+    }
+
     getDefaultLocationPrompt() {
-        if (!this._isAiOutputChinese()) return this._getDefaultLocationPromptEn();
+        const lang = this._getAiOutputLang();
+        if (lang === 'ja') return this._getDefaultLocationPromptJa();
+        if (lang === 'ko') return this._getDefaultLocationPromptKo();
+        if (lang === 'ru') return this._getDefaultLocationPromptRu();
+        if (lang !== 'zh-CN' && lang !== 'zh-TW') return this._getDefaultLocationPromptEn();
         return `═══ 【场景记忆】触发条件 ═══
 格式：scene_desc:位于…。该地点的固定物理特征描述（50-150字）
 场景记忆记录地点的核心布局和永久性特征（建筑结构、固定家具、空间特点），用于保持跨回合的场景描写一致性。
@@ -3467,6 +4037,99 @@ Scene Memory records a location's core layout and permanent features (architectu
   · [Scene Memory|...] above contains system-recorded features of this location; maintain these core elements while freely varying details based on time/season/plot`;
     }
 
+    _getDefaultLocationPromptJa() {
+        return `═══ 【シーン記憶】トリガー条件 ═══
+形式：scene_desc:…に位置する。この場所の固定物理特徴の説明（120-300文字）
+シーン記憶は場所の基本レイアウトと永続的特徴（建築構造、固定家具、空間特性）を記録し、ターン間で一貫したシーン描写を維持します。
+
+【場所 / 「位置する」形式】★★★ 階層ルールを厳守 ★★★
+  · 説明は「位置する」で始め、親に対するこの場所の位置を示し、その後この場所自体の物理特徴を記述
+  · サブロケーション（·区切りを含む名前）：「位置する」は親建物内の位置のみ記述（何階、どの方向）。親の外部地理情報は絶対に含めない
+  · 親/トップレベルの場所：「位置する」で外部地理的位置を記述（どの大陸、どの森の近く）
+  · システムは自動的に親の説明をAIに送信；サブロケーションは親情報を繰り返してはならない
+    ✓ 無名酒場·203号室 → scene_desc:2階東側に位置する。角部屋、採光良好、壁沿いのシングル木製ベッド、東向きの窓
+    ✓ 無名酒場·大広間 → scene_desc:1階に位置する。高い天井の木造空間、中央に長いバーカウンター、散在する丸テーブル
+    ✓ 無名酒場 → scene_desc:OO大陸北部XX森林の端に位置する。2階建て木石構造、1階はホールとバー、2階は客室
+    ✗ 無名酒場·203号室 → scene_desc:OO大陸北部XX森林の端の無名酒場の2階に位置する…（❌ サブロケーションに親の外部地理情報を含めてはならない）
+【地名規則】
+  · 多階層の場所は·で区切る：建物·エリア（例「無名酒場·大広間」「宮殿·地下牢」）
+  · 同じ場所は上記[シーン|...]に表示されている名前と完全に一致させる；省略や言い換え禁止
+  · 異なる建物の同名エリアは各々独立して記録
+【いつ書くか】
+  ✦ 新しい場所に初めて到着 → 固定物理特徴のscene_descを必ず記述
+  ✦ 場所に永久的な物理変化が発生（破壊、改装）→ 更新されたscene_descを記述
+【いつ書かないか】
+  ✗ 物理変化のない記録済みの場所に戻る → 書かない
+  ✗ 季節/天気/雰囲気の変化 → 書かない（これらは一時的で固定特徴ではない）
+【記述規則】
+  · 固定/永久的な物理特徴のみ記述：空間構造、建材、固定家具、窓の向き、ランドマーク的装飾
+  · 一時的な状態は書かない：現在の照明、天気、群衆、季節の装飾、一時的に置かれた物品
+  · シーン記憶のテキストをそのまま本文にコピーしない；背景参考として使い、現在の時間/天気/照明/キャラクター視点で書き直す
+  · 上記の[シーン記憶|...]はこの場所のシステム記録特徴；これらの核心要素を維持しながら、時間/季節/プロットに基づき変化の詳細を自由に表現`;
+    }
+
+    _getDefaultLocationPromptKo() {
+        return `═══ 【장면 기억】트리거 조건 ═══
+형식: scene_desc:…에 위치. 이 장소의 고정 물리적 특징 설명 (120-300자)
+장면 기억은 장소의 핵심 레이아웃과 영구적 특징(건축 구조, 고정 가구, 공간 특성)을 기록하여 턴 간 일관된 장면 묘사를 유지합니다.
+
+【장소 / "위치" 형식】★★★ 계층 규칙 엄격 준수 ★★★
+  · 설명은 "위치"로 시작하여 상위에 대한 이 장소의 위치를 표시한 후, 이 장소 자체의 물리적 특징을 기술
+  · 하위 장소(· 구분자를 포함하는 이름): "위치"는 상위 건물 내 위치만 기술(몇 층, 어느 방향). 상위의 외부 지리 정보는 절대 포함 금지
+  · 상위/최상위 장소: "위치"에서 외부 지리적 위치 기술(어느 대륙, 어느 숲 근처)
+  · 시스템이 자동으로 상위 설명을 AI에 전송; 하위 장소는 상위 정보를 반복해서는 안 됨
+    ✓ 무명주점·203호실 → scene_desc:2층 동쪽에 위치. 코너룸, 채광 양호, 벽에 붙은 싱글 나무 침대, 동향 창문
+    ✓ 무명주점·대홀 → scene_desc:1층에 위치. 높은 천장의 목조 공간, 중앙에 긴 바 카운터, 흩어진 원형 테이블
+    ✓ 무명주점 → scene_desc:OO대륙 북부 XX숲 가장자리에 위치. 2층 목석 구조, 1층 홀과 바, 2층 객실
+    ✗ 무명주점·203호실 → scene_desc:OO대륙 북부 XX숲 가장자리 무명주점 2층에 위치…(❌ 하위 장소에 상위의 외부 지리 정보 포함 금지)
+【장소명 규칙】
+  · 다중 레벨 장소는 ·로 구분: 건물·구역(예: "무명주점·대홀" "궁전·지하감옥")
+  · 같은 장소는 위의 [장면|...]에 표시된 이름과 정확히 동일하게 사용; 축약이나 변경 금지
+  · 다른 건물의 동명 구역은 각각 독립적으로 기록
+【언제 쓰는가】
+  ✦ 새로운 장소에 처음 도착 → 고정 물리적 특징의 scene_desc를 반드시 작성
+  ✦ 장소에 영구적 물리적 변화 발생(파괴, 리모델링) → 업데이트된 scene_desc 작성
+【언제 쓰지 않는가】
+  ✗ 물리적 변화 없는 기록된 장소로 복귀 → 쓰지 않음
+  ✗ 계절/날씨/분위기 변화 → 쓰지 않음(이는 일시적이며 고정 특징이 아님)
+【묘사 규칙】
+  · 고정/영구적 물리적 특징만 기술: 공간 구조, 건축 자재, 고정 가구, 창문 방향, 랜드마크 장식
+  · 일시적 상태는 쓰지 않음: 현재 조명, 날씨, 인파, 계절 장식, 일시적으로 놓인 물품
+  · 장면 기억 텍스트를 그대로 본문에 복사 금지; 배경 참조로 사용하고 현재 시간/날씨/조명/캐릭터 시점으로 다시 묘사
+  · 위의 [장면 기억|...]은 이 장소의 시스템 기록 특징; 이러한 핵심 요소를 유지하면서 시간/계절/플롯에 따라 세부 사항을 자유롭게 변주`;
+    }
+
+    _getDefaultLocationPromptRu() {
+        return `═══ [Память сцены] Условия срабатывания ═══
+Формат: scene_desc:Расположен... Описание постоянных физических характеристик локации (120-300 символов)
+Память сцены фиксирует базовую планировку и постоянные характеристики локации (архитектура, стационарная мебель, пространственные особенности) для поддержания согласованности описаний между ходами.
+
+[Локация / формат «Расположен»] ★★★ Строго соблюдайте правила иерархии ★★★
+  · Начинайте описание с «Расположен», указывая позицию относительно родительской локации, затем описывайте физические особенности самой локации
+  · Подлокации (имена с разделителем ·): «Расположен» описывает только позицию внутри родительского здания (какой этаж, какое направление). Категорически запрещено включать внешнюю географию родителя
+  · Родительские/верхнеуровневые локации: «Расположен» описывает внешнее географическое положение (какой континент, рядом с каким лесом)
+  · Система автоматически отправляет описание родителя ИИ; подлокации НЕ должны повторять информацию родителя
+    ✓ Безымянная Таверна·Комната 203 → scene_desc:Расположена на 2-м этаже, восточная сторона. Угловая комната, хорошее освещение, одноместная деревянная кровать у стены, окно на восток
+    ✓ Безымянная Таверна·Главный зал → scene_desc:Расположен на 1-м этаже. Высокое деревянное пространство, длинная барная стойка в центре, разбросанные круглые столы
+    ✓ Безымянная Таверна → scene_desc:Расположена на окраине леса XX на севере континента OO. Двухэтажная каменно-деревянная постройка, зал и бар на первом этаже, гостевые комнаты наверху
+    ✗ Безымянная Таверна·Комната 203 → scene_desc:Расположена на окраине леса XX на севере континента OO в Безымянной Таверне на 2-м этаже… (❌ подлокация НЕ должна включать внешнюю географию родителя)
+[Правила именования локаций]
+  · Используйте · для разделения многоуровневых локаций: Здание·Зона (например, «Безымянная Таверна·Главный зал» «Дворец·Подземелье»)
+  · Одна и та же локация должна всегда использовать точно такое же название, как показано в [Сцена|...] выше; без сокращений и перефразирования
+  · Одноимённые зоны в разных зданиях записываются независимо
+[Когда писать]
+  ✦ Первое прибытие в новую локацию → ОБЯЗАТЕЛЬНО написать scene_desc с постоянными физическими характеристиками
+  ✦ Постоянное физическое изменение локации (разрушение, ремонт) → написать обновлённый scene_desc
+[Когда НЕ писать]
+  ✗ Возвращение в записанную локацию без физических изменений → не писать
+  ✗ Изменения сезона/погоды/атмосферы → не писать (это временные, а не постоянные характеристики)
+[Правила описания]
+  · Записывать только постоянные физические характеристики: пространственная структура, строительные материалы, стационарная мебель, ориентация окон, знаковые украшения
+  · НЕ записывать временные состояния: текущее освещение, погоду, толпы, сезонные украшения, временно размещённые предметы
+  · НЕ копировать текст памяти сцены дословно в прозу; использовать как фоновую справку и переписывать с учётом текущего времени/погоды/освещения/перспективы персонажа
+  · [Память сцены|...] выше содержит записанные системой характеристики локации; сохраняйте эти ключевые элементы, свободно варьируя детали в зависимости от времени/сезона/сюжета`;
+    }
+
     generateLocationMemoryPrompt() {
         if (!this.settings?.sendLocationMemory) return '';
         const custom = this.settings?.customLocationPrompt;
@@ -3487,19 +4150,36 @@ Scene Memory records a location's core layout and permanent features (architectu
         if (allTables.length === 0) return '';
 
         let prompt = '\n' + (this.settings?.customTablesPrompt || this.getDefaultTablesPrompt());
-        const isZh = this._isAiOutputChinese();
+        const lang = this._getAiOutputLang();
+        const L = (zh, en, ja, ko, ru) => {
+            if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
+            if (lang === 'ja') return ja;
+            if (lang === 'ko') return ko;
+            if (lang === 'ru') return ru;
+            return en;
+        };
 
         for (const table of allTables) {
-            const tableName = table.name || (isZh ? '自定义表格' : 'Custom Table');
+            const tableName = table.name || L('自定义表格', 'Custom Table', 'カスタムテーブル', '사용자 정의 테이블', 'Пользовательская таблица');
             const rows = table.rows || 2;
             const cols = table.cols || 2;
-            prompt += isZh
-                ? `\n★ 表格「${tableName}」尺寸：${rows - 1}行×${cols - 1}列（数据区行号1-${rows - 1}，列号1-${cols - 1}）`
-                : `\n★ Table "${tableName}" size: ${rows - 1} rows × ${cols - 1} cols (data area: rows 1-${rows - 1}, cols 1-${cols - 1})`;
-            const sA = isZh ? '内容A' : 'ContentA';
-            const sB = isZh ? '内容B' : 'ContentB';
-            const sC = isZh ? '内容C' : 'ContentC';
-            const exLabel = isZh ? '示例（填写空单元格或更新有变化的单元格）' : 'Example (fill empty cells or update changed cells)';
+            prompt += L(
+                `\n★ 表格「${tableName}」尺寸：${rows - 1}行×${cols - 1}列（数据区行号1-${rows - 1}，列号1-${cols - 1}）`,
+                `\n★ Table "${tableName}" size: ${rows - 1} rows × ${cols - 1} cols (data area: rows 1-${rows - 1}, cols 1-${cols - 1})`,
+                `\n★ テーブル「${tableName}」サイズ：${rows - 1}行×${cols - 1}列（データ領域：行1-${rows - 1}、列1-${cols - 1}）`,
+                `\n★ 테이블「${tableName}」크기: ${rows - 1}행×${cols - 1}열 (데이터 영역: 행 1-${rows - 1}, 열 1-${cols - 1})`,
+                `\n★ Таблица «${tableName}» размер: ${rows - 1} строк × ${cols - 1} столбцов (область данных: строки 1-${rows - 1}, столбцы 1-${cols - 1})`
+            );
+            const sA = L('内容A', 'ContentA', '内容A', '내용A', 'СодержимоеA');
+            const sB = L('内容B', 'ContentB', '内容B', '내용B', 'СодержимоеB');
+            const sC = L('内容C', 'ContentC', '内容C', '내용C', 'СодержимоеC');
+            const exLabel = L(
+                '示例（填写空单元格或更新有变化的单元格）',
+                'Example (fill empty cells or update changed cells)',
+                '例（空のセルを埋めるか、変更のあるセルを更新）',
+                '예시 (빈 셀을 채우거나 변경된 셀을 업데이트)',
+                'Пример (заполните пустые ячейки или обновите изменённые)'
+            );
             prompt += `\n${exLabel}：
 <horaetable:${tableName}>
 1,1:${sA}
@@ -3514,29 +4194,11 @@ Scene Memory records a location's core layout and permanent features (architectu
 
     getDefaultRelationshipPrompt() {
         const userName = this.context?.name1 || '{{user}}';
-        if (!this._isAiOutputChinese()) {
-            return `═══ [Relationship Network] Trigger Conditions ═══
-Format: rel:CharA>CharB=relationship type|notes
-System automatically records and displays the relationship network between characters. Output when relationships change.
-
-[When to write] (output only if any condition is met)
-  ✦ Two characters establish/define a new relationship → rel:CharA>CharB=relationship type
-  ✦ Existing relationship changes (colleague → friend) → rel:CharA>CharB=new relationship type
-  ✦ Important details to note about the relationship → add |notes
-[When NOT to write]
-  ✗ Relationship unchanged → do not write
-  ✗ Already recorded relationship with no update → do not write
-
-[Rules]
-  · CharA and CharB must both use accurate full names
-  · Relationship type: use concise terms — friend, lover, superior-subordinate, mentor-student, rival, partner, etc.
-  · Notes field is optional, for recording special details about the relationship
-  · Relationships involving ${userName} must also be recorded
-  Examples:
-    rel:${userName}>Wolf=employer-client|${userName} runs a tavern, Wolf is a regular
-    rel:Wolf>Ella=secret crush|Wolf has feelings for Ella but hasn't confessed
-    rel:${userName}>Ella=best friends`;
-        }
+        const lang = this._getAiOutputLang();
+        if (lang === 'ja') return this._getDefaultRelationshipPromptJa(userName);
+        if (lang === 'ko') return this._getDefaultRelationshipPromptKo(userName);
+        if (lang === 'ru') return this._getDefaultRelationshipPromptRu(userName);
+        if (lang !== 'zh-CN' && lang !== 'zh-TW') return this._getDefaultRelationshipPromptEn(userName);
         return `═══ 【关系网络】触发条件 ═══
 格式：rel:角色A>角色B=关系类型|备注
 系统会自动记录和显示角色间的关系网络，当角色间关系发生变化时输出。
@@ -3560,22 +4222,108 @@ System automatically records and displays the relationship network between chara
     rel:${userName}>艾拉=闺蜜`;
     }
 
-    getDefaultMoodPrompt() {
-        if (!this._isAiOutputChinese()) {
-            return `═══ [Mood / Mental State Tracking] Trigger Conditions ═══
-Format: mood:character name=emotional state (concise phrases, e.g. "nervous/uneasy", "happy/excited", "angry", "calm but wary")
-System tracks emotional changes of present characters to maintain psychological consistency.
+    _getDefaultRelationshipPromptEn(userName) {
+        return `═══ [Relationship Network] Trigger Conditions ═══
+Format: rel:CharA>CharB=relationship type|notes
+System automatically records and displays the relationship network between characters. Output when relationships change.
 
 [When to write] (output only if any condition is met)
-  ✦ Character's emotion changes significantly (calm → angry) → mood:character name=new emotion
-  ✦ Character's first appearance with a notable emotional state → mood:character name=current emotion
+  ✦ Two characters establish/define a new relationship → rel:CharA>CharB=relationship type
+  ✦ Existing relationship changes (colleague → friend) → rel:CharA>CharB=new relationship type
+  ✦ Important details to note about the relationship → add |notes
 [When NOT to write]
-  ✗ Character's emotion unchanged → do not write
-  ✗ Character not present → do not write
+  ✗ Relationship unchanged → do not write
+  ✗ Already recorded relationship with no update → do not write
+
 [Rules]
-  · Use 1-4 words for emotion description, use / to separate compound emotions
-  · Only record emotions of present characters`;
-        }
+  · CharA and CharB must both use accurate full names
+  · Relationship type: use concise terms — friend, lover, superior-subordinate, mentor-student, rival, partner, etc.
+  · Notes field is optional, for recording special details about the relationship
+  · Relationships involving ${userName} must also be recorded
+  Examples:
+    rel:${userName}>Wolf=employer-client|${userName} runs a tavern, Wolf is a regular
+    rel:Wolf>Ella=secret crush|Wolf has feelings for Ella but hasn't confessed
+    rel:${userName}>Ella=best friends`;
+    }
+
+    _getDefaultRelationshipPromptJa(userName) {
+        return `═══ 【関係ネットワーク】トリガー条件 ═══
+形式：rel:キャラA>キャラB=関係タイプ|備考
+システムがキャラクター間の関係ネットワークを自動的に記録・表示します。関係に変化があった時に出力。
+
+【いつ書くか】（いずれかの条件を満たした場合のみ出力）
+  ✦ 二人のキャラクター間で新しい関係が確立/定義された → rel:キャラA>キャラB=関係タイプ
+  ✦ 既存の関係が変化（同僚 → 友人）→ rel:キャラA>キャラB=新しい関係タイプ
+  ✦ 関係について重要な詳細を記録する必要がある → |備考を追加
+【いつ書かないか】
+  ✗ 関係に変化なし → 書かない
+  ✗ 既に記録済みの関係で更新なし → 書かない
+
+【ルール】
+  · キャラAとキャラBは両方とも正確なフルネームを使用すること
+  · 関係タイプ：簡潔な用語を使用 — 友人、恋人、上司-部下、師弟、ライバル、パートナーなど
+  · 備考フィールドは任意、関係の特別な詳細を記録するため
+  · ${userName}を含む関係も記録すること
+  例：
+    rel:${userName}>ウルフ=雇用関係|${userName}は酒場を経営、ウルフは常連客
+    rel:ウルフ>エラ=密かな恋心|ウルフはエラに好意があるが告白していない
+    rel:${userName}>エラ=親友`;
+    }
+
+    _getDefaultRelationshipPromptKo(userName) {
+        return `═══ 【관계 네트워크】트리거 조건 ═══
+형식: rel:캐릭터A>캐릭터B=관계 유형|비고
+시스템이 캐릭터 간 관계 네트워크를 자동으로 기록하고 표시합니다. 관계 변화 시 출력.
+
+【언제 쓰는가】(조건 중 하나라도 충족 시에만 출력)
+  ✦ 두 캐릭터 사이에 새로운 관계가 확립/정의됨 → rel:캐릭터A>캐릭터B=관계 유형
+  ✦ 기존 관계가 변화(동료 → 친구) → rel:캐릭터A>캐릭터B=새로운 관계 유형
+  ✦ 관계에 대해 중요한 세부 사항을 기록할 필요가 있음 → |비고 추가
+【언제 쓰지 않는가】
+  ✗ 관계 변화 없음 → 쓰지 않음
+  ✗ 이미 기록된 관계로 업데이트 없음 → 쓰지 않음
+
+【규칙】
+  · 캐릭터A와 캐릭터B 모두 정확한 전체 이름을 사용해야 함
+  · 관계 유형: 간결한 용어 사용 — 친구, 연인, 상하관계, 사제, 라이벌, 파트너 등
+  · 비고 필드는 선택사항, 관계의 특별한 세부 사항 기록용
+  · ${userName}을 포함하는 관계도 기록해야 함
+  예시:
+    rel:${userName}>울프=고용 관계|${userName}은 주점을 운영, 울프는 단골
+    rel:울프>엘라=짝사랑|울프는 엘라에게 호감이 있지만 고백하지 않음
+    rel:${userName}>엘라=절친`;
+    }
+
+    _getDefaultRelationshipPromptRu(userName) {
+        return `═══ [Сеть отношений] Условия срабатывания ═══
+Формат: rel:ПерсонажА>ПерсонажБ=тип отношений|примечание
+Система автоматически записывает и отображает сеть отношений между персонажами. Выводить при изменении отношений.
+
+[Когда писать] (выводить только при выполнении любого условия)
+  ✦ Между двумя персонажами установлены/определены новые отношения → rel:ПерсонажА>ПерсонажБ=тип отношений
+  ✦ Существующие отношения изменились (коллега → друг) → rel:ПерсонажА>ПерсонажБ=новый тип отношений
+  ✦ Важные детали об отношениях для записи → добавить |примечание
+[Когда НЕ писать]
+  ✗ Отношения не изменились → не писать
+  ✗ Уже записанные отношения без обновлений → не писать
+
+[Правила]
+  · ПерсонажА и ПерсонажБ должны использовать точные полные имена
+  · Тип отношений: краткие термины — друг, возлюбленный, начальник-подчинённый, наставник-ученик, соперник, партнёр и т.д.
+  · Поле примечания необязательно, для записи особых деталей отношений
+  · Отношения с участием ${userName} тоже должны быть записаны
+  Примеры:
+    rel:${userName}>Вольф=наниматель-клиент|${userName} управляет таверной, Вольф — постоянный посетитель
+    rel:Вольф>Элла=тайная влюблённость|Вольф испытывает чувства к Элле, но не признался
+    rel:${userName}>Элла=лучшие друзья`;
+    }
+
+    getDefaultMoodPrompt() {
+        const lang = this._getAiOutputLang();
+        if (lang === 'ja') return this._getDefaultMoodPromptJa();
+        if (lang === 'ko') return this._getDefaultMoodPromptKo();
+        if (lang === 'ru') return this._getDefaultMoodPromptRu();
+        if (lang !== 'zh-CN' && lang !== 'zh-TW') return this._getDefaultMoodPromptEn();
         return `═══ 【情绪/心理状态追踪】触发条件 ═══
 格式：mood:角色名=情绪状态（简洁词组，如"紧张/不安"、"开心/期待"、"愤怒"、"平静但警惕"）
 系统会追踪在场角色的情绪变化，帮助保持角色心理状态的连贯性。
@@ -3591,6 +4339,70 @@ System tracks emotional changes of present characters to maintain psychological 
   · 只记录在场角色的情绪`;
     }
 
+    _getDefaultMoodPromptEn() {
+        return `═══ [Mood / Mental State Tracking] Trigger Conditions ═══
+Format: mood:character name=emotional state (concise phrases, e.g. "nervous/uneasy", "happy/excited", "angry", "calm but wary")
+System tracks emotional changes of present characters to maintain psychological consistency.
+
+[When to write] (output only if any condition is met)
+  ✦ Character's emotion changes significantly (calm → angry) → mood:character name=new emotion
+  ✦ Character's first appearance with a notable emotional state → mood:character name=current emotion
+[When NOT to write]
+  ✗ Character's emotion unchanged → do not write
+  ✗ Character not present → do not write
+[Rules]
+  · Use 1-4 words for emotion description, use / to separate compound emotions
+  · Only record emotions of present characters`;
+    }
+
+    _getDefaultMoodPromptJa() {
+        return `═══ 【感情/心理状態追跡】トリガー条件 ═══
+形式：mood:キャラクター名=感情状態（簡潔なフレーズ、例：「緊張/不安」「嬉しい/期待」「怒り」「冷静だが警戒」）
+システムは在場キャラクターの感情変化を追跡し、心理状態の一貫性を維持します。
+
+【いつ書くか】（いずれかの条件を満たした場合のみ出力）
+  ✦ キャラクターの感情が大きく変化（冷静 → 怒り）→ mood:キャラクター名=新しい感情
+  ✦ キャラクターの初登場時に顕著な感情状態がある → mood:キャラクター名=現在の感情
+【いつ書かないか】
+  ✗ キャラクターの感情に変化なし → 書かない
+  ✗ キャラクターが不在 → 書かない
+【ルール】
+  · 感情描写は1-4語で、/で複合感情を区切る
+  · 在場キャラクターの感情のみ記録`;
+    }
+
+    _getDefaultMoodPromptKo() {
+        return `═══ 【감정/심리 상태 추적】트리거 조건 ═══
+형식: mood:캐릭터명=감정 상태(간결한 표현, 예: "긴장/불안", "기쁨/기대", "분노", "침착하지만 경계")
+시스템이 현장 캐릭터의 감정 변화를 추적하여 심리 상태의 일관성을 유지합니다.
+
+【언제 쓰는가】(조건 중 하나라도 충족 시에만 출력)
+  ✦ 캐릭터의 감정이 크게 변화(침착 → 분노) → mood:캐릭터명=새로운 감정
+  ✦ 캐릭터 첫 등장 시 뚜렷한 감정 상태가 있음 → mood:캐릭터명=현재 감정
+【언제 쓰지 않는가】
+  ✗ 캐릭터 감정 변화 없음 → 쓰지 않음
+  ✗ 캐릭터가 현장에 없음 → 쓰지 않음
+【규칙】
+  · 감정 묘사는 1-4단어, /로 복합 감정 구분
+  · 현장 캐릭터의 감정만 기록`;
+    }
+
+    _getDefaultMoodPromptRu() {
+        return `═══ [Отслеживание настроения / психического состояния] Условия срабатывания ═══
+Формат: mood:имя персонажа=эмоциональное состояние (краткие фразы, например: «нервозность/беспокойство», «радость/предвкушение», «гнев», «спокойствие, но настороженность»)
+Система отслеживает эмоциональные изменения присутствующих персонажей для поддержания психологической согласованности.
+
+[Когда писать] (выводить только при выполнении любого условия)
+  ✦ Эмоция персонажа значительно изменилась (спокойствие → гнев) → mood:имя персонажа=новая эмоция
+  ✦ Первое появление персонажа с заметным эмоциональным состоянием → mood:имя персонажа=текущая эмоция
+[Когда НЕ писать]
+  ✗ Эмоция персонажа не изменилась → не писать
+  ✗ Персонаж отсутствует → не писать
+[Правила]
+  · Описание эмоции — 1-4 слова, используйте / для разделения сложных эмоций
+  · Записывать эмоции только присутствующих персонажей`;
+    }
+
     generateRelationshipPrompt() {
         if (!this.settings?.sendRelationships) return '';
         const custom = this.settings?.customRelationshipPrompt;
@@ -3604,9 +4416,13 @@ System tracks emotional changes of present characters to maintain psychological 
 
     _generateAntiParaphrasePrompt() {
         if (!this.settings?.antiParaphraseMode) return '';
-        const isZh = this._isAiOutputChinese();
-        const userName = this.context?.name1 || (isZh ? '主角' : 'protagonist');
-        if (!isZh) {
+        const lang = this._getAiOutputLang();
+        const defaults = { 'zh-CN': '主角', 'zh-TW': '主角', 'ja': '主人公', 'ko': '주인공', 'ru': 'протагонист' };
+        const userName = this.context?.name1 || (defaults[lang] || 'protagonist');
+        if (lang === 'ja') return this._generateAntiParaphrasePromptJa(userName);
+        if (lang === 'ko') return this._generateAntiParaphrasePromptKo(userName);
+        if (lang === 'ru') return this._generateAntiParaphrasePromptRu(userName);
+        if (lang !== 'zh-CN' && lang !== 'zh-TW') {
             return `
 ═══ Anti-Paraphrase Mode ═══
 The user writes ${userName}'s actions/dialogue themselves in USER messages; you (AI) do NOT repeat ${userName}'s parts.
@@ -3630,6 +4446,45 @@ Therefore, when writing this turn's <horae> tags, you MUST also include events f
 `;
     }
 
+    _generateAntiParaphrasePromptJa(userName) {
+        return `
+═══ 反転述モード（Anti-Paraphrase） ═══
+ユーザーはUSERメッセージ内で${userName}の行動/台詞を自ら記述します。あなた（AI）は${userName}の部分を繰り返さないでください。
+したがって、今回の<horae>タグを書く際、「あなたの返信の直前のUSERメッセージ」で発生した出来事も必ず含めてください：
+  ✦ USERメッセージ内のアイテム取得/消費 → 対応するitem:/item-:行を記述
+  ✦ USERメッセージ内のシーン移動 → location:を更新
+  ✦ USERメッセージ内のNPC交流/好感度変化 → affection:を更新
+  ✦ USERメッセージ内のプロット進行 → <horaeevent>に含めて要約
+  ✦ 要するに：この<horae>は「前のUSERメッセージ」と「今回のAI返信」の両方のすべての変化を網羅すること
+`;
+    }
+
+    _generateAntiParaphrasePromptKo(userName) {
+        return `
+═══ 반전술 모드 (Anti-Paraphrase) ═══
+사용자는 USER 메시지에서 ${userName}의 행동/대사를 직접 작성합니다. 당신(AI)은 ${userName}의 부분을 반복하지 마세요.
+따라서 이번 턴의 <horae> 태그를 작성할 때, "당신의 답변 바로 앞의 USER 메시지"에서 발생한 사건도 반드시 포함해야 합니다:
+  ✦ USER 메시지에서의 아이템 획득/소모 → 해당 item:/item-: 행 작성
+  ✦ USER 메시지에서의 장면 전환 → location: 업데이트
+  ✦ USER 메시지에서의 NPC 상호작용/호감도 변화 → affection: 업데이트
+  ✦ USER 메시지에서의 플롯 진행 → <horaeevent>에 포함하여 요약
+  ✦ 요약: 이 <horae>는 "이전 USER 메시지"와 "이번 AI 답변" 양쪽의 모든 변화를 포괄해야 함
+`;
+    }
+
+    _generateAntiParaphrasePromptRu(userName) {
+        return `
+═══ Режим Anti-Paraphrase ═══
+Пользователь сам описывает действия/диалоги ${userName} в сообщениях USER; вы (ИИ) НЕ повторяете части ${userName}.
+Поэтому при написании тегов <horae> для этого хода вы ОБЯЗАНЫ также включить события из «сообщения USER, непосредственно предшествующего вашему ответу»:
+  ✦ Получение/расход предметов в сообщении USER → записать соответствующие строки item:/item-:
+  ✦ Смена сцены в сообщении USER → обновить location:
+  ✦ Взаимодействие с NPC/изменение расположения в сообщении USER → обновить affection:
+  ✦ Развитие сюжета в сообщении USER → включить в сводку <horaeevent>
+  ✦ Итого: этот <horae> должен охватывать ВСЕ изменения как из «предыдущего сообщения USER», так и из «вашего текущего ответа ИИ»
+`;
+    }
+
     generateMoodPrompt() {
         if (!this.settings?.sendMood) return '';
         const custom = this.settings?.customMoodPrompt;
@@ -3644,12 +4499,11 @@ Therefore, when writing this turn's <horae> tags, you MUST also include events f
     /** RPG 提示词（rpgMode 开启才注入） */
     generateRpgPrompt() {
         if (!this.settings?.rpgMode) return '';
-        // 自定义提示词优先
         if (this.settings.customRpgPrompt) {
-            const isZh = this._isAiOutputChinese();
+            const [userName, charName] = this._getDefaultNames();
             return '\n' + this.settings.customRpgPrompt
-                .replace(/\{\{user\}\}/gi, this.context?.name1 || (isZh ? '主角' : 'protagonist'))
-                .replace(/\{\{char\}\}/gi, this.context?.name2 || (isZh ? '角色' : 'character'));
+                .replace(/\{\{user\}\}/gi, userName)
+                .replace(/\{\{char\}\}/gi, charName);
         }
         return '\n' + this.getDefaultRpgPrompt();
     }
@@ -3665,8 +4519,15 @@ Therefore, when writing this turn's <horae> tags, you MUST also include events f
         const sendCur = !!this.settings?.sendRpgCurrency;
         const sendSh = !!this.settings?.sendRpgStronghold;
         if (!sendBars && !sendSkills && !sendAttrs && !sendEq && !sendRep && !sendLvl && !sendCur && !sendSh) return '';
-        const isZh = this._isAiOutputChinese();
-        const userName = this.context?.name1 || (isZh ? '主角' : 'protagonist');
+        const lang = this._getAiOutputLang();
+        const L = (zh, en, ja, ko, ru) => {
+            if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
+            if (lang === 'ja') return ja;
+            if (lang === 'ko') return ko;
+            if (lang === 'ru') return ru;
+            return en;
+        };
+        const userName = this.context?.name1 || L('主角', 'protagonist', '主人公', '주인공', 'протагонист');
         const uoBars = !!this.settings?.rpgBarsUserOnly;
         const uoSkills = !!this.settings?.rpgSkillsUserOnly;
         const uoAttrs = !!this.settings?.rpgAttrsUserOnly;
@@ -3680,74 +4541,168 @@ Therefore, when writing this turn's <horae> tags, you MUST also include events f
             { key: 'hp', name: 'HP' }, { key: 'mp', name: 'MP' }, { key: 'sp', name: 'SP' }
         ];
         const attrCfg = this.settings?.rpgAttributeConfig || [];
-        const own = isZh ? '归属' : 'owner';
-        let p = isZh
-            ? `═══ 【RPG】 ═══\n你的回复末尾必须包含<horaerpg>标签。`
-            : `═══ [RPG] ═══\nYour reply MUST include a <horaerpg> tag at the end.`;
+        const own = L('归属', 'owner', '所有者', '소유자', 'владелец');
+        const commaSep = L('、', ', ', '、', ', ', ', ');
+        const semiSep = L('；', '; ', '；', '; ', '; ');
+        let p = L(
+            `═══ 【RPG】 ═══\n你的回复末尾必须包含<horaerpg>标签。`,
+            `═══ [RPG] ═══\nYour reply MUST include a <horaerpg> tag at the end.`,
+            `═══ 【RPG】 ═══\nあなたの返信の末尾に必ず<horaerpg>タグを含めてください。`,
+            `═══ 【RPG】 ═══\n답변 끝에 반드시 <horaerpg> 태그를 포함해야 합니다.`,
+            `═══ [RPG] ═══\nВаш ответ ДОЛЖЕН включать тег <horaerpg> в конце.`
+        );
         if (allUo) {
-            p += isZh
-                ? `所有RPG数据仅追踪${userName}一人，格式中不含归属字段。禁止为NPC输出任何RPG行。\n`
-                : `All RPG data tracks ${userName} only. Format has no owner field. Do NOT output RPG lines for NPCs.\n`;
+            p += L(
+                `所有RPG数据仅追踪${userName}一人，格式中不含归属字段。禁止为NPC输出任何RPG行。\n`,
+                `All RPG data tracks ${userName} only. Format has no owner field. Do NOT output RPG lines for NPCs.\n`,
+                `すべてのRPGデータは${userName}のみを追跡します。フォーマットに所有者フィールドはありません。NPCのRPG行を出力しないでください。\n`,
+                `모든 RPG 데이터는 ${userName}만 추적합니다. 형식에 소유자 필드가 없습니다. NPC의 RPG 행을 출력하지 마세요.\n`,
+                `Все RPG-данные отслеживают только ${userName}. Формат не содержит поля владельца. НЕ выводите RPG-строки для NPC.\n`
+            );
         } else if (anyUo) {
-            p += isZh
-                ? `归属格式同NPC编号：N编号 全名，${userName}直接写名字不加N。部分模块仅追踪${userName}（以下会标注）。\n`
-                : `Owner format follows NPC numbering: N## full name. ${userName} uses name directly without N. Some modules track ${userName} only (marked below).\n`;
+            p += L(
+                `归属格式同NPC编号：N编号 全名，${userName}直接写名字不加N。部分模块仅追踪${userName}（以下会标注）。\n`,
+                `Owner format follows NPC numbering: N## full name. ${userName} uses name directly without N. Some modules track ${userName} only (marked below).\n`,
+                `所有者形式はNPC番号に従います：N番号 フルネーム。${userName}はNなしで直接名前を書きます。一部のモジュールは${userName}のみを追跡します（以下に記載）。\n`,
+                `소유자 형식은 NPC 번호를 따릅니다: N번호 전체 이름. ${userName}은(는) N 없이 직접 이름을 씁니다. 일부 모듈은 ${userName}만 추적합니다(아래 표시).\n`,
+                `Формат владельца следует нумерации NPC: N## полное имя. ${userName} пишется напрямую без N. Некоторые модули отслеживают только ${userName} (отмечено ниже).\n`
+            );
         } else {
-            p += isZh
-                ? `归属格式同NPC编号：N编号 全名，${userName}直接写名字不加N。\n`
-                : `Owner format follows NPC numbering: N## full name. ${userName} uses name directly without N.\n`;
+            p += L(
+                `归属格式同NPC编号：N编号 全名，${userName}直接写名字不加N。\n`,
+                `Owner format follows NPC numbering: N## full name. ${userName} uses name directly without N.\n`,
+                `所有者形式はNPC番号に従います：N番号 フルネーム。${userName}はNなしで直接名前を書きます。\n`,
+                `소유자 형식은 NPC 번호를 따릅니다: N번호 전체 이름. ${userName}은(는) N 없이 직접 이름을 씁니다.\n`,
+                `Формат владельца следует нумерации NPC: N## полное имя. ${userName} пишется напрямую без N.\n`
+            );
         }
         if (sendBars) {
-            p += isZh ? `\n【属性条——每回合必写，缺少=不合格！】\n` : `\n[Status Bars — required every turn, missing = fail!]\n`;
+            p += L(
+                `\n【属性条——每回合必写，缺少=不合格！】\n`,
+                `\n[Status Bars — required every turn, missing = fail!]\n`,
+                `\n【ステータスバー——毎ターン必須、欠落＝不合格！】\n`,
+                `\n【스테이터스 바 — 매 턴 필수, 누락 = 불합격!】\n`,
+                `\n[Шкалы статуса — обязательны каждый ход, пропуск = провал!]\n`
+            );
             if (uoBars) {
-                p += isZh ? `仅输出${userName}的属性条和状态：\n` : `Only output ${userName}'s status bars and status:\n`;
+                p += L(
+                    `仅输出${userName}的属性条和状态：\n`,
+                    `Only output ${userName}'s status bars and status:\n`,
+                    `${userName}のステータスバーとステータスのみを出力：\n`,
+                    `${userName}의 스테이터스 바와 상태만 출력:\n`,
+                    `Выводите только шкалы статуса и состояние ${userName}:\n`
+                );
                 for (const bar of barCfg) {
-                    p += isZh
-                        ? `  ✅ ${bar.key}:当前/最大(${bar.name})  ← 首次必须标注显示名\n`
-                        : `  ✅ ${bar.key}:current/max(${bar.name})  ← must label display name on first use\n`;
+                    p += L(
+                        `  ✅ ${bar.key}:当前/最大(${bar.name})  ← 首次必须标注显示名\n`,
+                        `  ✅ ${bar.key}:current/max(${bar.name})  ← must label display name on first use\n`,
+                        `  ✅ ${bar.key}:現在値/最大値(${bar.name})  ← 初回は表示名を必ず記載\n`,
+                        `  ✅ ${bar.key}:현재/최대(${bar.name})  ← 첫 사용 시 표시 이름 필수\n`,
+                        `  ✅ ${bar.key}:текущее/макс(${bar.name})  ← при первом использовании укажите отображаемое имя\n`
+                    );
                 }
-                p += isZh ? `  ✅ status:效果1/效果2  ← 无异常写 正常\n` : `  ✅ status:effect1/effect2  ← if no ailments write normal\n`;
+                p += L(
+                    `  ✅ status:效果1/效果2  ← 无异常写 正常\n`,
+                    `  ✅ status:effect1/effect2  ← if no ailments write normal\n`,
+                    `  ✅ status:効果1/効果2  ← 異常なしなら 正常 と記載\n`,
+                    `  ✅ status:효과1/효과2  ← 이상 없으면 정상 기재\n`,
+                    `  ✅ status:эффект1/эффект2  ← если нет отклонений, пишите нормально\n`
+                );
             } else {
-                p += isZh
-                    ? `必须为 characters: 中每个在场角色输出全部属性条和状态：\n`
-                    : `MUST output ALL status bars and status for EVERY present character in characters: list:\n`;
+                p += L(
+                    `必须为 characters: 中每个在场角色输出全部属性条和状态：\n`,
+                    `MUST output ALL status bars and status for EVERY present character in characters: list:\n`,
+                    `characters: リスト内のすべての登場キャラクターについて、全ステータスバーとステータスを出力する必要があります：\n`,
+                    `characters: 목록의 모든 등장 캐릭터에 대해 전체 스테이터스 바와 상태를 출력해야 합니다:\n`,
+                    `НЕОБХОДИМО вывести ВСЕ шкалы статуса и состояние для КАЖДОГО присутствующего персонажа в списке characters:\n`
+                );
                 for (const bar of barCfg) {
-                    p += isZh
-                        ? `  ✅ ${bar.key}:归属=当前/最大(${bar.name})  ← 首次必须标注显示名\n`
-                        : `  ✅ ${bar.key}:${own}=current/max(${bar.name})  ← must label display name on first use\n`;
+                    p += L(
+                        `  ✅ ${bar.key}:归属=当前/最大(${bar.name})  ← 首次必须标注显示名\n`,
+                        `  ✅ ${bar.key}:${own}=current/max(${bar.name})  ← must label display name on first use\n`,
+                        `  ✅ ${bar.key}:${own}=現在値/最大値(${bar.name})  ← 初回は表示名を必ず記載\n`,
+                        `  ✅ ${bar.key}:${own}=현재/최대(${bar.name})  ← 첫 사용 시 표시 이름 필수\n`,
+                        `  ✅ ${bar.key}:${own}=текущее/макс(${bar.name})  ← при первом использовании укажите отображаемое имя\n`
+                    );
                 }
-                p += isZh ? `  ✅ status:归属=效果1/效果2  ← 无异常写 =正常\n` : `  ✅ status:${own}=effect1/effect2  ← if no ailments write =normal\n`;
+                p += L(
+                    `  ✅ status:归属=效果1/效果2  ← 无异常写 =正常\n`,
+                    `  ✅ status:${own}=effect1/effect2  ← if no ailments write =normal\n`,
+                    `  ✅ status:${own}=効果1/効果2  ← 異常なしなら =正常 と記載\n`,
+                    `  ✅ status:${own}=효과1/효과2  ← 이상 없으면 =정상 기재\n`,
+                    `  ✅ status:${own}=эффект1/эффект2  ← если нет отклонений, пишите =нормально\n`
+                );
             }
-            p += isZh ? `规则：\n` : `Rules:\n`;
-            p += isZh
-                ? `  - 战斗/受伤/施法/消耗 → 合理扣减；恢复/休息 → 合理回增\n`
-                : `  - Combat/injury/casting/consumption → reasonable deduction; recovery/rest → reasonable increase\n`;
+            p += L(`规则：\n`, `Rules:\n`, `ルール：\n`, `규칙:\n`, `Правила:\n`);
+            p += L(
+                `  - 战斗/受伤/施法/消耗 → 合理扣减；恢复/休息 → 合理回增\n`,
+                `  - Combat/injury/casting/consumption → reasonable deduction; recovery/rest → reasonable increase\n`,
+                `  - 戦闘/負傷/詠唱/消費 → 合理的に減少；回復/休息 → 合理的に増加\n`,
+                `  - 전투/부상/시전/소모 → 합리적 감소; 회복/휴식 → 합리적 증가\n`,
+                `  - Бой/ранение/заклинание/расход → обоснованное уменьшение; восстановление/отдых → обоснованное увеличение\n`
+            );
             if (!uoBars) {
-                p += isZh
-                    ? `  - 每个在场角色的每个属性条都必须写，漏写任何一人=不合格\n`
-                    : `  - Every present character's every status bar MUST be written; missing anyone = fail\n`;
+                p += L(
+                    `  - 每个在场角色的每个属性条都必须写，漏写任何一人=不合格\n`,
+                    `  - Every present character's every status bar MUST be written; missing anyone = fail\n`,
+                    `  - 登場中の各キャラクターのすべてのステータスバーを書く必要があります；誰か一人でも漏れ＝不合格\n`,
+                    `  - 등장 중인 모든 캐릭터의 모든 스테이터스 바를 작성해야 합니다; 누구 하나라도 누락 = 불합격\n`,
+                    `  - Каждая шкала каждого присутствующего персонажа ДОЛЖНА быть записана; пропуск кого-либо = провал\n`
+                );
             }
-            p += isZh
-                ? `  - 即使本回合数值无变化，也必须写出当前值\n`
-                : `  - Even if values didn't change this turn, MUST still write current values\n`;
+            p += L(
+                `  - 即使本回合数值无变化，也必须写出当前值\n`,
+                `  - Even if values didn't change this turn, MUST still write current values\n`,
+                `  - 今回のターンで数値に変化がなくても、現在の値を必ず記載すること\n`,
+                `  - 이번 턴에 수치 변화가 없더라도 현재 값을 반드시 기재할 것\n`,
+                `  - Даже если значения не изменились в этом ходу, НЕОБХОДИМО записать текущие значения\n`
+            );
         }
         if (sendAttrs && attrCfg.length > 0) {
-            p += isZh ? `\n【多维属性】仅首次登场或属性变化时写，无变化可省略\n` : `\n[Multi-Dimensional Attributes] Write only on first appearance or attribute change; skip if unchanged\n`;
+            p += L(
+                `\n【多维属性】仅首次登场或属性变化时写，无变化可省略\n`,
+                `\n[Multi-Dimensional Attributes] Write only on first appearance or attribute change; skip if unchanged\n`,
+                `\n【多次元属性】初登場時または属性変化時のみ記載、変化なしなら省略可\n`,
+                `\n【다차원 속성】첫 등장 또는 속성 변화 시에만 기재, 변화 없으면 생략 가능\n`,
+                `\n[Многомерные атрибуты] Записывайте только при первом появлении или изменении; пропускайте, если без изменений\n`
+            );
             if (uoAttrs) {
                 p += `  attr:${attrCfg.map(a => `${a.key}=value`).join('|')}\n`;
             } else {
                 p += `  attr:${own}|${attrCfg.map(a => `${a.key}=value`).join('|')}\n`;
             }
-            p += isZh
-                ? `  数值范围0-100。属性含义：${attrCfg.map(a => `${a.key}(${a.name})`).join('、')}\n`
-                : `  Value range 0-100. Attribute meanings: ${attrCfg.map(a => `${a.key}(${a.name})`).join(', ')}\n`;
+            p += L(
+                `  数值范围0-100。属性含义：${attrCfg.map(a => `${a.key}(${a.name})`).join('、')}\n`,
+                `  Value range 0-100. Attribute meanings: ${attrCfg.map(a => `${a.key}(${a.name})`).join(', ')}\n`,
+                `  数値範囲0-100。属性の意味：${attrCfg.map(a => `${a.key}(${a.name})`).join('、')}\n`,
+                `  수치 범위 0-100. 속성 의미: ${attrCfg.map(a => `${a.key}(${a.name})`).join(', ')}\n`,
+                `  Диапазон значений 0-100. Значения атрибутов: ${attrCfg.map(a => `${a.key}(${a.name})`).join(', ')}\n`
+            );
         }
         if (sendSkills) {
-            p += isZh ? `\n【技能】仅习得/升级/失去时写，无变化可省略\n` : `\n[Skills] Write only when learned/upgraded/lost; skip if unchanged\n`;
+            p += L(
+                `\n【技能】仅习得/升级/失去时写，无变化可省略\n`,
+                `\n[Skills] Write only when learned/upgraded/lost; skip if unchanged\n`,
+                `\n【スキル】習得/レベルアップ/喪失時のみ記載、変化なしなら省略可\n`,
+                `\n【스킬】습득/승급/상실 시에만 기재, 변화 없으면 생략 가능\n`,
+                `\n[Навыки] Записывайте только при изучении/повышении/потере; пропускайте, если без изменений\n`
+            );
             if (uoSkills) {
-                p += isZh ? `  skill:技能名|等级|效果描述\n  skill-:技能名\n` : `  skill:skill name|level|effect description\n  skill-:skill name\n`;
+                p += L(
+                    `  skill:技能名|等级|效果描述\n  skill-:技能名\n`,
+                    `  skill:skill name|level|effect description\n  skill-:skill name\n`,
+                    `  skill:スキル名|レベル|効果説明\n  skill-:スキル名\n`,
+                    `  skill:스킬명|레벨|효과 설명\n  skill-:스킬명\n`,
+                    `  skill:название навыка|уровень|описание эффекта\n  skill-:название навыка\n`
+                );
             } else {
-                p += isZh ? `  skill:归属|技能名|等级|效果描述\n  skill-:归属|技能名\n` : `  skill:${own}|skill name|level|effect description\n  skill-:${own}|skill name\n`;
+                p += L(
+                    `  skill:归属|技能名|等级|效果描述\n  skill-:归属|技能名\n`,
+                    `  skill:${own}|skill name|level|effect description\n  skill-:${own}|skill name\n`,
+                    `  skill:${own}|スキル名|レベル|効果説明\n  skill-:${own}|スキル名\n`,
+                    `  skill:${own}|스킬명|레벨|효과 설명\n  skill-:${own}|스킬명\n`,
+                    `  skill:${own}|название навыка|уровень|описание эффекта\n  skill-:${own}|название навыка\n`
+                );
             }
         }
         if (sendEq) {
@@ -3756,113 +4711,207 @@ Therefore, when writing this turn's <horae> tags, you MUST also include events f
             const present = new Set(this.getLatestState()?.scene?.characters_present || []);
             const hasAnySlots = Object.values(perChar).some(c => c.slots?.length > 0);
             if (hasAnySlots) {
-                p += isZh ? `\n【装备】角色穿戴/卸下装备时写，无变化可省略\n` : `\n[Equipment] Write when character equips/unequips; skip if unchanged\n`;
+                p += L(
+                    `\n【装备】角色穿戴/卸下装备时写，无变化可省略\n`,
+                    `\n[Equipment] Write when character equips/unequips; skip if unchanged\n`,
+                    `\n【装備】キャラクターが装備/解除した時に記載、変化なしなら省略可\n`,
+                    `\n【장비】캐릭터가 장비 착용/해제 시 기재, 변화 없으면 생략 가능\n`,
+                    `\n[Снаряжение] Записывайте при экипировке/снятии; пропускайте, если без изменений\n`
+                );
                 if (uoEq) {
-                    p += isZh
-                        ? `  equip:格位名|装备名|属性1=值,属性2=值\n  unequip:格位名|装备名\n`
-                        : `  equip:slot name|item name|stat1=value,stat2=value\n  unequip:slot name|item name\n`;
+                    p += L(
+                        `  equip:格位名|装备名|属性1=值,属性2=值\n  unequip:格位名|装备名\n`,
+                        `  equip:slot name|item name|stat1=value,stat2=value\n  unequip:slot name|item name\n`,
+                        `  equip:スロット名|アイテム名|属性1=値,属性2=値\n  unequip:スロット名|アイテム名\n`,
+                        `  equip:슬롯명|아이템명|속성1=값,속성2=값\n  unequip:슬롯명|아이템명\n`,
+                        `  equip:слот|предмет|стат1=значение,стат2=значение\n  unequip:слот|предмет\n`
+                    );
                     const userCfg = perChar[userName];
                     if (userCfg?.slots?.length) {
-                        const sep = isZh ? '、' : ', ';
-                        const slotNames = userCfg.slots.map(s => `${s.name}(×${s.maxCount ?? 1})`).join(sep);
-                        p += isZh ? `  格位: ${slotNames}\n` : `  Slots: ${slotNames}\n`;
+                        const slotNames = userCfg.slots.map(s => `${s.name}(×${s.maxCount ?? 1})`).join(commaSep);
+                        p += L(`  格位: ${slotNames}\n`, `  Slots: ${slotNames}\n`, `  スロット: ${slotNames}\n`, `  슬롯: ${slotNames}\n`, `  Слоты: ${slotNames}\n`);
                     }
                 } else {
-                    p += isZh
-                        ? `  equip:归属|格位名|装备名|属性1=值,属性2=值\n  unequip:归属|格位名|装备名\n`
-                        : `  equip:${own}|slot name|item name|stat1=value,stat2=value\n  unequip:${own}|slot name|item name\n`;
+                    p += L(
+                        `  equip:归属|格位名|装备名|属性1=值,属性2=值\n  unequip:归属|格位名|装备名\n`,
+                        `  equip:${own}|slot name|item name|stat1=value,stat2=value\n  unequip:${own}|slot name|item name\n`,
+                        `  equip:${own}|スロット名|アイテム名|属性1=値,属性2=値\n  unequip:${own}|スロット名|アイテム名\n`,
+                        `  equip:${own}|슬롯명|아이템명|속성1=값,속성2=값\n  unequip:${own}|슬롯명|아이템명\n`,
+                        `  equip:${own}|слот|предмет|стат1=значение,стат2=значение\n  unequip:${own}|слот|предмет\n`
+                    );
                     for (const [o, cfg] of Object.entries(perChar)) {
                         if (!cfg.slots?.length) continue;
                         if (present.size > 0 && !present.has(o)) continue;
-                        const sep = isZh ? '、' : ', ';
-                        const slotNames = cfg.slots.map(s => `${s.name}(×${s.maxCount ?? 1})`).join(sep);
-                        p += isZh ? `  ${o} 格位: ${slotNames}\n` : `  ${o} slots: ${slotNames}\n`;
+                        const slotNames = cfg.slots.map(s => `${s.name}(×${s.maxCount ?? 1})`).join(commaSep);
+                        p += L(`  ${o} 格位: ${slotNames}\n`, `  ${o} slots: ${slotNames}\n`, `  ${o} スロット: ${slotNames}\n`, `  ${o} 슬롯: ${slotNames}\n`, `  ${o} слоты: ${slotNames}\n`);
                     }
                 }
-                p += isZh
-                    ? `  ⚠ 每个角色只能使用其已注册的格位。属性值为整数。\n  ⚠ 普通衣物非赋魔或特殊材料不应有高属性值。\n`
-                    : `  ⚠ Each character may only use their registered slots. Stat values must be integers.\n  ⚠ Normal clothing without enchantment or special materials should NOT have high stat values.\n`;
+                p += L(
+                    `  ⚠ 每个角色只能使用其已注册的格位。属性值为整数。\n  ⚠ 普通衣物非赋魔或特殊材料不应有高属性值。\n`,
+                    `  ⚠ Each character may only use their registered slots. Stat values must be integers.\n  ⚠ Normal clothing without enchantment or special materials should NOT have high stat values.\n`,
+                    `  ⚠ 各キャラクターは登録済みのスロットのみ使用可能。属性値は整数であること。\n  ⚠ エンチャントや特殊素材のない普通の衣服には高い属性値を付けないこと。\n`,
+                    `  ⚠ 각 캐릭터는 등록된 슬롯만 사용할 수 있습니다. 속성값은 정수여야 합니다.\n  ⚠ 마법 부여나 특수 재료가 없는 일반 의류에는 높은 속성값을 부여하지 마세요.\n`,
+                    `  ⚠ Каждый персонаж может использовать только свои зарегистрированные слоты. Значения характеристик — целые числа.\n  ⚠ Обычная одежда без зачарования или особых материалов НЕ должна иметь высоких значений характеристик.\n`
+                );
             }
         }
         if (sendRep) {
             const repConfig = this._getRpgReputationConfig();
             if (repConfig.categories.length > 0) {
-                const sep = isZh ? '、' : ', ';
-                const catNames = repConfig.categories.map(c => c.name).join(sep);
-                p += isZh ? `\n【声望】仅声望变化时写，无变化可省略\n` : `\n[Reputation] Write only when reputation changes; skip if unchanged\n`;
+                const catNames = repConfig.categories.map(c => c.name).join(commaSep);
+                p += L(
+                    `\n【声望】仅声望变化时写，无变化可省略\n`,
+                    `\n[Reputation] Write only when reputation changes; skip if unchanged\n`,
+                    `\n【評判】評判が変化した時のみ記載、変化なしなら省略可\n`,
+                    `\n【평판】평판 변화 시에만 기재, 변화 없으면 생략 가능\n`,
+                    `\n[Репутация] Записывайте только при изменении репутации; пропускайте, если без изменений\n`
+                );
                 if (uoRep) {
-                    p += isZh ? `  rep:声望分类名=当前值\n` : `  rep:category name=current value\n`;
+                    p += L(
+                        `  rep:声望分类名=当前值\n`,
+                        `  rep:category name=current value\n`,
+                        `  rep:評判カテゴリ名=現在値\n`,
+                        `  rep:평판 분류명=현재값\n`,
+                        `  rep:категория=текущее значение\n`
+                    );
                 } else {
-                    p += isZh ? `  rep:归属|声望分类名=当前值\n` : `  rep:${own}|category name=current value\n`;
+                    p += L(
+                        `  rep:归属|声望分类名=当前值\n`,
+                        `  rep:${own}|category name=current value\n`,
+                        `  rep:${own}|評判カテゴリ名=現在値\n`,
+                        `  rep:${own}|평판 분류명=현재값\n`,
+                        `  rep:${own}|категория=текущее значение\n`
+                    );
                 }
-                p += isZh ? `  已注册的声望分类: ${catNames}\n` : `  Registered reputation categories: ${catNames}\n`;
-                p += isZh
-                    ? `  ⚠ 禁止创造新的声望分类。只允许使用上述已注册的分类名。\n`
-                    : `  ⚠ Do NOT create new reputation categories. Only use the registered names above.\n`;
+                p += L(
+                    `  已注册的声望分类: ${catNames}\n`,
+                    `  Registered reputation categories: ${catNames}\n`,
+                    `  登録済みの評判カテゴリ: ${catNames}\n`,
+                    `  등록된 평판 분류: ${catNames}\n`,
+                    `  Зарегистрированные категории репутации: ${catNames}\n`
+                );
+                p += L(
+                    `  ⚠ 禁止创造新的声望分类。只允许使用上述已注册的分类名。\n`,
+                    `  ⚠ Do NOT create new reputation categories. Only use the registered names above.\n`,
+                    `  ⚠ 新しい評判カテゴリを作成しないでください。上記の登録済みカテゴリ名のみ使用可。\n`,
+                    `  ⚠ 새로운 평판 분류를 만들지 마세요. 위에 등록된 분류명만 사용하세요.\n`,
+                    `  ⚠ НЕ создавайте новые категории репутации. Используйте только зарегистрированные названия выше.\n`
+                );
             }
         }
         if (sendLvl) {
-            p += isZh ? `\n【等级与经验值】仅升级/降级或经验变化时写，无变化可省略\n` : `\n[Level & XP] Write only on level-up/down or XP change; skip if unchanged\n`;
+            p += L(
+                `\n【等级与经验值】仅升级/降级或经验变化时写，无变化可省略\n`,
+                `\n[Level & XP] Write only on level-up/down or XP change; skip if unchanged\n`,
+                `\n【レベルと経験値】レベルアップ/ダウンまたは経験値変化時のみ記載、変化なしなら省略可\n`,
+                `\n【레벨과 경험치】레벨 업/다운 또는 경험치 변화 시에만 기재, 변화 없으면 생략 가능\n`,
+                `\n[Уровень и опыт] Записывайте только при повышении/понижении уровня или изменении опыта; пропускайте, если без изменений\n`
+            );
             if (uoLvl) {
-                p += isZh ? `  level:等级数值\n  xp:当前经验/升级所需\n` : `  level:level number\n  xp:current XP/needed for level-up\n`;
+                p += L(
+                    `  level:等级数值\n  xp:当前经验/升级所需\n`,
+                    `  level:level number\n  xp:current XP/needed for level-up\n`,
+                    `  level:レベル数値\n  xp:現在の経験値/レベルアップに必要な値\n`,
+                    `  level:레벨 수치\n  xp:현재 경험치/레벨업 필요치\n`,
+                    `  level:число уровня\n  xp:текущий опыт/необходимо для повышения\n`
+                );
             } else {
-                p += isZh ? `  level:归属=等级数值\n  xp:归属=当前经验/升级所需\n` : `  level:${own}=level number\n  xp:${own}=current XP/needed for level-up\n`;
+                p += L(
+                    `  level:归属=等级数值\n  xp:归属=当前经验/升级所需\n`,
+                    `  level:${own}=level number\n  xp:${own}=current XP/needed for level-up\n`,
+                    `  level:${own}=レベル数値\n  xp:${own}=現在の経験値/レベルアップに必要な値\n`,
+                    `  level:${own}=레벨 수치\n  xp:${own}=현재 경험치/레벨업 필요치\n`,
+                    `  level:${own}=число уровня\n  xp:${own}=текущий опыт/необходимо для повышения\n`
+                );
             }
-            p += isZh ? `  经验值获取参考：\n` : `  XP gain reference:\n`;
-            p += isZh
-                ? `  - 与角色等级相近或更强的挑战：获得较多经验(10~50+)\n  - 等级差 ≥10 的低级挑战：仅得 1 点经验\n  - 日常活动/对话/探索：少量经验(1~5)\n  - 升级所需经验随等级递增：建议 升级所需 = 等级 × 100\n`
-                : `  - Challenge near or above character level: more XP (10~50+)\n  - Level gap ≥10 trivial challenge: only 1 XP\n  - Daily activities/dialogue/exploration: small XP (1~5)\n  - XP needed increases with level: suggested formula = level × 100\n`;
+            p += L(`  经验值获取参考：\n`, `  XP gain reference:\n`, `  経験値獲得の参考：\n`, `  경험치 획득 참고:\n`, `  Справка по получению опыта:\n`);
+            p += L(
+                `  - 与角色等级相近或更强的挑战：获得较多经验(10~50+)\n  - 等级差 ≥10 的低级挑战：仅得 1 点经验\n  - 日常活动/对话/探索：少量经验(1~5)\n  - 升级所需经验随等级递增：建议 升级所需 = 等级 × 100\n`,
+                `  - Challenge near or above character level: more XP (10~50+)\n  - Level gap ≥10 trivial challenge: only 1 XP\n  - Daily activities/dialogue/exploration: small XP (1~5)\n  - XP needed increases with level: suggested formula = level × 100\n`,
+                `  - キャラクターレベルに近いまたはそれ以上の挑戦：多くの経験値(10~50+)\n  - レベル差≥10の簡単な挑戦：1経験値のみ\n  - 日常活動/会話/探索：少量の経験値(1~5)\n  - レベルアップに必要な経験値はレベルに応じて増加：推奨式 = レベル × 100\n`,
+                `  - 캐릭터 레벨에 가깝거나 더 강한 도전: 많은 경험치(10~50+)\n  - 레벨 차이 ≥10인 사소한 도전: 1 경험치만\n  - 일상 활동/대화/탐험: 소량의 경험치(1~5)\n  - 레벨업 필요 경험치는 레벨에 따라 증가: 권장 공식 = 레벨 × 100\n`,
+                `  - Испытание близкое к уровню персонажа или выше: больше опыта (10~50+)\n  - Разница уровней ≥10, тривиальное испытание: только 1 очко опыта\n  - Повседневные действия/диалог/исследование: немного опыта (1~5)\n  - Необходимый опыт растёт с уровнем: рекомендуемая формула = уровень × 100\n`
+            );
         }
         if (sendCur) {
             const curConfig = this._getRpgCurrencyConfig();
             if (curConfig.denominations.length > 0) {
-                const sep = isZh ? '、' : ', ';
-                const denomNames = curConfig.denominations.map(d => d.name).join(sep);
-                p += isZh ? `\n【货币——发生交易/拾取/消费时必写！】\n` : `\n[Currency — MUST write on any trade/pickup/spending!]\n`;
+                const denomNames = curConfig.denominations.map(d => d.name).join(commaSep);
+                p += L(
+                    `\n【货币——发生交易/拾取/消费时必写！】\n`,
+                    `\n[Currency — MUST write on any trade/pickup/spending!]\n`,
+                    `\n【通貨——取引/拾得/消費が発生した時は必ず記載！】\n`,
+                    `\n【화폐 — 거래/획득/소비 발생 시 필수 기재!】\n`,
+                    `\n[Валюта — ОБЯЗАТЕЛЬНО записывать при любой сделке/подборе/трате!]\n`
+                );
                 if (uoCur) {
-                    p += isZh ? `格式: currency:币名=±变化量\n` : `Format: currency:denomination=±amount\n`;
-                    p += isZh ? `示例:\n` : `Examples:\n`;
+                    p += L(`格式: currency:币名=±变化量\n`, `Format: currency:denomination=±amount\n`, `形式: currency:通貨名=±変化量\n`, `형식: currency:화폐명=±변화량\n`, `Формат: currency:валюта=±сумма\n`);
+                    p += L(`示例:\n`, `Examples:\n`, `例：\n`, `예시:\n`, `Примеры:\n`);
                     p += `  currency:${curConfig.denominations[0].name}=+10\n  currency:${curConfig.denominations[0].name}=-3\n`;
                     if (curConfig.denominations.length > 1) p += `  currency:${curConfig.denominations[1].name}=+50\n`;
-                    p += isZh ? `也可写绝对值: currency:币名=数量\n` : `Absolute value also OK: currency:denomination=amount\n`;
+                    p += L(
+                        `也可写绝对值: currency:币名=数量\n`,
+                        `Absolute value also OK: currency:denomination=amount\n`,
+                        `絶対値も可: currency:通貨名=数量\n`,
+                        `절대값도 가능: currency:화폐명=수량\n`,
+                        `Абсолютное значение тоже допустимо: currency:валюта=количество\n`
+                    );
                 } else {
-                    p += isZh ? `格式: currency:归属|币名=±变化量\n` : `Format: currency:${own}|denomination=±amount\n`;
-                    p += isZh ? `示例:\n` : `Examples:\n`;
+                    p += L(`格式: currency:归属|币名=±变化量\n`, `Format: currency:${own}|denomination=±amount\n`, `形式: currency:${own}|通貨名=±変化量\n`, `형식: currency:${own}|화폐명=±변화량\n`, `Формат: currency:${own}|валюта=±сумма\n`);
+                    p += L(`示例:\n`, `Examples:\n`, `例：\n`, `예시:\n`, `Примеры:\n`);
                     p += `  currency:${userName}|${curConfig.denominations[0].name}=+10\n  currency:${userName}|${curConfig.denominations[0].name}=-3\n`;
                     if (curConfig.denominations.length > 1) p += `  currency:${userName}|${curConfig.denominations[1].name}=+50\n`;
-                    p += isZh ? `也可写绝对值: currency:归属|币名=数量\n` : `Absolute value also OK: currency:${own}|denomination=amount\n`;
+                    p += L(
+                        `也可写绝对值: currency:归属|币名=数量\n`,
+                        `Absolute value also OK: currency:${own}|denomination=amount\n`,
+                        `絶対値も可: currency:${own}|通貨名=数量\n`,
+                        `절대값도 가능: currency:${own}|화폐명=수량\n`,
+                        `Абсолютное значение тоже допустимо: currency:${own}|валюта=количество\n`
+                    );
                 }
-                p += isZh ? `已注册币种: ${denomNames}\n` : `Registered denominations: ${denomNames}\n`;
-                p += isZh
-                    ? `⚠ 禁止使用未注册的币种名。任何涉及金钱的行为（买卖/拾取/奖赏/偷窃）都必须写 currency 行。\n`
-                    : `⚠ Do NOT use unregistered denomination names. Any money-related action (buy/sell/pickup/reward/theft) MUST include a currency line.\n`;
+                p += L(`已注册币种: ${denomNames}\n`, `Registered denominations: ${denomNames}\n`, `登録済み通貨: ${denomNames}\n`, `등록된 화폐: ${denomNames}\n`, `Зарегистрированные валюты: ${denomNames}\n`);
+                p += L(
+                    `⚠ 禁止使用未注册的币种名。任何涉及金钱的行为（买卖/拾取/奖赏/偷窃）都必须写 currency 行。\n`,
+                    `⚠ Do NOT use unregistered denomination names. Any money-related action (buy/sell/pickup/reward/theft) MUST include a currency line.\n`,
+                    `⚠ 未登録の通貨名を使用しないでください。金銭に関わるすべての行動（売買/拾得/報酬/窃盗）にはcurrency行を必ず含めること。\n`,
+                    `⚠ 등록되지 않은 화폐명을 사용하지 마세요. 금전 관련 모든 행동(매매/획득/보상/절도)에는 반드시 currency 행을 포함해야 합니다.\n`,
+                    `⚠ НЕ используйте незарегистрированные названия валют. Любое действие с деньгами (покупка/продажа/подбор/награда/кража) ДОЛЖНО содержать строку currency.\n`
+                );
             }
         }
         if (!!this.settings?.sendRpgStronghold) {
             const rpg = this.getChat()?.[0]?.horae_meta?.rpg;
             const nodes = rpg?.strongholds || [];
-            p += isZh
-                ? `\n【据点/基地】据点状态变化时写（升级/建造/损毁/描述变更），无变化可省略\n`
-                : `\n[Strongholds] Write when stronghold status changes (upgrade/build/destroy/description update); skip if unchanged\n`;
-            p += isZh
-                ? `格式: base:据点路径=等级 或 base:据点路径|desc=描述\n路径用 > 分隔层级\n`
-                : `Format: base:stronghold path=level or base:stronghold path|desc=description\nUse > to separate hierarchy levels\n`;
-            p += isZh ? `示例:\n` : `Examples:\n`;
-            if (isZh) {
-                p += `  base:主角庄园=3\n  base:主角庄园>锻造区>锻造炉=2\n  base:主角庄园|desc=坐落于河谷的石砌庄园，配有围墙和瞭望塔\n`;
-            } else {
-                p += `  base:Hero's Manor=3\n  base:Hero's Manor>Forge Area>Furnace=2\n  base:Hero's Manor|desc=Stone manor in a river valley with walls and watchtower\n`;
-            }
+            p += L(
+                `\n【据点/基地】据点状态变化时写（升级/建造/损毁/描述变更），无变化可省略\n`,
+                `\n[Strongholds] Write when stronghold status changes (upgrade/build/destroy/description update); skip if unchanged\n`,
+                `\n【拠点/基地】拠点の状態が変化した時に記載（アップグレード/建設/破壊/説明更新）、変化なしなら省略可\n`,
+                `\n【거점/기지】거점 상태 변화 시 기재(업그레이드/건설/파괴/설명 변경), 변화 없으면 생략 가능\n`,
+                `\n[Крепости] Записывайте при изменении статуса крепости (улучшение/строительство/разрушение/обновление описания); пропускайте, если без изменений\n`
+            );
+            p += L(
+                `格式: base:据点路径=等级 或 base:据点路径|desc=描述\n路径用 > 分隔层级\n`,
+                `Format: base:stronghold path=level or base:stronghold path|desc=description\nUse > to separate hierarchy levels\n`,
+                `形式: base:拠点パス=レベル または base:拠点パス|desc=説明\nパスは > で階層を区切る\n`,
+                `형식: base:거점 경로=레벨 또는 base:거점 경로|desc=설명\n경로는 > 로 계층 구분\n`,
+                `Формат: base:путь крепости=уровень или base:путь крепости|desc=описание\nИспользуйте > для разделения уровней иерархии\n`
+            );
+            p += L(`示例:\n`, `Examples:\n`, `例：\n`, `예시:\n`, `Примеры:\n`);
+            p += L(
+                `  base:主角庄园=3\n  base:主角庄园>锻造区>锻造炉=2\n  base:主角庄园|desc=坐落于河谷的石砌庄园，配有围墙和瞭望塔\n`,
+                `  base:Hero's Manor=3\n  base:Hero's Manor>Forge Area>Furnace=2\n  base:Hero's Manor|desc=Stone manor in a river valley with walls and watchtower\n`,
+                `  base:主人公の館=3\n  base:主人公の館>鍛冶場>溶鉱炉=2\n  base:主人公の館|desc=川の谷にある石造りの館、壁と見張り塔付き\n`,
+                `  base:주인공의 저택=3\n  base:주인공의 저택>대장간>용광로=2\n  base:주인공의 저택|desc=성벽과 망루가 있는 강 계곡의 석조 저택\n`,
+                `  base:Поместье героя=3\n  base:Поместье героя>Кузница>Печь=2\n  base:Поместье героя|desc=Каменное поместье в речной долине со стенами и сторожевой башней\n`
+            );
             if (nodes.length > 0) {
                 const rootNodes = nodes.filter(n => !n.parent);
-                const sep = isZh ? '；' : '; ';
                 const summary = rootNodes.map(r => {
                     const kids = nodes.filter(n => n.parent === r.id);
-                    const kidSep = isZh ? '、' : ', ';
-                    const kidStr = kids.length > 0 ? `(${kids.map(k => k.name).join(kidSep)})` : '';
+                    const kidStr = kids.length > 0 ? `(${kids.map(k => k.name).join(commaSep)})` : '';
                     return `${r.name}${r.level != null ? ' Lv.' + r.level : ''}${kidStr}`;
-                }).join(sep);
-                p += isZh ? `当前据点: ${summary}\n` : `Current strongholds: ${summary}\n`;
+                }).join(semiSep);
+                p += L(`当前据点: ${summary}\n`, `Current strongholds: ${summary}\n`, `現在の拠点: ${summary}\n`, `현재 거점: ${summary}\n`, `Текущие крепости: ${summary}\n`);
             }
         }
         return p;
@@ -3895,11 +4944,22 @@ Therefore, when writing this turn's <horae> tags, you MUST also include events f
              !!this.settings.sendRpgEquipment || !!this.settings.sendRpgLevel || !!this.settings.sendRpgCurrency ||
              !!this.settings.sendRpgStronghold);
         if (rpgActive) tags.push('<horaerpg>...</horaerpg>');
-        if (this._isAiOutputChinese()) {
+        const lang = this._getAiOutputLang();
+        const joined = tags.join(' and ');
+        if (lang === 'zh-CN' || lang === 'zh-TW') {
             const count = tags.length === 2 ? '两个' : `${tags.length}个`;
             return `你的回复末尾必须包含 ${tags.join(' 和 ')} ${count}标签。\n缺少任何一个标签=不合格。`;
         }
-        return `Your reply MUST end with ${tags.join(' and ')} (${tags.length} tags total).\nMissing any tag = unacceptable.`;
+        if (lang === 'ja') {
+            return `あなたの返信の末尾には必ず ${joined}（合計${tags.length}個のタグ）を含めてください。\nいずれかのタグが欠けている＝不合格。`;
+        }
+        if (lang === 'ko') {
+            return `당신의 답변 끝에 반드시 ${joined} (총 ${tags.length}개 태그)를 포함해야 합니다.\n태그가 하나라도 빠지면 = 불합격.`;
+        }
+        if (lang === 'ru') {
+            return `Ваш ответ ДОЛЖЕН заканчиваться ${joined} (всего ${tags.length} тегов).\nОтсутствие любого тега = недопустимо.`;
+        }
+        return `Your reply MUST end with ${joined} (${tags.length} tags total).\nMissing any tag = unacceptable.`;
     }
 
     /** 宽松正则解析（不需要标签包裹） */

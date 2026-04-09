@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.11.3
+ * 版本: 1.11.4
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -13,7 +13,7 @@ import { slideToggle } from '/lib.js';
 import { horaeManager, createEmptyMeta, getItemBaseName } from './core/horaeManager.js';
 import { vectorManager } from './core/vectorManager.js';
 import { calculateRelativeTime, calculateDetailedRelativeTime, formatRelativeTime, generateTimeReference, getCurrentSystemTime, formatStoryDate, formatFullDateTime, parseStoryDate } from './utils/timeUtils.js';
-import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLangIsZh } from './core/i18n.js';
+import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './core/i18n.js';
 
 // ============================================
 // 常量定义
@@ -21,20 +21,20 @@ import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLan
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.11.3';
+const VERSION = '1.11.4';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
     {
         id: 'horae_think_sanitize',
         scriptName: 'Horae - 思维链标签安全化',
-        description: '将思维链内的<horae>等标签转为全角括号，防止DOM解析冲突',
+        description: '将思维链内的<horae>等标签转为全角括号，防止DOM解析冲突与收束误吞',
         findRegex: '/<(\\/?horae(?:event|rpg|table[^>]*)?)>(?=[\\s\\S]*?<\\/think(?:ing)?>)/gi',
         replaceString: '‹$1›',
         trimStrings: [],
         placement: [2],
         disabled: false,
-        markdownOnly: true,
+        markdownOnly: false,
         promptOnly: false,
         runOnEdit: true,
         substituteRegex: 0,
@@ -313,89 +313,64 @@ async function getTemplate(name) {
 }
 
 function _getDefaultRpgAttrConfig() {
-    if (!detectEffectiveAiLangIsZh(settings)) return [
-        { key: 'str', name: 'Strength', desc: 'Physical attack, carrying capacity & melee damage' },
-        { key: 'dex', name: 'Dexterity', desc: 'Reflexes, evasion & ranged accuracy' },
-        { key: 'con', name: 'Constitution', desc: 'Vitality, endurance & poison resistance' },
-        { key: 'int', name: 'Intelligence', desc: 'Knowledge, magic & reasoning ability' },
-        { key: 'wis', name: 'Wisdom', desc: 'Insight, intuition & willpower' },
-        { key: 'cha', name: 'Charisma', desc: 'Persuasion, leadership & personal charm' },
-    ];
+    const lang = detectEffectiveAiLang(settings);
+    const L = (zh, en, ja, ko, ru) => {
+        if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
+        if (lang === 'ja') return ja;
+        if (lang === 'ko') return ko;
+        if (lang === 'ru') return ru;
+        return en;
+    };
     return [
-        { key: 'str', name: '力量', desc: '物理攻击、负重与近战伤害' },
-        { key: 'dex', name: '敏捷', desc: '反射、闪避与远程精准' },
-        { key: 'con', name: '体质', desc: '生命力、耐久与抗毒' },
-        { key: 'int', name: '智力', desc: '学识、魔法与推理能力' },
-        { key: 'wis', name: '感知', desc: '洞察、直觉与意志力' },
-        { key: 'cha', name: '魅力', desc: '说服、领导与人格魅力' },
+        { key: 'str', name: L('力量','Strength','筋力','힘','Сила'), desc: L('物理攻击、负重与近战伤害','Physical attack, carrying capacity & melee damage','物理攻撃、積載量、近接ダメージ','물리 공격, 적재량, 근접 피해','Физическая атака, грузоподъёмность и урон в ближнем бою') },
+        { key: 'dex', name: L('敏捷','Dexterity','器用','민첩','Ловкость'), desc: L('反射、闪避与远程精准','Reflexes, evasion & ranged accuracy','反射、回避、遠距離命中','반사, 회피, 원거리 정확도','Рефлексы, уклонение и точность дальнего боя') },
+        { key: 'con', name: L('体质','Constitution','耐久','체력','Выносливость'), desc: L('生命力、耐久与抗毒','Vitality, endurance & poison resistance','生命力、持久力、毒耐性','생명력, 지구력, 독 저항','Жизненная сила, выносливость и сопротивление ядам') },
+        { key: 'int', name: L('智力','Intelligence','知力','지능','Интеллект'), desc: L('学识、魔法与推理能力','Knowledge, magic & reasoning ability','学識、魔法、推理能力','지식, 마법, 추리 능력','Знания, магия и аналитические способности') },
+        { key: 'wis', name: L('感知','Wisdom','感知','지혜','Мудрость'), desc: L('洞察、直觉与意志力','Insight, intuition & willpower','洞察、直感、意志力','통찰, 직감, 의지력','Проницательность, интуиция и сила воли') },
+        { key: 'cha', name: L('魅力','Charisma','魅力','매력','Харизма'), desc: L('说服、领导与人格魅力','Persuasion, leadership & personal charm','説得、統率、人格的魅力','설득, 리더십, 인격적 매력','Убеждение, лидерство и обаяние') },
     ];
 }
 
 function _getDefaultEquipTemplates() {
-    if (!detectEffectiveAiLangIsZh(settings)) return [
-        { name: 'Human', slots: [
-            { name: 'Head', maxCount: 1 }, { name: 'Torso', maxCount: 1 }, { name: 'Hands', maxCount: 1 },
-            { name: 'Belt', maxCount: 1 }, { name: 'Legs', maxCount: 1 }, { name: 'Feet', maxCount: 1 },
-            { name: 'Necklace', maxCount: 1 }, { name: 'Amulet', maxCount: 1 }, { name: 'Ring', maxCount: 2 },
-        ]},
-        { name: 'Orc', slots: [
-            { name: 'Head', maxCount: 1 }, { name: 'Torso', maxCount: 1 }, { name: 'Hands', maxCount: 1 },
-            { name: 'Belt', maxCount: 1 }, { name: 'Legs', maxCount: 1 }, { name: 'Feet', maxCount: 1 },
-            { name: 'Tail', maxCount: 1 }, { name: 'Necklace', maxCount: 1 }, { name: 'Ring', maxCount: 2 },
-        ]},
-        { name: 'Winged', slots: [
-            { name: 'Head', maxCount: 1 }, { name: 'Torso', maxCount: 1 }, { name: 'Hands', maxCount: 1 },
-            { name: 'Belt', maxCount: 1 }, { name: 'Legs', maxCount: 1 }, { name: 'Feet', maxCount: 1 },
-            { name: 'Wings', maxCount: 1 }, { name: 'Necklace', maxCount: 1 }, { name: 'Ring', maxCount: 2 },
-        ]},
-        { name: 'Centaur', slots: [
-            { name: 'Head', maxCount: 1 }, { name: 'Torso', maxCount: 1 }, { name: 'Hands', maxCount: 1 },
-            { name: 'Belt', maxCount: 1 }, { name: 'Barding', maxCount: 1 }, { name: 'Horseshoe', maxCount: 4 },
-            { name: 'Necklace', maxCount: 1 }, { name: 'Ring', maxCount: 2 },
-        ]},
-        { name: 'Lamia', slots: [
-            { name: 'Head', maxCount: 1 }, { name: 'Torso', maxCount: 1 }, { name: 'Hands', maxCount: 1 },
-            { name: 'Belt', maxCount: 1 }, { name: 'Tail Ornament', maxCount: 1 },
-            { name: 'Necklace', maxCount: 1 }, { name: 'Amulet', maxCount: 1 }, { name: 'Ring', maxCount: 2 },
-        ]},
-        { name: 'Demon', slots: [
-            { name: 'Head', maxCount: 1 }, { name: 'Horn Ornament', maxCount: 1 }, { name: 'Torso', maxCount: 1 },
-            { name: 'Hands', maxCount: 1 }, { name: 'Belt', maxCount: 1 }, { name: 'Legs', maxCount: 1 },
-            { name: 'Feet', maxCount: 1 }, { name: 'Wings', maxCount: 1 }, { name: 'Tail', maxCount: 1 },
-            { name: 'Necklace', maxCount: 1 }, { name: 'Ring', maxCount: 2 },
-        ]},
-    ];
+    const lang = detectEffectiveAiLang(settings);
+    const L = (zh, en, ja, ko, ru) => {
+        if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
+        if (lang === 'ja') return ja;
+        if (lang === 'ko') return ko;
+        if (lang === 'ru') return ru;
+        return en;
+    };
+    const S = (zh, en, ja, ko, ru) => ({ name: L(zh, en, ja, ko, ru), maxCount: 1 });
+    const head = S('头部','Head','頭部','머리','Голова');
+    const torso = S('躯干','Torso','胴体','상체','Торс');
+    const hands = S('手部','Hands','手','손','Руки');
+    const belt = S('腰带','Belt','腰','허리띠','Пояс');
+    const legs = S('下身','Legs','脚部','하체','Ноги');
+    const feet = S('足部','Feet','足','발','Обувь');
+    const neck = S('项链','Necklace','ネックレス','목걸이','Ожерелье');
+    const amulet = S('护身符','Amulet','お守り','부적','Амулет');
+    const ring = { name: L('戒指','Ring','指輪','반지','Кольцо'), maxCount: 2 };
+    const tail = S('尾部','Tail','尾','꼬리','Хвост');
+    const wings = S('翅膀','Wings','翼','날개','Крылья');
     return [
-        { name: '人类', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-            { name: '项链', maxCount: 1 }, { name: '护身符', maxCount: 1 }, { name: '戒指', maxCount: 2 },
+        { name: L('人类','Human','人間','인간','Человек'), slots: [head, torso, hands, belt, legs, feet, neck, amulet, ring] },
+        { name: L('兽人','Orc','獣人','수인','Орк'), slots: [head, torso, hands, belt, legs, feet, tail, neck, ring] },
+        { name: L('翼族','Winged','翼族','날개족','Крылатый'), slots: [head, torso, hands, belt, legs, feet, wings, neck, ring] },
+        { name: L('人马','Centaur','ケンタウロス','켄타우로스','Кентавр'), slots: [
+            head, torso, hands, belt,
+            { name: L('马甲','Barding','馬鎧','마갑','Конская броня'), maxCount: 1 },
+            { name: L('马蹄铁','Horseshoe','蹄鉄','말굽','Подкова'), maxCount: 4 },
+            neck, ring,
         ]},
-        { name: '兽人', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-            { name: '尾部', maxCount: 1 }, { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
+        { name: L('拉弥亚','Lamia','ラミア','라미아','Ламия'), slots: [
+            head, torso, hands, belt,
+            { name: L('蛇尾饰','Tail Ornament','尾飾り','꼬리 장식','Украшение хвоста'), maxCount: 1 },
+            neck, amulet, ring,
         ]},
-        { name: '翼族', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-            { name: '翅膀', maxCount: 1 }, { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '人马', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '马甲', maxCount: 1 }, { name: '马蹄铁', maxCount: 4 },
-            { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '拉弥亚', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '蛇尾饰', maxCount: 1 },
-            { name: '项链', maxCount: 1 }, { name: '护身符', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '恶魔', slots: [
-            { name: '头部', maxCount: 1 }, { name: '角饰', maxCount: 1 }, { name: '躯干', maxCount: 1 },
-            { name: '手部', maxCount: 1 }, { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 },
-            { name: '足部', maxCount: 1 }, { name: '翅膀', maxCount: 1 }, { name: '尾部', maxCount: 1 },
-            { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
+        { name: L('恶魔','Demon','悪魔','악마','Демон'), slots: [
+            head,
+            { name: L('角饰','Horn Ornament','角飾り','뿔 장식','Украшение рогов'), maxCount: 1 },
+            torso, hands, belt, legs, feet, wings, tail, neck, ring,
         ]},
     ];
 }
@@ -10099,6 +10074,9 @@ function initSettingsEvents() {
     $('#horae-setting-ai-output-language').val(settings.aiOutputLanguage || 'auto').on('change', function() {
         settings.aiOutputLanguage = this.value;
         saveSettings();
+        horaeManager.init(getContext(), settings);
+        _refreshSystemPromptDisplay();
+        updateTokenCounter();
     });
 
     $('#horae-setting-enabled').on('change', function() {
@@ -11477,10 +11455,24 @@ function initSettingsEvents() {
  * 同步设置到UI
  */
 function _refreshSystemPromptDisplay() {
-    if (settings.customSystemPrompt) return;
-    const def = horaeManager.getDefaultSystemPrompt();
-    $('#horae-custom-system-prompt').val(def);
-    $('#horae-system-prompt-count').text(def.length);
+    const pairs = [
+        ['customSystemPrompt', 'horae-custom-system-prompt', 'horae-system-prompt-count', () => horaeManager.getDefaultSystemPrompt()],
+        ['customBatchPrompt', 'horae-custom-batch-prompt', 'horae-batch-prompt-count', () => getDefaultBatchPrompt()],
+        ['customAnalysisPrompt', 'horae-custom-analysis-prompt', 'horae-analysis-prompt-count', () => getDefaultAnalysisPrompt()],
+        ['customCompressPrompt', 'horae-custom-compress-prompt', 'horae-compress-prompt-count', () => getDefaultCompressPrompt()],
+        ['customAutoSummaryPrompt', 'horae-custom-auto-summary-prompt', 'horae-auto-summary-prompt-count', () => getDefaultAutoSummaryPrompt()],
+        ['customTablesPrompt', 'horae-custom-tables-prompt', 'horae-tables-prompt-count', () => horaeManager.getDefaultTablesPrompt()],
+        ['customLocationPrompt', 'horae-custom-location-prompt', 'horae-location-prompt-count', () => horaeManager.getDefaultLocationPrompt()],
+        ['customRelationshipPrompt', 'horae-custom-relationship-prompt', 'horae-relationship-prompt-count', () => horaeManager.getDefaultRelationshipPrompt()],
+        ['customMoodPrompt', 'horae-custom-mood-prompt', 'horae-mood-prompt-count', () => horaeManager.getDefaultMoodPrompt()],
+        ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPrompt()],
+    ];
+    for (const [key, textareaId, countId, getDefault] of pairs) {
+        if (settings[key]) continue;
+        const def = getDefault();
+        $(`#${textareaId}`).val(def);
+        $(`#${countId}`).text(def.length);
+    }
 }
 
 function _syncVectorSourceUI() {
@@ -11901,7 +11893,11 @@ async function scanHistoryWithProgress() {
 
 /** 默认的批量摘要提示词模板 */
 function getDefaultBatchPrompt() {
-    if (!detectEffectiveAiLangIsZh(settings)) return _getDefaultBatchPromptEn();
+    const lang = detectEffectiveAiLang(settings);
+    if (lang === 'ja') return _getDefaultBatchPromptJa();
+    if (lang === 'ko') return _getDefaultBatchPromptKo();
+    if (lang === 'ru') return _getDefaultBatchPromptRu();
+    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultBatchPromptEn();
     return `你是剧情分析助手。请逐条分析以下对话记录，为每条消息提取【时间】【剧情事件】和【物品变化】。
 
 核心原则：
@@ -11963,9 +11959,106 @@ event:importance|brief summary (50-80 chars; importance: normal/important/critic
 · {{user}} is the protagonist's name`;
 }
 
+function _getDefaultBatchPromptJa() {
+    return `あなたはストーリー分析アシスタントです。以下の会話ログをメッセージごとに分析し、各メッセージから【時間】【ストーリーイベント】【アイテム変化】を抽出してください。
+
+基本原則：
+- テキストに明示されている情報のみを抽出すること。捏造禁止。
+- 各メッセージを独立に分析し、===Message#番号=== で区切る
+
+{{messages}}
+
+【出力形式】各メッセージを以下の形式で出力：
+
+===Message#番号===
+<horae>
+time:日付 時刻（テキストから抽出、例：2026/2/4 15:00 または霜降月三日 夕暮れ）
+item:emoji アイテム名(数量)|説明=所有者@場所（新規取得アイテム、一般的なアイテムは説明省略可）
+item!:emoji アイテム名(数量)|説明=所有者@場所（重要アイテム、説明必須）
+item-:アイテム名（消費/紛失/使い切ったアイテム）
+</horae>
+<horaeevent>
+event:重要度|イベント概要（40〜70文字、重要度：normal/important/critical）
+</horaeevent>
+
+【ルール】
+· time：テキストから現在のシーンの日時を抽出。必須。（明示的な時間がなければ文脈から推測）
+· event：このメッセージの主要なストーリーイベント。各メッセージに最低1つ
+· アイテム：取得・消費・状態変化があった場合のみ記録。変化なし＝item行なし
+· item形式：emoji接頭辞（例：🔑🍞）、単品は(1)を書かない。場所は正確に（❌地面の上 ✅酒場ホールのテーブルの上）
+· 重要度：日常会話=normal、ストーリー展開=important、重要な転換点=critical
+· {{user}} は主人公の名前`;
+}
+
+function _getDefaultBatchPromptKo() {
+    return `당신은 스토리 분석 어시스턴트입니다. 아래 대화 기록을 메시지별로 분석하여 각 메시지에서 【시간】【스토리 이벤트】【아이템 변화】를 추출하세요.
+
+핵심 원칙:
+- 텍스트에 명시적으로 나타난 정보만 추출할 것. 창작 금지.
+- 각 메시지를 독립적으로 분석하며 ===Message#번호=== 로 구분
+
+{{messages}}
+
+【출력 형식】각 메시지를 아래 형식으로 출력:
+
+===Message#번호===
+<horae>
+time:날짜 시간 (텍스트에서 추출, 예: 2026/2/4 15:00 또는 상강월 셋째 날 황혼)
+item:emoji 아이템명(수량)|설명=소유자@위치 (새로 획득한 아이템, 일반 아이템은 설명 생략 가능)
+item!:emoji 아이템명(수량)|설명=소유자@위치 (중요 아이템, 설명 필수)
+item-:아이템명 (소모/분실/소진된 아이템)
+</horae>
+<horaeevent>
+event:중요도|이벤트 요약 (40~70자, 중요도: normal/important/critical)
+</horaeevent>
+
+【규칙】
+· time: 텍스트에서 현재 장면의 날짜와 시간을 추출. 필수. (명시적 시간이 없으면 맥락에서 추론)
+· event: 이 메시지의 주요 스토리 이벤트. 메시지당 최소 1개
+· 아이템: 획득, 소모, 상태 변경 시에만 기록. 변화 없음 = item 행 없음
+· item 형식: emoji 접두사 예: 🔑🍞, 단일 아이템은 (1) 생략. 위치는 정확하게 (❌바닥 위 ✅주점 홀 탁자 위)
+· 중요도: 일상 대화=normal, 스토리 전개=important, 핵심 전환점=critical
+· {{user}} 는 주인공의 이름`;
+}
+
+function _getDefaultBatchPromptRu() {
+    return `Вы — ассистент по анализу сюжета. Проанализируйте следующий лог диалога сообщение за сообщением, извлекая из каждого [Время], [Сюжетные события] и [Изменения предметов].
+
+Основные принципы:
+- Извлекайте только информацию, явно присутствующую в тексте. НЕ выдумывайте.
+- Анализируйте каждое сообщение независимо, разделяя их ===Message#номер===
+
+{{messages}}
+
+[Формат вывода] Выведите каждое сообщение в следующем формате:
+
+===Message#номер===
+<horae>
+time:дата время (извлечь из текста, напр. 2026/2/4 15:00 или Луна Инея День 3, сумерки)
+item:emoji название предмета(кол-во)|описание=владелец@местоположение (новые предметы; описание для обычных необязательно)
+item!:emoji название предмета(кол-во)|описание=владелец@местоположение (важные предметы; описание обязательно)
+item-:название предмета (израсходованные/потерянные/использованные предметы)
+</horae>
+<horaeevent>
+event:важность|краткое описание (50–100 символов; важность: normal/important/critical)
+</horaeevent>
+
+[Правила]
+· time: Извлеките дату и время текущей сцены из текста. Обязательно. (Если точное время не указано, определите по контексту)
+· event: Ключевые сюжетные события в этом сообщении. Минимум одно событие на сообщение.
+· Предметы: Записывайте только при получении, расходовании или изменении состояния. Нет изменений = нет строки item.
+· Формат item: префикс-эмодзи 🔑🍞. Для единичных предметов не писать (1). Местоположение должно быть точным (❌на земле ✅на столе в зале таверны)
+· Важность: повседневный разговор=normal, продвижение сюжета=important, ключевой поворот=critical
+· {{user}} — имя главного героя`;
+}
+
 /** 默认的AI分析提示词模板 */
 function getDefaultAnalysisPrompt() {
-    if (!detectEffectiveAiLangIsZh(settings)) return _getDefaultAnalysisPromptEn();
+    const lang = detectEffectiveAiLang(settings);
+    if (lang === 'ja') return _getDefaultAnalysisPromptJa();
+    if (lang === 'ko') return _getDefaultAnalysisPromptKo();
+    if (lang === 'ru') return _getDefaultAnalysisPromptRu();
+    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultAnalysisPromptEn();
     return `请分析以下文本，提取关键信息并以指定格式输出。核心原则：只提取文本中明确提到的信息，没有的字段不写，禁止编造。
 
 【文本内容】
@@ -12037,6 +12130,117 @@ event:importance|brief summary (50-80 chars; normal/important/critical)
   Add: agenda:2026/02/10|Allen invites {{user}} for Valentine's dinner (2026/02/14 18:00)
   Complete: agenda-:Allen invites {{user}} for Valentine's dinner
 · event: Place inside <horaeevent>, NOT inside <horae>.`;
+}
+
+function _getDefaultAnalysisPromptJa() {
+    return `以下のテキストを分析し、キー情報を抽出して指定形式で出力してください。基本原則：テキストに明示されている情報のみ抽出。記載のないフィールドは空欄のまま。捏造禁止。
+
+【テキスト内容】
+{{content}}
+
+【出力形式】
+<horae>
+time:日付 時刻（必須、例：2026/2/4 15:00 または霜降月一日 19:50）
+location:現在地（必須）
+atmosphere:雰囲気
+characters:その場にいるキャラクター、カンマ区切り（必須）
+costume:キャラクター名=服装の完全な説明（必須、1人1行、セミコロンで結合しない）
+item:emoji アイテム名(数量)|説明=所有者@正確な場所（新規取得または変化のあるアイテムのみ）
+item!:emoji アイテム名(数量)|説明=所有者@正確な場所（重要アイテム、説明必須）
+item!!:emoji アイテム名(数量)|説明=所有者@正確な場所（キーアイテム、詳細な説明必須）
+item-:アイテム名（消費/紛失したアイテム）
+affection:キャラクター名=好感度数値（NPCの{{user}}に対する好感度のみ。{{user}}自身は記録禁止。数値の後に注釈を付けない）
+npc:キャラクター名|外見=性格@{{user}}との関係~gender:male または female~age:数値~race:種族名~class:職業名
+agenda:設定日|予定内容（新しい約束/計画/伏線が出現した場合のみ。相対的な日時には絶対日付を括弧で付記）
+agenda-:内容キーワード（予定が完了/失効/キャンセルされた場合。システムが一致する予定を自動削除）
+</horae>
+<horaeevent>
+event:重要度|イベント概要（40〜70文字、normal/important/critical）
+</horaeevent>
+
+【トリガー条件】条件を満たした場合のみ対応フィールドを出力：
+· アイテム：新規取得、数量/所有/場所の変化、消費/紛失の場合のみ。変化なし＝記載不要。単品は(1)を書かない。emoji接頭辞例：🔑🍞
+· NPC：初登場時は完全情報必須（~gender/age/race/class 含む）。以降は変化のあるフィールドのみ。
+  区切り：| 名前、= 外見と性格、@ 関係、~ 拡張フィールド
+· 好感度：初回は関係性で判定（他人0-20/知人30-50/友人50-70）。以降は変化時のみ。
+· 予定：新しい約束/計画/伏線が出現した場合のみ。完了/失効した予定は agenda-: で削除。
+  追加：agenda:2026/02/10|アレンが{{user}}をバレンタインディナーに招待(2026/02/14 18:00)
+  完了：agenda-:アレンが{{user}}をバレンタインディナーに招待
+· event：<horaeevent> 内に配置、<horae> 内には置かない。`;
+}
+
+function _getDefaultAnalysisPromptKo() {
+    return `다음 텍스트를 분석하여 핵심 정보를 추출하고 지정된 형식으로 출력하세요. 핵심 원칙: 텍스트에 명시적으로 언급된 정보만 추출. 언급되지 않은 필드는 비워둘 것. 창작 금지.
+
+【텍스트 내용】
+{{content}}
+
+【출력 형식】
+<horae>
+time:날짜 시간 (필수, 예: 2026/2/4 15:00 또는 상강월 첫째 날 19:50)
+location:현재 위치 (필수)
+atmosphere:분위기
+characters:현장 캐릭터, 쉼표 구분 (필수)
+costume:캐릭터명=전체 복장 설명 (필수, 1인당 1줄, 세미콜론 병합 금지)
+item:emoji 아이템명(수량)|설명=소유자@정확한 위치 (새로 획득하거나 변화한 아이템만)
+item!:emoji 아이템명(수량)|설명=소유자@정확한 위치 (중요 아이템, 설명 필수)
+item!!:emoji 아이템명(수량)|설명=소유자@정확한 위치 (핵심 도구, 상세 설명 필수)
+item-:아이템명 (소모/분실된 아이템)
+affection:캐릭터명=호감도 수치 (NPC의 {{user}}에 대한 호감도만. {{user}} 자신은 기록 금지. 수치 뒤에 주석 금지)
+npc:캐릭터명|외모=성격@{{user}}와의 관계~gender:male 또는 female~age:숫자~race:종족명~class:직업명
+agenda:설정 날짜|할일 내용 (새로운 약속/계획/복선이 등장할 때만. 상대적 시간은 괄호 안에 절대 날짜 표기)
+agenda-:내용 키워드 (할일이 완료/만료/취소 시. 시스템이 일치하는 할일을 자동 제거)
+</horae>
+<horaeevent>
+event:중요도|이벤트 요약 (40~70자, normal/important/critical)
+</horaeevent>
+
+【트리거 조건】조건 충족 시에만 해당 필드 출력:
+· 아이템: 새로 획득, 수량/소유/위치 변경, 소모/분실 시에만. 변화 없음 = 기록하지 않음. 단일 아이템은 (1) 생략. emoji 접두사 예: 🔑🍞
+· NPC: 첫 등장 시 완전한 정보 필수 (~gender/age/race/class 포함). 이후 변경된 필드만 기록.
+  구분자: | 이름, = 외모와 성격, @ 관계, ~ 확장 필드
+· 호감도: 첫 판정은 관계 기반 (낯선 사람 0-20 / 지인 30-50 / 친구 50-70). 이후 변화 시에만.
+· 할일: 새로운 약속/계획/복선이 등장할 때만. 완료/만료된 할일은 agenda-: 로 제거.
+  추가: agenda:2026/02/10|앨런이 {{user}}를 발렌타인 저녁에 초대(2026/02/14 18:00)
+  완료: agenda-:앨런이 {{user}}를 발렌타인 저녁에 초대
+· event: <horaeevent> 안에 배치, <horae> 안에는 넣지 않음.`;
+}
+
+function _getDefaultAnalysisPromptRu() {
+    return `Проанализируйте следующий текст, извлеките ключевую информацию и выведите в указанном формате. Основной принцип: извлекайте только информацию, явно упомянутую в тексте. Неупомянутые поля оставляйте пустыми. НЕ выдумывайте.
+
+[Содержание текста]
+{{content}}
+
+[Формат вывода]
+<horae>
+time:дата время (обязательно, напр. 2026/2/4 15:00 или Луна Инея День 1 19:50)
+location:текущее местоположение (обязательно)
+atmosphere:атмосфера
+characters:присутствующие персонажи, через запятую (обязательно)
+costume:имя персонажа=полное описание наряда (обязательно, по одному на строку, не объединять точкой с запятой)
+item:emoji название предмета(кол-во)|описание=владелец@точное местоположение (только новые или изменённые предметы)
+item!:emoji название предмета(кол-во)|описание=владелец@точное местоположение (важные предметы, описание обязательно)
+item!!:emoji название предмета(кол-во)|описание=владелец@точное местоположение (ключевой реквизит, описание должно быть подробным)
+item-:название предмета (израсходованные/потерянные предметы)
+affection:имя персонажа=значение привязанности (только привязанность NPC к {{user}}; НЕ записывать самого {{user}}; без аннотаций после значения)
+npc:имя персонажа|внешность=характер@отношения с {{user}}~gender:male или female~age:число~race:название расы~class:название класса
+agenda:дата создания|содержание задачи (только при появлении новых договорённостей/планов/предзнаменований; относительное время должно содержать абсолютную дату в скобках)
+agenda-:ключевое слово содержания (когда задача выполнена/истекла/отменена; система автоматически удаляет соответствующую задачу)
+</horae>
+<horaeevent>
+event:важность|краткое описание (50–100 символов; normal/important/critical)
+</horaeevent>
+
+[Условия активации] Выводите поле только при выполнении его условия:
+· Предметы: Только при получении, изменении количества/владельца/местоположения, расходовании/потере. Нет изменений = не записывать. Для единичных предметов не писать (1). Префикс-эмодзи: 🔑🍞
+· NPC: При первом появлении обязательна полная информация (включая ~gender/age/race/class). Далее только изменённые поля.
+  Разделители: | для имени, = для внешности и характера, @ для отношений, ~ для расширенных полей
+· Привязанность: Первый раз по отношениям (незнакомец 0-20 / знакомый 30-50 / друг 50-70). Далее только при изменении.
+· Задачи: Только при появлении новых договорённостей/планов/предзнаменований. Для выполненных/истёкших используйте agenda-:.
+  Добавить: agenda:2026/02/10|Аллен приглашает {{user}} на ужин в День святого Валентина (2026/02/14 18:00)
+  Выполнено: agenda-:Аллен приглашает {{user}} на ужин в День святого Валентина
+· event: Размещать внутри <horaeevent>, НЕ внутри <horae>.`;
 }
 
 let _autoSummaryRanThisTurn = false;
@@ -12322,6 +12526,24 @@ async function _corsAwareFetch(url, init) {
     }
 }
 
+/** 根据 HTTP 状态码返回 i18n 人话提示，帮助用户自行排查 */
+function _httpStatusHint(status) {
+    const key = `toast.httpHint${status}`;
+    const fallback = {
+        400: 'Check model name and API URL',
+        401: 'API key invalid or expired',
+        403: 'No permission for this model',
+        404: 'Model or endpoint not found',
+        429: 'Rate limited, try again later',
+        500: 'Server error (proxy/upstream), not a plugin issue',
+        502: 'Gateway error, proxy may be temporarily down',
+        503: 'Service temporarily unavailable',
+    };
+    const translated = t(key);
+    if (translated && translated !== key) return translated;
+    return fallback[status] || '';
+}
+
 /** 直接请求API端点，完全独立于酒馆主连接，支持真并行 */
 async function generateWithDirectApi(prompt) {
     const _model = settings.autoSummaryModel.trim();
@@ -12364,7 +12586,8 @@ async function generateWithDirectApi(prompt) {
     });
     if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
-        throw new Error(`独立API返回 ${resp.status}: ${errText.slice(0, 200)}`);
+        const hint = _httpStatusHint(resp.status);
+        throw new Error(`独立API ${resp.status}: ${errText.slice(0, 200)}${hint ? `\n💡 ${hint}` : ''}`);
     }
     const data = await resp.json();
     const finishReason = data?.choices?.[0]?.finish_reason || '';
@@ -12455,7 +12678,8 @@ async function _geminiNativeRequest(prompt, rawUrl, model, apiKey) {
 
     if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
-        throw new Error(`Gemini原生API ${resp.status}: ${errText.slice(0, 300)}`);
+        const hint = _httpStatusHint(resp.status);
+        throw new Error(`Gemini原生API ${resp.status}: ${errText.slice(0, 200)}${hint ? `\n💡 ${hint}` : ''}`);
     }
 
     const data = await resp.json();
@@ -12725,7 +12949,11 @@ async function checkAutoSummary() {
 
 /** 默认的剧情压缩提示词（含事件压缩和全文摘要两段，以分隔线区分） */
 function getDefaultCompressPrompt() {
-    if (!detectEffectiveAiLangIsZh(settings)) return _getDefaultCompressPromptEn();
+    const lang = detectEffectiveAiLang(settings);
+    if (lang === 'ja') return _getDefaultCompressPromptJa();
+    if (lang === 'ko') return _getDefaultCompressPromptKo();
+    if (lang === 'ru') return _getDefaultCompressPromptRu();
+    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultCompressPromptEn();
     return `=====【事件压缩】=====
 你是剧情压缩助手。请将以下{{count}}条剧情事件压缩为一段简洁的摘要（100-200字），保留关键信息和因果关系。
 
@@ -12781,9 +13009,97 @@ Requirements:
 - Style: concise, objective narrative`;
 }
 
+function _getDefaultCompressPromptJa() {
+    return `=====[イベント圧縮]=====
+あなたはストーリー圧縮アシスタントです。以下の{{count}}件のストーリーイベントを簡潔な要約（150〜300文字）に圧縮し、キー情報と因果関係を保持してください。
+
+{{events}}
+
+要件：
+- 時系列順に記述し、重要な転換点を保持
+- 人名・地名は原文のまま保持
+- プレーンテキストの要約のみ出力、タグやフォーマットは不要
+-「critical」および「important」レベルのイベントを省略しない
+- {{user}} は主人公の名前
+- 文体：簡潔で客観的なナラティブ
+
+=====[全文要約]=====
+あなたはストーリー圧縮アシスタントです。以下の会話ログを読み、精錬されたストーリー要約（200〜500文字）に圧縮し、キー情報と因果関係を保持してください。
+
+{{fulltext}}
+
+要件：
+- 時系列順に記述し、重要な転換点とキーとなる詳細を保持
+- 人名・地名は原文のまま保持
+- プレーンテキストの要約のみ出力、タグやフォーマットは不要
+- キャラクターの重要な台詞と感情の変化を保持
+- {{user}} は主人公の名前
+- 文体：簡潔で客観的なナラティブ`;
+}
+
+function _getDefaultCompressPromptKo() {
+    return `=====[이벤트 압축]=====
+당신은 스토리 압축 어시스턴트입니다. 아래 {{count}}건의 스토리 이벤트를 간결한 요약(150~300자)으로 압축하고, 핵심 정보와 인과 관계를 유지하세요.
+
+{{events}}
+
+요구사항:
+- 시간순으로 서술하며, 중요한 전환점 유지
+- 인명·지명은 원문 그대로 유지
+- 순수 텍스트 요약만 출력, 태그나 서식 없음
+- "critical" 및 "important" 등급 이벤트 누락 금지
+- {{user}} 는 주인공의 이름
+- 문체: 간결하고 객관적인 서술체
+
+=====[전문 요약]=====
+당신은 스토리 압축 어시스턴트입니다. 아래 대화 기록을 읽고 정제된 스토리 요약(200~500자)으로 압축하여, 핵심 정보와 인과 관계를 유지하세요.
+
+{{fulltext}}
+
+요구사항:
+- 시간순으로 서술하며, 중요한 전환점과 핵심 세부사항 유지
+- 인명·지명은 원문 그대로 유지
+- 순수 텍스트 요약만 출력, 태그나 서식 없음
+- 캐릭터의 핵심 대사와 감정 변화 유지
+- {{user}} 는 주인공의 이름
+- 문체: 간결하고 객관적인 서술체`;
+}
+
+function _getDefaultCompressPromptRu() {
+    return `=====[Сжатие событий]=====
+Вы — ассистент по сжатию сюжета. Сожмите следующие {{count}} сюжетных событий в краткое резюме (200–500 символов), сохраняя ключевую информацию и причинно-следственные связи.
+
+{{events}}
+
+Требования:
+- Излагайте в хронологическом порядке, сохраняя важные поворотные моменты
+- Имена персонажей и названия мест сохранять как есть
+- Выводите только текстовое резюме, без тегов и форматирования
+- Не пропускайте события уровня «critical» и «important»
+- {{user}} — имя главного героя
+- Стиль: лаконичное, объективное повествование
+
+=====[Полное резюме]=====
+Вы — ассистент по сжатию сюжета. Прочитайте следующий лог диалога и сожмите его в отточенное сюжетное резюме (300–700 символов), сохраняя ключевую информацию и причинно-следственные связи.
+
+{{fulltext}}
+
+Требования:
+- Излагайте в хронологическом порядке, сохраняя важные поворотные моменты и ключевые детали
+- Имена персонажей и названия мест сохранять как есть
+- Выводите только текстовое резюме, без тегов и форматирования
+- Сохраняйте ключевые диалоги персонажей и эмоциональные изменения
+- {{user}} — имя главного героя
+- Стиль: лаконичное, объективное повествование`;
+}
+
 /** 默认的自动摘要提示词（独立于手动压缩，由副API使用） */
 function getDefaultAutoSummaryPrompt() {
-    if (!detectEffectiveAiLangIsZh(settings)) return _getDefaultAutoSummaryPromptEn();
+    const lang = detectEffectiveAiLang(settings);
+    if (lang === 'ja') return _getDefaultAutoSummaryPromptJa();
+    if (lang === 'ko') return _getDefaultAutoSummaryPromptKo();
+    if (lang === 'ru') return _getDefaultAutoSummaryPromptRu();
+    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultAutoSummaryPromptEn();
     return `你是剧情压缩助手。请阅读以下对话记录，将其压缩为一段精炼的剧情摘要（150-300字），保留关键信息和因果关系。
 
 {{fulltext}}
@@ -12817,10 +13133,61 @@ Requirements:
 - Style: concise, objective narrative`;
 }
 
+function _getDefaultAutoSummaryPromptJa() {
+    return `あなたはストーリー圧縮アシスタントです。以下の会話ログを読み、精錬されたストーリー要約（200〜500文字）に圧縮し、キー情報と因果関係を保持してください。
+
+{{fulltext}}
+
+既存のイベント概要（参考用のみ、このリストだけに頼らないこと）：
+{{events}}
+
+要件：
+- 時系列順に記述し、重要な転換点とキーとなる詳細を保持
+- 人名・地名は原文のまま保持
+- プレーンテキストの要約のみ出力、タグやフォーマットは不要（<horae>等のXMLタグ禁止）
+- キャラクターの重要な台詞と感情の変化を保持
+- {{user}} は主人公の名前
+- 文体：簡潔で客観的なナラティブ`;
+}
+
+function _getDefaultAutoSummaryPromptKo() {
+    return `당신은 스토리 압축 어시스턴트입니다. 아래 대화 기록을 읽고 정제된 스토리 요약(200~500자)으로 압축하여, 핵심 정보와 인과 관계를 유지하세요.
+
+{{fulltext}}
+
+기존 이벤트 개요 (참고용, 이 목록에만 의존하지 마세요):
+{{events}}
+
+요구사항:
+- 시간순으로 서술하며, 중요한 전환점과 핵심 세부사항 유지
+- 인명·지명은 원문 그대로 유지
+- 순수 텍스트 요약만 출력, 태그나 서식 없음 (<horae> 등의 XML 태그 금지)
+- 캐릭터의 핵심 대사와 감정 변화 유지
+- {{user}} 는 주인공의 이름
+- 문체: 간결하고 객관적인 서술체`;
+}
+
+function _getDefaultAutoSummaryPromptRu() {
+    return `Вы — ассистент по сжатию сюжета. Прочитайте следующий лог диалога и сожмите его в отточенное сюжетное резюме (300–700 символов), сохраняя ключевую информацию и причинно-следственные связи.
+
+{{fulltext}}
+
+Существующий обзор событий (только для справки, не полагайтесь исключительно на этот список):
+{{events}}
+
+Требования:
+- Излагайте в хронологическом порядке, сохраняя важные поворотные моменты и ключевые детали
+- Имена персонажей и названия мест сохранять как есть
+- Выводите только текстовое резюме, без тегов и форматирования (запрещены XML-теги вроде <horae>)
+- Сохраняйте ключевые диалоги персонажей и эмоциональные изменения
+- {{user}} — имя главного героя
+- Стиль: лаконичное, объективное повествование`;
+}
+
 /** 从压缩提示词模板中按模式提取对应的 prompt 段 */
 function parseCompressPrompt(template, mode) {
-    const eventRe = /=+(?:【事件压缩】|\[Event Compression\])=+/;
-    const fulltextRe = /=+(?:【全文摘要】|\[Full-text Summary\])=+/;
+    const eventRe = /=+(?:【事件压缩】|\[Event Compression\]|\[イベント圧縮\]|\[이벤트 압축\]|\[Сжатие событий\])=+/;
+    const fulltextRe = /=+(?:【全文摘要】|\[Full-text Summary\]|\[全文要約\]|\[전문 요약\]|\[Полное резюме\])=+/;
     const eMatch = template.match(eventRe);
     const fMatch = template.match(fulltextRe);
     if (eMatch && fMatch) {
@@ -13889,6 +14256,22 @@ async function analyzeMessageWithAI(messageContent) {
 }
 
 // ============================================
+// 数据层清理
+// ============================================
+
+/**
+ * 将 <think>/<thinking> 块内残留的 horae 标签转为全角括号，
+ * 防止酒馆原生收束思维链时因标签边界误判而贪婪吞掉正文。
+ * 直接修改 message.mes，从数据源彻底消除隐患。
+ */
+function _sanitizeThinkBlockHoraeTags(mes) {
+    if (!mes) return mes;
+    return mes.replace(/<think(?:ing)?([\s>][\s\S]*?)<\/think(?:ing)?>/gi, (block) => {
+        return block.replace(/<(\/?horae(?:event|rpg|table[^>]*)?)>/gi, '‹$1›');
+    });
+}
+
+// ============================================
 // 事件监听
 // ============================================
 
@@ -13907,6 +14290,12 @@ async function onMessageReceived(messageId) {
         if (!message || message.is_user) return;
         
         if (message.horae_meta?._skipHorae) return;
+        
+        // 数据层清理：将思维链内的 horae 标签转为全角，防止酒馆收束时误吞正文
+        const sanitized = _sanitizeThinkBlockHoraeTags(message.mes);
+        if (sanitized !== message.mes) {
+            message.mes = sanitized;
+        }
         
         isRegenerate = !!(message.horae_meta?.timestamp?.absolute);
         let savedFlags = null;

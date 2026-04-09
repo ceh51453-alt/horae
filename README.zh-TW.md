@@ -1,4 +1,4 @@
-# Horae - 時光記憶 v1.11.3 | SillyTavern 記憶增強插件
+# Horae - 時光記憶 v1.11.4 | SillyTavern 記憶增強插件
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **繁體中文**
 
@@ -54,8 +54,9 @@
 | 简体中文 | ✅ 完整 |
 | 繁體中文 | ✅ 完整 |
 | English | ✅ 完整 |
-| 한국어 | 🔧 模板（歡迎社群貢獻） |
-| 日本語 | 🔧 模板（歡迎社群貢獻） |
+| 한국어 | ✅ 完整 |
+| 日本語 | ✅ 完整 |
+| Русский | ✅ 完整 |
 
 希望 Horae 支援你的語言？歡迎提交 [Issue](https://github.com/SenriYuki/SillyTavern-Horae/issues) 或直接 PR 翻譯檔案！
 
@@ -68,3 +69,7 @@
 > ⚠️ 本專案為業餘開發，回覆可能有延遲，敬請見諒。
 
 **作者：SenriYuki**
+
+### 翻譯致謝
+
+- **俄語 (Русский)** — [@KiskaSora](https://github.com/KiskaSora)

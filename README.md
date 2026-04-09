@@ -1,4 +1,4 @@
-# Horae v1.11.3 - Memory Engine for SillyTavern
+# Horae v1.11.4 - Memory Engine for SillyTavern
 
 **English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 
@@ -73,8 +73,9 @@ Long-form RP players know the pain: AI memory is basically a goldfish. Yesterday
 | 简体中文 (Simplified Chinese) | ✅ Full |
 | 繁體中文 (Traditional Chinese) | ✅ Full |
 | English | ✅ Full |
-| 한국어 (Korean) | 🔧 Template (community contributions welcome) |
-| 日本語 (Japanese) | 🔧 Template (community contributions welcome) |
+| 한국어 (Korean) | ✅ Full |
+| 日本語 (Japanese) | ✅ Full |
+| Русский (Russian) | ✅ Full |
 
 **Want Horae in your language?** Open an [Issue](https://github.com/SenriYuki/SillyTavern-Horae/issues) or submit a PR with a translation file! See `locales/en.json` for the translation template.
 
@@ -83,7 +84,7 @@ Long-form RP players know the pain: AI memory is basically a goldfish. Yesterday
 ## What's New in v1.11.0
 
 ### Internationalization (i18n)
-- **UI Language Selector** — Switch between Simplified Chinese, Traditional Chinese, English, Korean, and Japanese. Auto-detect option available.
+- **UI Language Selector** — Switch between Simplified Chinese, Traditional Chinese, English, Korean, Japanese, and Russian. Auto-detect option available.
 - **AI Output Language** — Separate setting for AI response language, independent of UI language.
 - **900+ translated keys** — All UI text, prompts, tooltips, and tutorials are fully translated.
 - **Simplified/Traditional Chinese bidirectional parsing** — No more search/parse failures due to character variant differences.
@@ -97,3 +98,7 @@ Bug reports and suggestions are welcome!
 > ⚠️ This is a side project — replies may be delayed. Thank you for your patience.
 
 **Author: SenriYuki**
+
+### Translation Credits
+
+- **Russian (Русский)** — [@KiskaSora](https://github.com/KiskaSora)

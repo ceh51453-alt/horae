@@ -10,7 +10,7 @@
                 <i class="fa-regular fa-clock"></i>
                 Horae 时光记忆
             </div>
-            <span class="horae-version">v1.11.3</span>
+            <span class="horae-version">v1.11.4</span>
         </div>
         
         <!-- 标签页导航 -->
@@ -458,6 +458,7 @@
                                 <option value="en">English</option>
                                 <option value="ko">한국어</option>
                                 <option value="ja">日本語</option>
+                                <option value="ru">Русский</option>
                             </select>
                         </label>
                         <span class="horae-setting-hint" data-i18n="settings.uiLanguageHint">
@@ -476,6 +477,7 @@
                                 <option value="en">English</option>
                                 <option value="ko">한국어</option>
                                 <option value="ja">日本語</option>
+                                <option value="ru">Русский</option>
                             </select>
                         </label>
                         <span class="horae-setting-hint" data-i18n="settings.aiOutputLanguageHint">
@@ -662,9 +664,9 @@
                         <i class="fa-solid fa-circle-info"></i>
                         控制哪些信息会随提示词发送给AI。关闭可节省Token，但AI将无法"记住"这些内容。
                     </span>
-                    <div id="horae-token-counter" data-i18n="settings.tokenCounter" style="margin-bottom: 12px; padding: 8px 12px; background: var(--horae-bg); border: 1px solid var(--horae-border); border-radius: var(--horae-radius-sm); font-size: 12px; color: var(--horae-text-muted); display: flex; align-items: center; gap: 8px;">
+                    <div id="horae-token-counter" style="margin-bottom: 12px; padding: 8px 12px; background: var(--horae-bg); border: 1px solid var(--horae-border); border-radius: var(--horae-radius-sm); font-size: 12px; color: var(--horae-text-muted); display: flex; align-items: center; gap: 8px;">
                         <i class="fa-solid fa-microchip" style="color: var(--horae-primary-light);"></i>
-                        当前注入 Token：<strong id="horae-token-value" data-i18n="settings.tokenCalculating" style="color: var(--horae-primary-light);">计算中...</strong>
+                        <span data-i18n="settings.tokenCounter">当前注入 Token：</span><strong id="horae-token-value" data-i18n="settings.tokenCalculating" style="color: var(--horae-primary-light);">计算中...</strong>
                     </div>
                     
                     <div class="horae-setting-item">
@@ -1342,7 +1344,7 @@
                 </div>
                 
                 <div class="horae-about">
-                    <p>Horae v1.11.3 | 作者: SenriYuki</p>
+                    <p>Horae v1.11.4 | 作者: SenriYuki</p>
                     <p>基于时间锚点的AI记忆增强系统</p>
                 </div>
             </div>

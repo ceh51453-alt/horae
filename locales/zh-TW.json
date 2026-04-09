@@ -214,7 +214,15 @@
         "invalidFile": "檔案格式不正確，請選擇 Horae 配置檔",
         "enterSummary": "請輸入事件摘要",
         "enterContent": "請輸入摘要內容",
-        "insufficientEvents": "有效事件不足2條"
+        "insufficientEvents": "有效事件不足2條",
+        "httpHint400": "請檢查模型名稱是否正確、API位址是否匹配",
+        "httpHint401": "API金鑰無效或已過期，請檢查Key",
+        "httpHint403": "無權存取該模型，請檢查金鑰權限或模型可用性",
+        "httpHint404": "模型或端點不存在，請檢查模型名和API位址",
+        "httpHint429": "請求過快被限流，請稍後再試",
+        "httpHint500": "伺服器內部錯誤（代理/上游問題），非插件問題",
+        "httpHint502": "閘道錯誤，代理服務可能暫時不可用",
+        "httpHint503": "服務暫時不可用，請稍後重試"
     },
     "confirm": {
         "deleteSummary": "刪除此摘要？原始事件將恢復顯示。",

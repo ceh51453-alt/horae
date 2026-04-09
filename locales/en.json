@@ -374,7 +374,15 @@
         "slotExists": "This slot already exists",
         "invalidLevelNumber": "Please enter a valid level number",
         "invalidDataFormat": "Invalid data format",
-        "formatError": "Format error"
+        "formatError": "Format error",
+        "httpHint400": "Check if the model name and API URL are correct",
+        "httpHint401": "API key is invalid or expired, please check your key",
+        "httpHint403": "No permission to access this model, check key permissions or model availability",
+        "httpHint404": "Model or endpoint does not exist, check model name and API URL",
+        "httpHint429": "Rate limited due to too many requests, please try again later",
+        "httpHint500": "Server internal error (proxy/upstream issue), not a plugin problem",
+        "httpHint502": "Gateway error, proxy service may be temporarily unavailable",
+        "httpHint503": "Service temporarily unavailable, please try again later"
     },
     "confirm": {
         "deleteSummary": "Delete this summary? Original events will be restored.",

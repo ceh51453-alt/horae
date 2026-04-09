@@ -374,7 +374,15 @@
         "slotExists": "该格位已存在",
         "invalidLevelNumber": "请输入有效等级数字",
         "invalidDataFormat": "无效的数据格式",
-        "formatError": "格式错误"
+        "formatError": "格式错误",
+        "httpHint400": "请检查模型名称是否正确、API地址是否匹配",
+        "httpHint401": "API密钥无效或已过期，请检查Key",
+        "httpHint403": "无权访问该模型，请检查密钥权限或模型可用性",
+        "httpHint404": "模型或端点不存在，请检查模型名和API地址",
+        "httpHint429": "请求过快被限流，请稍后再试",
+        "httpHint500": "服务器内部错误（代理/上游问题），非插件问题",
+        "httpHint502": "网关错误，代理服务可能暂时不可用",
+        "httpHint503": "服务暂时不可用，请稍后重试"
     },
     "confirm": {
         "deleteSummary": "删除此摘要？原始事件将恢复显示。",
