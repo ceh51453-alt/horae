@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.11.7
+ * 版本: 1.11.8
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -21,7 +21,7 @@ import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLan
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.11.7';
+const VERSION = '1.11.8';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -7299,6 +7299,7 @@ function _renderRpgHudFromSnapshot(messageEl, messageIndex, rpg) {
  */
 function refreshAllDisplays() {
     buildPanelContent._affCache = null;
+    enforceHiddenState();
     updateStatusDisplay();
     updateAgendaDisplay();
     updateTimelineDisplay();
@@ -7307,7 +7308,6 @@ function refreshAllDisplays() {
     updateLocationMemoryDisplay();
     updateRpgDisplay();
     updateTokenCounter();
-    enforceHiddenState();
 }
 
 /** chat[0] 上的全局键——无法由 rebuild 系列函数重建，需在 meta 重置时保留 */
@@ -7396,14 +7396,66 @@ function _restoreCompressedFlags(meta, saved) {
 }
 
 /**
+ * 清理孤儿摘要：如果某个 active 摘要的卡片事件在整个聊天中找不到，
+ * 则清除该摘要范围内的 _compressedBy / is_hidden，并将摘要标记为 inactive。
+ * 返回清理的摘要数量。
+ */
+function cleanOrphanSummaries() {
+    const chat = horaeManager.getChat();
+    if (!chat?.length) return 0;
+    const sums = chat[0]?.horae_meta?.autoSummaries;
+    if (!sums?.length) return 0;
+
+    let cleaned = 0;
+    for (const s of sums) {
+        if (!s.active || !s.range || !s.id) continue;
+        const summaryId = s.id;
+        let cardFound = false;
+        for (let i = s.range[0]; i <= s.range[1] && i < chat.length; i++) {
+            const evts = chat[i]?.horae_meta?.events;
+            if (evts?.some(e => e._summaryId === summaryId && e.isSummary)) {
+                cardFound = true;
+                break;
+            }
+        }
+        if (cardFound) continue;
+
+        console.log(`[Horae] 孤儿摘要 ${summaryId}: 卡片事件缺失，清理压缩标记`);
+        s.active = false;
+        for (let i = s.range[0]; i <= s.range[1] && i < chat.length; i++) {
+            if (i === 0 || !chat[i]) continue;
+            if (chat[i].is_hidden) {
+                chat[i].is_hidden = false;
+                const $el = $(`.mes[mesid="${i}"]`);
+                if ($el.length) $el.attr('is_hidden', 'false');
+            }
+            const evts = chat[i]?.horae_meta?.events;
+            if (evts) {
+                for (const evt of evts) {
+                    if (evt._compressedBy === summaryId) delete evt._compressedBy;
+                }
+            }
+        }
+        cleaned++;
+    }
+    if (cleaned > 0) {
+        console.log(`[Horae] cleanOrphanSummaries: 清理了 ${cleaned} 个孤儿摘要`);
+    }
+    return cleaned;
+}
+
+/**
  * 校验并修复摘要范围内消息的 is_hidden 和 _compressedBy 状态，
- * 防止 SillyTavern 重渲染或 saveChat 竞态导致隐藏/压缩标记丢失
+ * 防止 SillyTavern 重渲染或 saveChat 竞态导致隐藏/压缩标记丢失。
+ * 会先清理孤儿摘要，再对仍然有效的摘要补全标记。
  */
 async function enforceHiddenState() {
     const chat = horaeManager.getChat();
     if (!chat?.length) return;
     const sums = chat[0]?.horae_meta?.autoSummaries;
     if (!sums?.length) return;
+
+    const orphansCleaned = cleanOrphanSummaries();
 
     let fixed = 0;
     for (const s of sums) {
@@ -7428,15 +7480,15 @@ async function enforceHiddenState() {
             }
         }
     }
-    if (fixed > 0) {
-        console.log(`[Horae] enforceHiddenState: 修复了 ${fixed} 处摘要状态`);
+    if (fixed > 0 || orphansCleaned > 0) {
+        console.log(`[Horae] enforceHiddenState: 修复了 ${fixed} 处摘要状态, 清理了 ${orphansCleaned} 个孤儿`);
         await getContext().saveChat();
     }
 }
 
 /**
- * 手动一键修复：遍历所有活跃摘要，强制恢复 is_hidden + _compressedBy，
- * 并同步 DOM 属性。返回修复的条目数。
+ * 手动一键修复：先清理孤儿摘要，再对仍然有效的活跃摘要
+ * 强制恢复 is_hidden + _compressedBy，并同步 DOM 属性。返回修复的条目数。
  */
 function repairAllSummaryStates() {
     const chat = horaeManager.getChat();
@@ -7444,20 +7496,20 @@ function repairAllSummaryStates() {
     const sums = chat[0]?.horae_meta?.autoSummaries;
     if (!sums?.length) return 0;
 
+    const orphansCleaned = cleanOrphanSummaries();
+
     let fixed = 0;
     for (const s of sums) {
         if (!s.active || !s.range) continue;
         const summaryId = s.id;
         for (let i = s.range[0]; i <= s.range[1]; i++) {
             if (i === 0 || !chat[i]) continue;
-            // 强制 is_hidden
             if (!chat[i].is_hidden) {
                 chat[i].is_hidden = true;
                 fixed++;
             }
             const $el = $(`.mes[mesid="${i}"]`);
             if ($el.length) $el.attr('is_hidden', 'true');
-            // 强制 _compressedBy
             const events = chat[i].horae_meta?.events;
             if (events) {
                 for (const evt of events) {
@@ -7469,11 +7521,11 @@ function repairAllSummaryStates() {
             }
         }
     }
-    if (fixed > 0) {
-        console.log(`[Horae] repairAllSummaryStates: 修复了 ${fixed} 处`);
+    if (fixed > 0 || orphansCleaned > 0) {
+        console.log(`[Horae] repairAllSummaryStates: 修复了 ${fixed} 处, 清理了 ${orphansCleaned} 个孤儿`);
         getContext().saveChat();
     }
-    return fixed;
+    return fixed + orphansCleaned;
 }
 
 /** 刷新所有已展开的底部面板 */
