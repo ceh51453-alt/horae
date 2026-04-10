@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.11.5
+ * 版本: 1.11.6
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -21,7 +21,7 @@ import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLan
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.11.5';
+const VERSION = '1.11.6';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -11891,6 +11891,9 @@ async function scanHistoryWithProgress() {
         );
         
         horaeManager.rebuildTableData();
+        horaeManager.rebuildRelationships();
+        horaeManager.rebuildLocationMemory();
+        horaeManager.rebuildRpgData();
         
         await getContext().saveChat();
         
@@ -14399,40 +14402,54 @@ function onMessageDeleted() {
 
 /**
  * 消息编辑时触发 — 重新解析该消息并重建表格
+ * 延迟执行以确保 SillyTavern 自身的 post-edit 处理（updateMessage、refreshSwipeButtons 等）完成
  */
 function onMessageEdited(messageId) {
     if (!settings.enabled) return;
-    
-    const chat = horaeManager.getChat();
-    const message = chat[messageId];
-    if (!message || message.is_user) return;
-    
-    // 保存摘要压缩标记 + chat[0] 全局键后重置 meta，解析完再恢复
-    const savedFlags = _saveCompressedFlags(message.horae_meta);
-    const savedGlobal = messageId === 0 ? _saveGlobalMeta(message.horae_meta) : null;
-    message.horae_meta = createEmptyMeta();
-    
-    horaeManager.processAIResponse(messageId, message.mes);
-    _restoreCompressedFlags(message.horae_meta, savedFlags);
-    if (savedGlobal) _restoreGlobalMeta(message.horae_meta, savedGlobal);
-    
-    horaeManager.rebuildTableData();
-    horaeManager.rebuildRelationships();
-    horaeManager.rebuildLocationMemory();
-    horaeManager.rebuildRpgData();
-    getContext().saveChat();
-    
-    refreshAllDisplays();
-    renderCustomTablesList();
-    refreshVisiblePanels();
 
-    if (settings.vectorEnabled && vectorManager.isReady) {
-        const meta = horaeManager.getMessageMeta(messageId);
-        if (meta) {
-            vectorManager.addMessage(messageId, meta).catch(err =>
-                console.warn('[Horae] 向量重建失败:', err));
+    setTimeout(() => {
+        try {
+            const chat = horaeManager.getChat();
+            const message = chat[messageId];
+            if (!message || message.is_user) return;
+
+            const savedFlags = _saveCompressedFlags(message.horae_meta);
+            const savedGlobal = messageId === 0 ? _saveGlobalMeta(message.horae_meta) : null;
+            message.horae_meta = createEmptyMeta();
+
+            horaeManager.processAIResponse(messageId, message.mes);
+            _restoreCompressedFlags(message.horae_meta, savedFlags);
+            if (savedGlobal) _restoreGlobalMeta(message.horae_meta, savedGlobal);
+
+            horaeManager.rebuildTableData();
+            horaeManager.rebuildRelationships();
+            horaeManager.rebuildLocationMemory();
+            horaeManager.rebuildRpgData();
+            getContext().saveChat();
+
+            refreshAllDisplays();
+            renderCustomTablesList();
+
+            if (settings.showMessagePanel) {
+                const messageEl = document.querySelector(`.mes[mesid="${messageId}"]`);
+                if (messageEl) {
+                    const oldPanel = messageEl.querySelector('.horae-message-panel');
+                    if (oldPanel) oldPanel.remove();
+                    addMessagePanel(messageEl, messageId);
+                }
+            }
+
+            if (settings.vectorEnabled && vectorManager.isReady) {
+                const meta = horaeManager.getMessageMeta(messageId);
+                if (meta) {
+                    vectorManager.addMessage(messageId, meta).catch(err =>
+                        console.warn('[Horae] 向量重建失败:', err));
+                }
+            }
+        } catch (err) {
+            console.error(`[Horae] onMessageEdited #${messageId} 失败:`, err);
         }
-    }
+    }, 200);
 }
 
 /** 注入上下文（数据+规则合并注入） */
@@ -14454,7 +14471,8 @@ async function onPromptReady(eventData) {
                 Object.keys(lastMsg.horae_meta.costumes || {}).length > 0 ||
                 Object.keys(lastMsg.horae_meta.affection || {}).length > 0 ||
                 Object.keys(lastMsg.horae_meta.npcs || {}).length > 0 ||
-                (lastMsg.horae_meta.events || []).length > 0
+                (lastMsg.horae_meta.events || []).length > 0 ||
+                (lastMsg.horae_meta._rpgChanges && Object.keys(lastMsg.horae_meta._rpgChanges).length > 0)
             )) {
                 skipLast = 1;
                 console.log('[Horae] 检测到swipe/regenerate，跳过末尾消息的旧记忆');

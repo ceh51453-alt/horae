@@ -3028,7 +3028,8 @@ class HoraeManager {
         // 需要在覆写 meta 时保留的全局/摘要相关字段
         const PRESERVE_KEYS = [
             'autoSummaries', 'customTables', 'globalTableData',
-            'locationMemory', 'relationships', 'tableContributions'
+            'locationMemory', 'relationships', 'tableContributions',
+            'rpg', '_rpgChanges'
         ];
 
         for (let i = 0; i < chat.length; i++) {
@@ -3044,10 +3045,12 @@ class HoraeManager {
 
             // 跳过已有元数据
             const hasEvents = message.horae_meta?.events?.length > 0 || message.horae_meta?.event?.summary;
+            const hasRpg = message.horae_meta?._rpgChanges && Object.keys(message.horae_meta._rpgChanges).length > 0;
             if (message.horae_meta && (
                 message.horae_meta.timestamp?.story_date ||
                 hasEvents ||
-                Object.keys(message.horae_meta.costumes || {}).length > 0
+                Object.keys(message.horae_meta.costumes || {}).length > 0 ||
+                hasRpg
             )) {
                 skipped++;
                 if (progressCallback) {
