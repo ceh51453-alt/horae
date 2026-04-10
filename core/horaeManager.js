@@ -3025,16 +3025,16 @@ class HoraeManager {
         let processed = 0;
         let skipped = 0;
 
-        // 需要在覆写 meta 时保留的全局/摘要相关字段
         const PRESERVE_KEYS = [
             'autoSummaries', 'customTables', 'globalTableData',
             'locationMemory', 'relationships', 'tableContributions',
-            'rpg', '_rpgChanges'
+            'rpg', '_rpgChanges',
+            '_deletedNpcs', '_deletedAgendaTexts'
         ];
 
         for (let i = 0; i < chat.length; i++) {
             const message = chat[i];
-            
+
             if (message.is_user) {
                 skipped++;
                 if (progressCallback) {
@@ -3043,44 +3043,64 @@ class HoraeManager {
                 continue;
             }
 
-            // 跳过已有元数据
-            const hasEvents = message.horae_meta?.events?.length > 0 || message.horae_meta?.event?.summary;
-            const hasRpg = message.horae_meta?._rpgChanges && Object.keys(message.horae_meta._rpgChanges).length > 0;
-            if (message.horae_meta && (
-                message.horae_meta.timestamp?.story_date ||
-                hasEvents ||
-                Object.keys(message.horae_meta.costumes || {}).length > 0 ||
-                hasRpg
-            )) {
-                skipped++;
-                if (progressCallback) {
-                    progressCallback(Math.round((i + 1) / chat.length * 100), i + 1, chat.length);
-                }
-                continue;
-            }
-
-            // 保留已有 meta 上的全局数据和事件标记
             const existing = message.horae_meta;
             const preserved = {};
+            const oldEvents = [];
+            const wasSkipped = !!existing?._skipHorae;
+
             if (existing) {
                 for (const key of PRESERVE_KEYS) {
                     if (existing[key] !== undefined) preserved[key] = existing[key];
                 }
-                // 保留事件上的摘要标记（_compressedBy / _summaryId）
-                if (existing.events?.length > 0) preserved._existingEvents = existing.events;
+                if (existing.events?.length > 0) {
+                    for (const evt of existing.events) {
+                        if (evt._compressedBy || evt._summaryId || evt.isSummary) {
+                            oldEvents.push(evt);
+                        }
+                    }
+                }
             }
 
+            const _applyPreserved = (meta) => {
+                Object.assign(meta, preserved);
+                if (wasSkipped) meta._skipHorae = true;
+                if (oldEvents.length > 0) {
+                    if (!meta.events) meta.events = [];
+                    const nonSummaryFlags = oldEvents.filter(e => !e.isSummary);
+                    const summaryEvts = oldEvents.filter(e => e.isSummary);
+                    for (const flag of nonSummaryFlags) {
+                        if (!flag._compressedBy) continue;
+                        const match = meta.events.find(e =>
+                            !e.isSummary && !e._compressedBy &&
+                            e.summary && flag.summary &&
+                            e.summary === flag.summary
+                        );
+                        if (match) match._compressedBy = flag._compressedBy;
+                    }
+                    for (const sEvt of summaryEvts) {
+                        if (!sEvt._summaryId) continue;
+                        const exists = meta.events.some(e => e._summaryId === sEvt._summaryId);
+                        if (!exists) {
+                            meta.events.push({
+                                summary: sEvt.summary,
+                                level: sEvt.level || '摘要',
+                                isSummary: true,
+                                _summaryId: sEvt._summaryId,
+                            });
+                        }
+                    }
+                }
+            };
+
             const parsed = this.parseHoraeTag(message.mes);
-            
+
             if (parsed) {
                 const meta = this.mergeParsedToMeta(null, parsed);
                 if (meta._tableUpdates) {
                     meta.tableContributions = meta._tableUpdates;
                     delete meta._tableUpdates;
                 }
-                // 恢复保留字段
-                Object.assign(meta, preserved);
-                delete meta._existingEvents;
+                _applyPreserved(meta);
                 this.setMessageMeta(i, meta);
                 processed++;
             } else if (analyzeCallback) {
@@ -3092,8 +3112,7 @@ class HoraeManager {
                             meta.tableContributions = meta._tableUpdates;
                             delete meta._tableUpdates;
                         }
-                        Object.assign(meta, preserved);
-                        delete meta._existingEvents;
+                        _applyPreserved(meta);
                         this.setMessageMeta(i, meta);
                         processed++;
                     }
@@ -3102,8 +3121,7 @@ class HoraeManager {
                 }
             } else {
                 const meta = createEmptyMeta();
-                Object.assign(meta, preserved);
-                delete meta._existingEvents;
+                _applyPreserved(meta);
                 this.setMessageMeta(i, meta);
                 processed++;
             }
