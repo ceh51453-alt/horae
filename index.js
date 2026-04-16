@@ -12348,6 +12348,37 @@ event:중요도|이벤트 요약 (40~70자, 중요도: normal/important/critical
 · {{user}} 는 주인공의 이름`;
 }
 
+function _getDefaultBatchPromptVi() {
+    return `Bạn là một trợ lý phân tích cốt truyện. Hãy phân tích nhật ký trò chuyện sau đây theo từng tin nhắn, trích xuất [Thời gian], [Sự kiện cốt truyện] và [Thay đổi vật phẩm] cho mỗi tin nhắn.
+
+Nguyên tắc cốt lõi:
+- Chỉ trích xuất thông tin xuất hiện rõ ràng trong văn bản. KHÔNG bịa đặt.
+- Phân tích độc lập từng tin nhắn, phân tách bằng ===Message#Số===
+
+{{messages}}
+
+[Định dạng đầu ra] Xuất mỗi tin nhắn theo định dạng sau:
+
+===Message#Số===
+<horae>
+time:ngày giờ (trích xuất từ văn bản, VD: 2026/2/4 15:00 hoặc Ngày 3 Tháng Sương Giá Lúc chạng vạng)
+item:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí (vật phẩm mới nhận; mô tả có thể bỏ qua với vật phẩm thường)
+item!:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí (vật phẩm quan trọng, bắt buộc có mô tả)
+item-:tên vật phẩm (vật phẩm đã tiêu hao/bị mất/đã dùng)
+</horae>
+<horaeevent>
+event:độ quan trọng|tóm tắt ngắn gọn (50-100 từ; độ quan trọng: normal/important/critical)
+</horaeevent>
+
+[Quy tắc]
+· time: Trích xuất ngày giờ của cảnh hiện tại từ văn bản. Bắt buộc. (Nếu không có thời gian rõ ràng, suy luận từ ngữ cảnh)
+· event: Các sự kiện cốt truyện chính trong tin nhắn này. Ít nhất một sự kiện cho mỗi tin nhắn.
+· Vật phẩm: Chỉ ghi lại khi nhận được, tiêu hao hoặc thay đổi trạng thái. Không có thay đổi = không ghi gì cả.
+· Định dạng item: tiền tố emoji VD 🔑🍞. Không viết (1) cho vật phẩm đơn lẻ. Vị trí phải chính xác (❌trên mặt đất ✅trên bàn trong quán rượu)
+· Độ quan trọng: trò chuyện bình thường=normal, tiến triển cốt truyện=important, bước ngoặt quan trọng=critical
+· {{user}} là tên nhân vật chính`;
+}
+
 function _getDefaultBatchPromptRu() {
     return `Вы — ассистент по анализу сюжета. Проанализируйте следующий лог диалога сообщение за сообщением, извлекая из каждого [Время], [Сюжетные события] и [Изменения предметов].
 
@@ -12532,6 +12563,43 @@ event:중요도|이벤트 요약 (40~70자, normal/important/critical)
   추가: agenda:2026/02/10|앨런이 {{user}}를 발렌타인 저녁에 초대(2026/02/14 18:00)
   완료: agenda-:앨런이 {{user}}를 발렌타인 저녁에 초대
 · event: <horaeevent> 안에 배치, <horae> 안에는 넣지 않음.`;
+}
+
+function _getDefaultAnalysisPromptVi() {
+    return `Phân tích văn bản sau, trích xuất các thông tin then chốt và xuất ra theo định dạng được chỉ định. Nguyên tắc cốt lõi: Chỉ trích xuất thông tin được đề cập rõ ràng trong văn bản. Bỏ trống các trường không được đề cập. KHÔNG bịa đặt.
+
+[Nội dung văn bản]
+{{content}}
+
+[Định dạng đầu ra]
+<horae>
+time:ngày giờ (bắt buộc, VD: 2026/2/4 15:00 hoặc Ngày 1 Tháng Sương Giá 19:50)
+location:vị trí hiện tại (bắt buộc)
+atmosphere:bầu không khí
+characters:các nhân vật có mặt, phân tách bằng dấu phẩy (bắt buộc)
+costume:tên nhân vật=mô tả đầy đủ trang phục (bắt buộc, mỗi người một dòng, không gộp bằng dấu chấm phẩy)
+item:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí chính xác (chỉ vật phẩm mới nhận hoặc bị thay đổi trạng thái)
+item!:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí chính xác (vật phẩm quan trọng, bắt buộc mô tả chi tiết)
+item!!:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí chính xác (đạo cụ đặc biệt quan trọng, mô tả phải cực kỳ chi tiết)
+item-:tên vật phẩm (vật phẩm đã tiêu hao/bị mất)
+affection:tên nhân vật=chỉ số hảo cảm (chỉ tính hảo cảm của NPC đối với {{user}}; KHÔNG ghi {{user}}; không tự thêm ghi chú phía sau giá trị)
+npc:tên nhân vật|ngoại hình=tính cách@mối quan hệ với {{user}}~gender:male hoặc female~age:chữ số~race:tên chủng tộc~class:tên chức nghiệp
+agenda:ngày thiết lập|nội dung công việc (chỉ khi có thỏa thuận/kế hoạch/ẩn ý mới xuất hiện; thời gian tương đối phải chứa ngày tuyệt đối trong ngoặc đơn)
+agenda-:từ khóa nội dung (khi công việc đã hoàn thành/hết hạn/hủy bỏ; hệ thống tự xóa mục công việc phù hợp)
+</horae>
+<horaeevent>
+event:độ quan trọng|tóm tắt ngắn gọn (50-100 ký tự; normal/important/critical)
+</horaeevent>
+
+[Điều kiện kích hoạt] Chỉ xuất trường thông tin khi đáp ứng đúng điều kiện:
+· Vật phẩm: Chỉ ghi khi mới nhận, thay đổi số lượng/quyền sở hữu/vị trí hoặc bị mất/tiêu hao. Không đổi = không xuất ra. Không ghi (1) cho vật phẩm đơn nguyên. Tiền tố emoji VD 🔑🍞.
+· NPC: Lần xuất hiện đầu tiên phải ghi đầy đủ (bao gồm ~gender/age/race/class). Sau đó, chỉ ghi các trường có sự thay đổi.
+  Dấu phân cách: | cho tên, = cho ngoại hình/tính cách, @ cho mối quan hệ, ~ cho các trường mở rộng
+· Hảo cảm: Lần đầu tiên dựa trên mức độ quan hệ (người lạ 0-20 / người quen 30-50 / bạn bè 50-70). Các lần sau chỉ ghi khi thay đổi.
+· Sự việc dự kiến: Chỉ xuất khi xuất hiện thỏa thuận/kế hoạch/ẩn ý mới. Dùng agenda-: đối với các việc đã hoàn thành.
+  Thêm mới: agenda:2026/02/10|Allen mời {{user}} đi ăn tối Valentine (2026/02/14 18:00)
+  Hoàn tất: agenda-:Allen mời {{user}} đi ăn tối Valentine
+· event: Đặt bên trong thẻ <horaeevent>, KHÔNG nằm trong thẻ <horae>.`;
 }
 
 function _getDefaultAnalysisPromptRu() {
@@ -13395,6 +13463,34 @@ function _getDefaultCompressPromptKo() {
 - 문체: 간결하고 객관적인 서술체`;
 }
 
+function _getDefaultCompressPromptVi() {
+    return `=====[Ép sự kiện]=====
+Bạn là một trợ lý tóm tắt cốt truyện. Hãy nén {{count}} sự kiện cốt truyện sau đây thành một bản tóm tắt ngắn gọn (200-500 ký tự), giữ lại các thông tin then chốt và mối quan hệ nhân quả.
+
+{{events}}
+
+Yêu cầu:
+- Kể lại theo trình tự thời gian, giữ nguyên các bước ngoặt quan trọng
+- Tên nhân vật và địa danh phải được giữ nguyên
+- Chỉ xuất ra văn bản tóm tắt thuần túy, không dùng thẻ hay định dạng
+- Không được bỏ sót các sự kiện ở mức độ "critical" và "important"
+- {{user}} là tên nhân vật chính
+- Văn phong: ngắn gọn, tường thuật khách quan
+
+=====[Tóm tắt toàn văn]=====
+Bạn là một trợ lý tóm tắt cốt truyện. Hãy đọc nhật ký trò chuyện sau đây và nén lại thành một bản tóm tắt cốt truyện tinh luyện (300-700 ký tự), giữ lại thông tin then chốt và mối quan hệ nhân quả.
+
+{{fulltext}}
+
+Yêu cầu:
+- Kể lại theo trình tự thời gian, bảo toàn các diễn biến quan trọng và chi tiết cụ thể
+- Tên nhân vật và địa danh phải được giữ nguyên
+- Chỉ xuất văn bản thuần túy, không có thẻ định dạng hay các định dạng phân cách
+- Giữ vững các câu thoại quan trọng và sự thay đổi cảm xúc của nhân vật
+- {{user}} là tên nhân vật chính
+- Văn phong: ngắn gọn, tường thuật khách quan`;
+}
+
 function _getDefaultCompressPromptRu() {
     return `=====[Сжатие событий]=====
 Вы — ассистент по сжатию сюжета. Сожмите следующие {{count}} сюжетных событий в краткое резюме (200–500 символов), сохраняя ключевую информацию и причинно-следственные связи.
@@ -13496,6 +13592,23 @@ function _getDefaultAutoSummaryPromptKo() {
 - 캐릭터의 핵심 대사와 감정 변화 유지
 - {{user}} 는 주인공의 이름
 - 문체: 간결하고 객관적인 서술체`;
+}
+
+function _getDefaultAutoSummaryPromptVi() {
+    return `Bạn là trợ lý nén cốt truyện. Hãy đọc nhật ký trò chuyện sau đây, nén nó thành một đoạn tóm tắt cốt truyện ngắn gọn (300-700 ký tự), lưu giữ lại các thông tin cực kỳ quan trọng và nguyên lý nhân quả.
+
+{{fulltext}}
+
+Tóm lược sự kiện đã có (chỉ để tham khảo hỗ trợ, đừng chỉ phụ thuộc riêng vào danh sách này):
+{{events}}
+
+Yêu cầu:
+- Tường thuật theo trình tự thời gian, duy trì các bước tiến triển quan trọng và chi tiết chủ chốt
+- Tên các nhân vật và tên các địa danh giữ nguyễn gốc như văn bản
+- Hệ thống chỉ xuất tóm tắt text văn bản đơn thuần, không thêm định dạng cũng như tags (Cấm các XML tag như <horae>)
+- Đảm bảo giữ các lời thoại chính của cốt truyện và sự chuyển biến tình cảm nhân vật
+- {{user}} là tên của nhân vật chính
+- Văn phong: xúc tích, khách quan thuyết minh`;
 }
 
 function _getDefaultAutoSummaryPromptRu() {
