@@ -695,6 +695,17 @@ export class VectorManager {
 
         results = results.slice(0, topK);
 
+        // --- Bắt đầu: Tăng Access Count cho Retention Value ---
+        for (const r of results) {
+            const meta = chat[r.messageIndex]?.horae_meta;
+            if (meta && meta.events) {
+                meta.events.forEach(e => {
+                    e.accessCount = (e.accessCount || 0) + 1;
+                });
+            }
+        }
+        // --- Kết thúc: Tăng Access Count ---
+
         console.log(`[Horae Vector] === 最终合并: ${results.length} 条 ===`);
         for (const r of results) {
             console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(3)} [${r.source}]`);

@@ -1071,13 +1071,31 @@ class HoraeManager {
                     e.event?.level === '关键' || e.event?.level === '關鍵' || e.event?.level === '重要' || e.event?.level === '摘要' || e.event?.isSummary
                 );
                 const contextDepth = this.settings?.contextDepth ?? 15;
-                const maxDistance = this.settings?.forgetDistance ?? 150;
+                const forgetThreshold = this.settings?.forgetThreshold ?? 0.2;
                 const currentMsgIndex = this.getChat().length;
                 const normalAll = sortedEvents.filter(e => 
                     (e.event?.level === '一般' || !e.event?.level) && !e.event?.isSummary
                 );
-                const normalEvents = (contextDepth === 0 ? [] : normalAll.slice(-contextDepth))
-                    .filter(e => (currentMsgIndex - (e.messageIndex || 0)) <= maxDistance);
+                
+                let normalEvents = [];
+                if (contextDepth > 0) {
+                    normalEvents = normalAll.filter(e => {
+                        const distance = Math.max(0, currentMsgIndex - (e.messageIndex || 0));
+                        // Không lãng quên nếu khoảng cách quá gần (dưới 10 tin nhắn)
+                        if (distance <= 10) return true;
+                        
+                        // Tính Retention Value
+                        const recency = 1 / (1 + Math.log10(1 + distance / 10)); // Giảm tốc độ log
+                        const accessFreq = (e.event?.accessCount || 0) / Math.max(1, distance / 20);
+                        const retentionValue = 0.5 * recency * (1 + accessFreq);
+                        
+                        return retentionValue >= forgetThreshold;
+                    });
+                    
+                    if (normalEvents.length > contextDepth) {
+                        normalEvents = normalEvents.slice(-contextDepth);
+                    }
+                }
                 
                 const allToShow = [...criticalAndImportant, ...normalEvents]
                     .sort((a, b) => (a.messageIndex || 0) - (b.messageIndex || 0));
