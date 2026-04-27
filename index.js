@@ -10438,10 +10438,6 @@ function initSettingsEvents() {
         saveSettings();
         horaeManager.init(getContext(), settings);
     });
-        saveSettings();
-        horaeManager.init(getContext(), settings);
-        updateTokenCounter();
-    });
     
     $('#horae-setting-injection-position').on('change', function() {
         settings.injectionPosition = parseInt(this.value) || 1;
