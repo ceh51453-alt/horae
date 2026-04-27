@@ -1,5 +1,5 @@
 import { settings, appState, saveSettings, showToast, getTemplate } from '../core/state.js';
-import { t, applyI18nToDOM } from '../core/i18n.js';
+import { t } from '../core/i18n.js';
 import { extension_settings } from '/scripts/extensions.js';
 
 // ============================================

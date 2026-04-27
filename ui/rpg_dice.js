@@ -1,6 +1,6 @@
 import { settings, appState, saveSettings, getContext, showToast } from '../core/state.js';
 import { horaeManager } from '../core/horaeManager.js';
-import { t, applyI18nToDOM } from '../core/i18n.js';
+import { t } from '../core/i18n.js';
 import { escapeHtml } from '../utils/timeUtils.js';
 
 // ============================================
