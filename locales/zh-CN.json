@@ -175,7 +175,7 @@
         "bufferLimitHint": "触发条件：时间线数量 >= 保留数 + 每次总结的事件数",
         "resummaryThreshold": "总结数量达到多少时进行二次总结",
         "resummaryThresholdHint": "二次总结达到该数量后会继续三次总结，以此类推，为0则关闭二次总结，推荐值为6-8",
-        "autoSummaryExample": "示例：保留5条AI，每次总结5条事件。时间线数量 >= 10 时触发总结；触发后优先总结保留区之前的连续未总结部分。",
+        "autoSummaryExample": "示例：保留5条AI，每次总结5条事件。时间线数量 >= 10 时触发总结，也就是说大概是20楼总结一次",
         "batchMaxMessages": "每批最大消息数",
         "batchMaxMessagesHint": "AI智能补全时每批处理的最大消息数",
         "batchMaxTokens": "每批最大Token",
