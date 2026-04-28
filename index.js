@@ -156,9 +156,9 @@ const DEFAULT_SETTINGS = {
     customMoodPrompt: '',          // 自定义情绪追踪提示词（空=使用默认）
     // 自动摘要
     autoSummaryEnabled: true,      // 自动摘要开关
-    autoSummaryKeepRecent: 5,      // 保留最近N条消息不压缩
-    autoSummaryBufferMode: 'messages', // 'messages' | 'tokens'
-    autoSummaryBufferLimit: 20,     // 缓冲阈值（楼层数或Token数）
+    autoSummaryKeepRecent: 5,      // 保留最近N条AI消息不压缩（中间用户消息会随全文一起发送）
+    autoSummaryBufferMode: 'messages', // 'messages'(按AI条数) | 'tokens'
+    autoSummaryBufferLimit: 10,     // 缓冲阈值（连续未总结AI条数或Token数）
     autoSummaryResummaryThreshold: 7, // <=0 关闭二次总结；>0 时同层摘要达到此值触发更高层摘要（2->3->4...）
     autoSummaryBatchMaxMsgs: 50,    // 单次摘要最大消息条数
     autoSummaryBatchMaxTokens: 80000, // 单次摘要最大Token数
@@ -13412,7 +13412,7 @@ function _cleanSummaryText(raw) {
 
 function _splitMsgIndicesByLimits(chat, indices, maxMsgs, maxTokens) {
     const sorted = [...new Set(indices || [])]
-        .filter(i => Number.isInteger(i) && i > 0 && chat?.[i])
+        .filter(i => Number.isInteger(i) && i >= 0 && chat?.[i])
         .sort((a, b) => a - b);
     if (!sorted.length) return [];
     const chunks = [];
@@ -13579,7 +13579,7 @@ function _collectAutoResummaryPayload(chat, plan, cutoff) {
 
     const coveredSet = new Set();
     for (let i = plan.windowStart; i <= plan.windowEnd; i++) {
-        if (i <= 0 || i >= cutoff || !chat?.[i]) continue;
+        if (i < 0 || i >= cutoff || !chat?.[i]) continue;
         if (blockedByHigherDepth.has(i)) continue;
         if (chat[i]?.horae_meta?._skipHorae) continue;
         coveredSet.add(i);
@@ -13587,7 +13587,7 @@ function _collectAutoResummaryPayload(chat, plan, cutoff) {
     for (const s of plan.mergedEntries) {
         const indices = getSummaryMsgIndices(s.entry);
         for (const idx of indices) {
-            if (!Number.isInteger(idx) || idx <= 0 || idx >= cutoff || !chat?.[idx]) continue;
+            if (!Number.isInteger(idx) || idx < 0 || idx >= cutoff || !chat?.[idx]) continue;
             if (blockedByHigherDepth.has(idx)) continue;
             coveredSet.add(idx);
         }
@@ -14432,8 +14432,7 @@ function _collectTailContinuousAutoSummaryEvents(chat, cutoff, summarizedIndices
         const evt = item.event;
         const msgIdx = item.msgIdx;
 
-        const msgBlocked = !!item.msg?.is_hidden
-            || summarizedIndices.has(msgIdx)
+        const msgBlocked = summarizedIndices.has(msgIdx)
             || manualSummaryMsgIndices.has(msgIdx)
             || !!item.meta?._skipHorae;
         const evtBlocked = !!evt?._carryoverSeed
@@ -14462,6 +14461,119 @@ function _collectTailContinuousAutoSummaryEvents(chat, cutoff, summarizedIndices
         level: item.event?.level || '一般',
         summary: item.event?.summary || ''
     }));
+}
+
+function _isTrackableAiMessage(msg) {
+    if (!msg || msg.is_user) return false;
+    if (msg.horae_meta?._skipHorae) return false;
+    return true;
+}
+
+function _resolveAutoSummaryKeepWindow(chat, keepRecent) {
+    if (!Array.isArray(chat) || chat.length <= 1) {
+        return { keepStart: 0, totalAi: 0, keepAiIndices: [], allAiIndices: [] };
+    }
+
+    const allAiIndices = [];
+    for (let i = 0; i < chat.length; i++) {
+        if (_isTrackableAiMessage(chat[i])) allAiIndices.push(i);
+    }
+
+    const keepCount = Math.max(0, parseInt(keepRecent, 10) || 0);
+    if (allAiIndices.length === 0) {
+        return { keepStart: 0, totalAi: 0, keepAiIndices: [], allAiIndices: [] };
+    }
+    if (keepCount <= 0) {
+        return {
+            keepStart: chat.length,
+            totalAi: allAiIndices.length,
+            keepAiIndices: [],
+            allAiIndices
+        };
+    }
+    if (allAiIndices.length <= keepCount) {
+        return {
+            keepStart: 0,
+            totalAi: allAiIndices.length,
+            keepAiIndices: [...allAiIndices],
+            allAiIndices
+        };
+    }
+
+    const keepAiIndices = allAiIndices.slice(-keepCount);
+    return {
+        keepStart: keepAiIndices[0],
+        totalAi: allAiIndices.length,
+        keepAiIndices,
+        allAiIndices
+    };
+}
+
+function _collectActiveSummaryCoveredIndices(chat) {
+    const covered = new Set();
+    const sums = chat?.[0]?.horae_meta?.autoSummaries || [];
+    for (const s of sums) {
+        if (!s?.id || s.active === false) continue;
+        for (const idx of getSummaryMsgIndices(s)) {
+            if (Number.isInteger(idx) && idx >= 0) covered.add(idx);
+        }
+    }
+    return covered;
+}
+
+function _buildAutoSummaryBufferHideIndices(chat, keepStart, tailAiIndices, activeSummaryCoveredIndices) {
+    if (!Array.isArray(chat) || chat.length <= 1) return [];
+    if (!Array.isArray(tailAiIndices) || tailAiIndices.length === 0) return [];
+
+    const start = Math.max(0, Math.min(...tailAiIndices));
+    const end = Math.min(Math.max(0, keepStart) - 1, chat.length - 1);
+    if (end < start) return [];
+
+    const result = [];
+    for (let i = start; i <= end; i++) {
+        const msg = chat[i];
+        if (!msg) continue;
+        if (msg.horae_meta?._skipHorae) continue;
+        if (activeSummaryCoveredIndices?.has(i)) continue;
+        result.push(i);
+    }
+    return result;
+}
+
+async function _syncAutoSummaryBufferHidden(chat, targetHideIndices, activeSummaryCoveredIndices) {
+    if (!Array.isArray(chat) || chat.length <= 1) return;
+
+    const targetSet = new Set(
+        (targetHideIndices || []).filter(i => Number.isInteger(i) && i >= 0 && i < chat.length && !!chat[i])
+    );
+
+    const markedSet = new Set();
+    for (let i = 0; i < chat.length; i++) {
+        if (chat[i]?.horae_meta?._autoBufferHidden) markedSet.add(i);
+    }
+
+    const toHide = [];
+    for (const idx of targetSet) {
+        if (!chat[idx].horae_meta) chat[idx].horae_meta = createEmptyMeta();
+        chat[idx].horae_meta._autoBufferHidden = true;
+        if (!chat[idx].is_hidden && !activeSummaryCoveredIndices?.has(idx)) {
+            toHide.push(idx);
+        }
+    }
+
+    const toUnhide = [];
+    for (const idx of markedSet) {
+        if (targetSet.has(idx)) continue;
+        const msg = chat[idx];
+        if (!msg?.horae_meta) continue;
+        delete msg.horae_meta._autoBufferHidden;
+        if (!activeSummaryCoveredIndices?.has(idx)) {
+            toUnhide.push(idx);
+        }
+    }
+
+    if (toUnhide.length > 0) await setMessagesHidden(chat, toUnhide, false);
+    if (toHide.length > 0) await setMessagesHidden(chat, toHide, true);
 }
 
 function _pickAutoSummaryBatchEvents(chat, eventCandidates, maxEvents, maxTokens) {
@@ -14498,12 +14610,12 @@ async function checkAutoSummary() {
         const chat = horaeManager.getChat();
         if (!chat?.length) return;
         
-        const keepRecent = settings.autoSummaryKeepRecent || 10;
-        const bufferLimit = settings.autoSummaryBufferLimit || 20;
+        const keepRecent = Math.max(0, parseInt(settings.autoSummaryKeepRecent, 10) || 10);
+        const bufferLimit = Math.max(1, parseInt(settings.autoSummaryBufferLimit, 10) || 20);
         const bufferMode = settings.autoSummaryBufferMode || 'messages';
-        
-        const totalMsgs = chat.length;
-        const cutoff = Math.max(1, totalMsgs - keepRecent);
+
+        const keepWindow = _resolveAutoSummaryKeepWindow(chat, keepRecent);
+        const cutoff = Math.max(0, Math.min(keepWindow.keepStart, chat.length));
 
         // 独立检查：当同层摘要达到阈值时，自动进行更高层级再总结（可级联）
         await _runAutoResummaryIfNeeded(chat, cutoff);
@@ -14542,10 +14654,21 @@ async function checkAutoSummary() {
             summarizedIndices,
             manualSummaryMsgIndices
         );
-        const bufferMsgIndices = [...new Set(tailEventCandidates.map(e => e.msgIdx))].sort((a, b) => a - b);
+        const tailMsgIndices = [...new Set(tailEventCandidates.map(e => e.msgIdx))].sort((a, b) => a - b);
+        const tailAiIndices = tailMsgIndices.filter(i => _isTrackableAiMessage(chat[i]));
+        const tailAiCount = tailAiIndices.length;
+        const activeSummaryCoveredIndices = _collectActiveSummaryCoveredIndices(chat);
+        const targetHideIndices = _buildAutoSummaryBufferHideIndices(
+            chat,
+            keepWindow.keepStart,
+            tailAiIndices,
+            activeSummaryCoveredIndices
+        );
+        await _syncAutoSummaryBufferHidden(chat, targetHideIndices, activeSummaryCoveredIndices);
+
         let bufferTokens = 0;
         if (bufferMode === 'tokens') {
-            for (const i of bufferMsgIndices) {
+            for (const i of targetHideIndices) {
                 bufferTokens += estimateTokens(chat[i]?.mes || '');
             }
         }
@@ -14554,24 +14677,42 @@ async function checkAutoSummary() {
         if (bufferMode === 'tokens') {
             shouldTrigger = bufferTokens > bufferLimit;
         } else {
-            shouldTrigger = tailEventCandidates.length > bufferLimit;
+            shouldTrigger = tailAiCount >= bufferLimit;
         }
 
-        const tailFloorList = [...new Set(tailEventCandidates.map(e => e.msgIdx))].sort((a, b) => a - b);
+        const tailFloorList = [...tailMsgIndices];
         const tailFloorHint = tailFloorList.length ? tailFloorList.map(i => `#${i}`).join(', ') : 'none';
-        console.log(`[Horae] 自动摘要检查：尾部连续未压缩时间线${tailEventCandidates.length}条(${bufferMode === 'tokens' ? bufferTokens + 'tok' : tailEventCandidates.length + '条'})，楼层=[${tailFloorHint}]，阈值${bufferLimit}，${shouldTrigger ? '触发' : '未达阈值'}`);
+        const aiFloorHint = (keepWindow.allAiIndices || []).length
+            ? keepWindow.allAiIndices.map(i => `#${i}`).join(', ')
+            : 'none';
+        console.log(`[Horae] 自动摘要检查：keepAI=${keepRecent}, totalAI=${keepWindow.totalAi}, keepStart=#${keepWindow.keepStart}, cutoff=${cutoff}, AI楼层=[${aiFloorHint}], 尾部连续未压缩AI=${tailAiCount}, 事件=${tailEventCandidates.length}(${bufferMode === 'tokens' ? bufferTokens + 'tok' : tailAiCount + '条AI'})，楼层=[${tailFloorHint}]，阈值${bufferLimit}，${shouldTrigger ? '触发' : '未达阈值'}`);
         
-        if (!shouldTrigger || tailEventCandidates.length === 0) return;
+        if (!shouldTrigger || tailEventCandidates.length === 0 || tailAiCount === 0) return;
         
         // 单次摘要批量上限：防止旧档案首次启用时 token 爆炸
         const MAX_BATCH_EVENTS = settings.autoSummaryBatchMaxMsgs || 50;
         const MAX_BATCH_TOKENS = settings.autoSummaryBatchMaxTokens || 80000;
         const {
             events: bufferEvents,
-            msgIndices: batchIndices,
-            remainingEvents: remaining
+            msgIndices: batchEventIndices
         } = _pickAutoSummaryBatchEvents(chat, tailEventCandidates, MAX_BATCH_EVENTS, MAX_BATCH_TOKENS);
-        if (!bufferEvents.length || !batchIndices.length) return;
+        if (!bufferEvents.length || !batchEventIndices.length) return;
+
+        const batchEventMsgIndices = [...batchEventIndices].sort((a, b) => a - b);
+        let batchIndices = [...batchEventMsgIndices];
+        if (batchEventMsgIndices.length > 0) {
+            const batchStart = batchEventMsgIndices[0];
+            const batchEnd = batchEventMsgIndices[batchEventMsgIndices.length - 1];
+            const expanded = [];
+            for (let i = batchStart; i <= batchEnd; i++) {
+                if (i < 0 || i >= cutoff || !chat[i]) continue;
+                if (chat[i]?.horae_meta?._skipHorae) continue;
+                if (activeSummaryCoveredIndices.has(i)) continue;
+                expanded.push(i);
+            }
+            if (expanded.length > 0) batchIndices = expanded;
+        }
+        if (!batchIndices.length) return;
         
         // 检测缓冲区消息的时间线/时间戳缺失情况
         const _missingTimestamp = [];
@@ -14607,8 +14748,10 @@ async function checkAutoSummary() {
             }
         }
         
-        const remainingHint = remaining > 0 ? ` (${remaining} remaining)` : '';
-        const batchMsg = t('toast.autoSummaryProgress', {batch: bufferEvents.length, total: tailEventCandidates.length, remaining: remainingHint});
+        const selectedAiCount = [...new Set(bufferEvents.map(e => e.msgIdx).filter(i => _isTrackableAiMessage(chat[i])))].length;
+        const remainingAi = Math.max(0, tailAiCount - selectedAiCount);
+        const remainingHint = remainingAi > 0 ? ` (${remainingAi} remaining)` : '';
+        const batchMsg = t('toast.autoSummaryProgress', {batch: selectedAiCount, total: tailAiCount, remaining: remainingHint});
         showToast(batchMsg, 'info');
         
         const context = getContext();
@@ -14696,6 +14839,12 @@ async function checkAutoSummary() {
             isSummary: true,
             _summaryId: summaryId
         });
+
+        for (const idx of msgIndices) {
+            if (chat[idx]?.horae_meta?._autoBufferHidden) {
+                delete chat[idx].horae_meta._autoBufferHidden;
+            }
+        }
         
         // 只 hide 实际进入 batch 的消息，避免误盖到其它 entry 范围内的消息
         await setMessagesHidden(chat, [...msgIndices], true);
@@ -16203,7 +16352,7 @@ async function createNewChatWithCarryover() {
     }
 
     const confirmText = [
-        `将按“保留楼层数=${keepCount}”携带最近 AI 楼层，并创建新对话。`,
+        `将按“保留AI条数=${keepCount}”携带最近 AI 楼层，并创建新对话。`,
         '',
         `将携带AI楼层：${carryAiCount} 条`,
         `实际携带消息：${carryMessages.length} 条（含夹带User）`,

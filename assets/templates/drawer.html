@@ -842,7 +842,7 @@
                     <div id="horae-autosummary-collapse-body" style="display: none;">
                         <span class="horae-setting-hint" data-i18n="settings.autoSummaryHint" style="margin-bottom: 12px;">
                             <i class="fa-solid fa-circle-info"></i>
-                            超过缓冲上限后自动将旧事件交给AI压缩为总结，节省Token。<br>
+                            当时间线数量 >= 保留数 + 每次总结的事件数 时，会自动将旧事件交给AI压缩为总结，节省Token。<br>
                             压缩后的总结可在时间线中切换回原始事件查看。
                         </span>
                         <div class="horae-setting-item">
@@ -854,26 +854,26 @@
                         <div id="horae-auto-summary-options" style="display: none;">
                             <div class="horae-setting-item">
                                 <label data-i18n="settings.keepRecentMessages">
-                                    保留最近消息数
+                                    保留最近AI消息数
                                     <input type="number" id="horae-setting-auto-summary-keep" min="3" max="100" value="10">
                                 </label>
-                                <span class="horae-setting-sub-hint" data-i18n="settings.keepRecentHint">最近N条消息<b>绝对不会</b>被总结。确保近期剧情细节完整保留。</span>
+                                <span class="horae-setting-sub-hint" data-i18n="settings.keepRecentHint">最近N条AI消息<b>绝对不会</b>被总结；中间夹着的用户消息会随全文一起发送。</span>
                             </div>
                             <div class="horae-setting-item">
                                 <label data-i18n="settings.bufferMode">
                                     缓冲模式
                                     <select id="horae-setting-auto-summary-mode">
-                                        <option value="messages" data-i18n="settings.bufferModeMessages">按楼层数</option>
+                                        <option value="messages" data-i18n="settings.bufferModeMessages">按AI条数</option>
                                         <option value="tokens" data-i18n="settings.bufferModeTokens">按Token数</option>
                                     </select>
                                 </label>
                             </div>
                             <div class="horae-setting-item">
                                 <label data-i18n="settings.bufferLimit">
-                                    缓冲上限
+                                    每次总结的事件数
                                     <input type="number" id="horae-setting-auto-summary-limit" min="5" max="99999" value="20">
                                 </label>
-                                <span class="horae-setting-sub-hint" id="horae-auto-summary-limit-hint" data-i18n="settings.bufferLimitHint">超过此上限时触发自动压缩。</span>
+                                <span class="horae-setting-sub-hint" id="horae-auto-summary-limit-hint" data-i18n="settings.bufferLimitHint">触发条件：时间线数量 >= 保留数 + 每次总结的事件数</span>
                             </div>
                             <div class="horae-setting-item">
                                 <label data-i18n="settings.resummaryThreshold">
@@ -884,11 +884,10 @@
                             </div>
                             <div class="horae-setting-hint" data-i18n="settings.autoSummaryExample" style="margin:8px 0; padding:8px; border-radius:6px; background:var(--horae-bg-secondary); font-size:11px; line-height:1.6;">
                                 <i class="fa-solid fa-lightbulb" style="color:var(--horae-accent);"></i>
-                                <b>举例</b>：假设保留=10，缓冲上限=20（楼层模式）<br>
-                                → 你聊到第 50 楼时：第 41-50 楼<b>绝对保留</b>不总结<br>
-                                → 第 1-40 楼中，未被总结的部分如果 <b>超过 20 楼</b>就触发一次自动总结<br>
-                                → 每次总结按照下方设置的批次上限（消息条数或Token数）处理一批，剩余的留到下一轮<br>
-                                简单理解：<b>保留 + 缓冲 = 多少楼之后才开始总结</b>
+                                <b>举例</b>：假设保留=5，每次总结的事件数=5（按AI条数）<br>
+                                → 触发条件是：<b>时间线数量 >= 10</b><br>
+                                → 触发后优先总结保留区之前的连续未总结部分<br>
+                                → 中间夹着的用户消息会一起带上，但不参与计数
                             </div>
                             <div class="horae-setting-item" style="border-top: 1px solid var(--horae-border); padding-top: 8px; margin-top: 4px;">
                                 <label data-i18n="settings.batchMaxMessages">
