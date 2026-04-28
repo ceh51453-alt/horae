@@ -16770,7 +16770,7 @@ async function analyzeMessageWithAI(messageContent, opts = {}) {
 }
 
 /**
- * 发送前补齐上一条AI楼层的时间线（仅 event/time）
+ * 发送前补齐上一条AI楼层：缺时间线时触发，命中后按解析结果全量写回
  * 只在「最后一条是USER消息」时触发，避免干扰 regenerate/swipe。
  */
 async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
@@ -16825,29 +16825,47 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
     const parsedEvents = Array.isArray(parsed.events)
         ? parsed.events.filter(evt => evt?.summary && String(evt.summary).trim())
         : [];
-    const legacyEvent = parsed?.event?.summary ? parsed.event : null;
-    if (parsedEvents.length === 0 && !legacyEvent) {
-        console.log(`[Horae] 前置补全跳过：#${targetIndex} 未提取到有效 event`);
+    const hasAnyParsedData = (
+        parsedEvents.length > 0 ||
+        !!parsed?.event?.summary ||
+        !!parsed?.timestamp?.story_date ||
+        !!parsed?.timestamp?.story_time ||
+        !!parsed?.scene?.location ||
+        !!parsed?.scene?.atmosphere ||
+        !!parsed?.scene?.scene_desc ||
+        (Array.isArray(parsed?.scene?.characters_present) && parsed.scene.characters_present.length > 0) ||
+        (parsed?.costumes && Object.keys(parsed.costumes).length > 0) ||
+        (parsed?.items && Object.keys(parsed.items).length > 0) ||
+        (Array.isArray(parsed?.deletedItems) && parsed.deletedItems.length > 0) ||
+        (parsed?.affection && Object.keys(parsed.affection).length > 0) ||
+        (parsed?.npcs && Object.keys(parsed.npcs).length > 0) ||
+        (Array.isArray(parsed?.agenda) && parsed.agenda.length > 0) ||
+        (Array.isArray(parsed?.deletedAgenda) && parsed.deletedAgenda.length > 0) ||
+        (parsed?.mood && Object.keys(parsed.mood).length > 0) ||
+        (Array.isArray(parsed?.relationships) && parsed.relationships.length > 0) ||
+        (Array.isArray(parsed?.tableUpdates) && parsed.tableUpdates.length > 0) ||
+        !!parsed?.rpg
+    );
+    if (!hasAnyParsedData) {
+        console.log(`[Horae] 前置补全跳过：#${targetIndex} 未提取到有效结构化数据`);
         return;
     }
 
-    const timelineOnlyParsed = {
-        timestamp: parsed.timestamp || {},
-        scene: {},
-        costumes: {},
-        items: {},
-        deletedItems: [],
-        events: parsedEvents,
-        event: legacyEvent,
-        affection: {},
-        npcs: {},
-        agenda: [],
-        deletedAgenda: [],
-        mood: {},
-        relationships: [],
-    };
+    const mergedMeta = horaeManager.mergeParsedToMeta(existingMeta, parsed);
+    if (mergedMeta._tableUpdates) {
+        horaeManager.applyTableUpdates(mergedMeta._tableUpdates);
+        delete mergedMeta._tableUpdates;
+    }
+    if (parsed.deletedAgenda && parsed.deletedAgenda.length > 0) {
+        horaeManager.removeCompletedAgenda(parsed.deletedAgenda);
+    }
+    if (parsed.relationships?.length > 0) {
+        horaeManager._mergeRelationships(parsed.relationships);
+    }
+    if (parsed.scene?.scene_desc && parsed.scene?.location) {
+        horaeManager._updateLocationMemory(parsed.scene.location, parsed.scene.scene_desc);
+    }
 
-    const mergedMeta = horaeManager.mergeParsedToMeta(existingMeta, timelineOnlyParsed);
     horaeManager.setMessageMeta(targetIndex, mergedMeta);
     injectHoraeTagToMessage(targetIndex, mergedMeta);
 
@@ -16870,7 +16888,7 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
         console.warn('[Horae] 前置补全保存失败:', err);
     }
 
-    console.log(`[Horae] 前置补全完成：已补齐上一条AI楼层 #${targetIndex} 的时间线`);
+    console.log(`[Horae] 前置补全完成：已写回上一条AI楼层 #${targetIndex} 的完整解析结果`);
     showToast(t('toast.autoFillPrevTimelineDone', {id: targetIndex}), 'success');
 }
 
