@@ -10095,7 +10095,9 @@ function bindPanelEvents(panelEl) {
         });
         sideplayBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
-            toggleSideplay(messageId, panelEl);
+            toggleSideplay(messageId, panelEl).catch(err => {
+                console.error(`[Horae] 切换番外标记失败 #${messageId}:`, err);
+            });
         });
     }
     
@@ -10377,13 +10379,31 @@ function bindAffectionInputs(container) {
 }
 
 /** 切换消息的番外/小剧场标记 */
-function toggleSideplay(messageId, panelEl) {
+async function toggleSideplay(messageId, panelEl) {
     const meta = horaeManager.getMessageMeta(messageId);
     if (!meta) return;
     const wasSkipped = !!meta._skipHorae;
     meta._skipHorae = !wasSkipped;
     horaeManager.setMessageMeta(messageId, meta);
-    getContext().saveChat();
+
+    // 关系网络/场景记忆会从全量消息重建，需排除番外消息后立即回收
+    horaeManager.rebuildRelationships();
+    horaeManager.rebuildLocationMemory();
+
+    // 向量索引同步：番外消息从索引移除；取消番外则补回索引
+    if (settings.vectorEnabled && vectorManager.isReady) {
+        try {
+            if (meta._skipHorae) {
+                await vectorManager.removeMessage(messageId);
+            } else {
+                await vectorManager.addMessage(messageId, meta);
+            }
+        } catch (err) {
+            console.warn(`[Horae] 同步番外向量索引失败 #${messageId}:`, err);
+        }
+    }
+
+    await getContext().saveChat();
     
     // 重建面板
     const messageEl = panelEl.closest('.mes');
@@ -12720,6 +12740,27 @@ function _countVectorIndexGap(chat) {
     return { missing, indexable };
 }
 
+/** 清理向量索引中的不可追踪楼层（user/无meta/番外/无可索引文档） */
+async function _pruneVectorUntrackableEntries(chat) {
+    if (!Array.isArray(chat) || vectorManager.vectors.size === 0) return 0;
+
+    const staleIndices = [];
+    for (const [idx] of vectorManager.vectors) {
+        const msg = chat[idx];
+        const meta = msg?.horae_meta;
+        const doc = (!msg || msg.is_user || !meta || meta._skipHorae) ? '' : vectorManager.buildVectorDocument(meta);
+        if (!doc) staleIndices.push(idx);
+    }
+
+    if (staleIndices.length === 0) return 0;
+
+    for (const idx of staleIndices) {
+        await vectorManager.removeMessage(idx);
+    }
+    console.log(`[Horae Vector] 已清理不可追踪索引: ${staleIndices.length} 条`);
+    return staleIndices.length;
+}
+
 async function _ensureVectorIndexBeforeRecall() {
     if (!settings.vectorEnabled || !vectorManager.isReady) return;
 
@@ -12738,6 +12779,8 @@ async function _ensureVectorIndexBeforeRecall() {
         await vectorManager.loadChat(chatId, chat);
         _updateVectorStatus();
     }
+
+    await _pruneVectorUntrackableEntries(chat);
 
     const { missing, indexable } = _countVectorIndexGap(chat);
     if (missing <= 0) return;

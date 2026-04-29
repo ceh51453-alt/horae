@@ -600,7 +600,7 @@ export class VectorManager {
         // 构建统一查询：使用最近一条 AI 元数据补充“当前情境”
         let lastMetaForQuery = null;
         for (let i = chat.length - 1 - skipLast; i >= 0; i--) {
-            if (!chat[i].is_user && chat[i].horae_meta) {
+            if (!chat[i].is_user && chat[i].horae_meta && !chat[i].horae_meta._skipHorae) {
                 lastMetaForQuery = chat[i].horae_meta;
                 break;
             }
@@ -652,7 +652,7 @@ export class VectorManager {
         const allKnownChars = new Set();
         for (let i = 0; i < chat.length; i++) {
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             (m.scene?.characters_present || []).forEach(c => allKnownChars.add(c));
             if (m.npcs) Object.keys(m.npcs).forEach(c => allKnownChars.add(c));
         }
@@ -660,11 +660,12 @@ export class VectorManager {
             if (userQuery && userQuery.includes(c)) relevantChars.add(c);
         }
 
-        let results = Array.from(merged.values());
+        let results = Array.from(merged.values())
+            .filter(r => !chat[r.messageIndex]?.horae_meta?._skipHorae);
         if (relevantChars.size > 0) {
             for (const r of results) {
                 const meta = chat[r.messageIndex]?.horae_meta;
-                if (!meta) continue;
+                if (!meta || meta._skipHorae) continue;
                 const docChars = new Set([
                     ...(meta.scene?.characters_present || []),
                     ...Object.keys(meta.npcs || {}),
@@ -756,7 +757,7 @@ export class VectorManager {
         const knownChars = new Set();
         for (let i = 0; i < chat.length; i++) {
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             (m.scene?.characters_present || []).forEach(c => knownChars.add(c));
             if (m.npcs) Object.keys(m.npcs).forEach(c => knownChars.add(c));
         }
@@ -941,7 +942,7 @@ export class VectorManager {
         for (let i = 0; i < chat.length; i++) {
             if (excludeIndices.has(i) || skipIds.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             const searchText = this._buildSearchableText(meta);
             if (!searchText) continue;
@@ -1034,7 +1035,7 @@ export class VectorManager {
         for (let i = 0; i < chat.length; i++) {
             if (excludeIndices.has(i)) continue;
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             if (m.npcs && m.npcs[charName]) return i;
             if (m.scene?.characters_present?.includes(charName)) return i;
         }
@@ -1044,7 +1045,9 @@ export class VectorManager {
     _findLastCostume(chat, charName, costumeKw, excludeIndices) {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (excludeIndices.has(i)) continue;
-            const costume = chat[i].horae_meta?.costumes?.[charName];
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const costume = meta.costumes?.[charName];
             if (costume && costume.includes(costumeKw)) return i;
         }
         return -1;
@@ -1054,7 +1057,9 @@ export class VectorManager {
         const matches = [];
         for (let i = chat.length - 1; i >= 0 && matches.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
-            const costumes = chat[i].horae_meta?.costumes;
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const costumes = meta.costumes;
             if (!costumes) continue;
             for (const v of Object.values(costumes)) {
                 if (v && v.includes(costumeKw)) { matches.push({ idx: i }); break; }
@@ -1066,7 +1071,9 @@ export class VectorManager {
     _findLastMood(chat, charName, moodKw, excludeIndices) {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (excludeIndices.has(i)) continue;
-            const mood = chat[i].horae_meta?.mood;
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const mood = meta.mood;
             if (!mood) continue;
             if (charName) {
                 if (mood[charName] && mood[charName].includes(moodKw)) return i;
@@ -1106,7 +1113,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i) || seen.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             let matched = false;
             const matchedItems = [];
@@ -1158,7 +1165,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.items) continue;
+            if (!meta || meta._skipHorae || !meta.items) continue;
 
             const importantNames = [];
             for (const [name, info] of Object.entries(meta.items)) {
@@ -1186,7 +1193,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.events) continue;
+            if (!meta || meta._skipHorae || !meta.events) continue;
 
             for (const evt of meta.events) {
                 if (evt.isSummary || evt.level === '摘要' || evt._summaryId) continue;
@@ -1228,7 +1235,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.events) continue;
+            if (!meta || meta._skipHorae || !meta.events) continue;
 
             for (const evt of meta.events) {
                 if (evt.isSummary || evt.level === '摘要' || evt._summaryId) continue;
@@ -1259,7 +1266,7 @@ export class VectorManager {
         const chat = horaeManager.getChat();
         let lastMeta = null;
         for (let i = chat.length - 1 - skipLast; i >= 0; i--) {
-            if (!chat[i].is_user && chat[i].horae_meta) {
+            if (!chat[i].is_user && chat[i].horae_meta && !chat[i].horae_meta._skipHorae) {
                 lastMeta = chat[i].horae_meta;
                 break;
             }
@@ -1293,7 +1300,7 @@ export class VectorManager {
         for (let rank = 0; rank < results.length; rank++) {
             const r = results[rank];
             const meta = chat[r.messageIndex]?.horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             const isFullText = fullTextCount > 0 && rank < fullTextCount && r.similarity >= fullTextThreshold;
 
@@ -1650,6 +1657,7 @@ export class VectorManager {
     // ========================================
 
     _hasOriginalEvents(meta) {
+        if (meta?._skipHorae) return false;
         if (!meta?.events?.length) return false;
         return meta.events.some(e => !e.isSummary && e.level !== '摘要' && !e._summaryId);
     }

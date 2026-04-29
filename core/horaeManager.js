@@ -2505,7 +2505,9 @@ class HoraeManager {
         const userEdited = (firstMsg.horae_meta.relationships || []).filter(r => r._userEdited);
         firstMsg.horae_meta.relationships = [...userEdited];
         for (let i = 1; i < chat.length; i++) {
-            const rels = chat[i]?.horae_meta?.relationships;
+            const meta = chat[i]?.horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const rels = meta.relationships;
             if (rels?.length) this._mergeRelationships(rels);
         }
     }
@@ -2531,6 +2533,7 @@ class HoraeManager {
         // 从消息重放 AI 写入的 scene_desc（按时间顺序，后覆盖前），跳过已删除/用户编辑的
         for (let i = 1; i < chat.length; i++) {
             const meta = chat[i]?.horae_meta;
+            if (!meta || meta._skipHorae) continue;
             const pairs = meta?.scene?._descPairs;
             if (pairs?.length > 0) {
                 for (const p of pairs) {
