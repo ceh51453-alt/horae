@@ -5,6 +5,7 @@
 
 import { parseStoryDate, calculateRelativeTime, calculateDetailedRelativeTime, generateTimeReference, formatRelativeTime, formatFullDateTime } from '../utils/timeUtils.js';
 import { detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './i18n.js';
+import { getPromptDefaultSync } from './promptDefaults.js';
 
 /**
  * @typedef {Object} HoraeTimestamp
@@ -149,6 +150,19 @@ class HoraeManager {
         };
         const [du, dc] = defaults[lang] || ['protagonist', 'character'];
         return [userName || du, charName || dc];
+    }
+
+    _getPromptDefaultFromResource(key, vars = null) {
+        const lang = this._getAiOutputLang();
+        let text = getPromptDefaultSync(lang, key) || '';
+        if (!text) return '';
+        if (vars && typeof vars === 'object') {
+            for (const [k, v] of Object.entries(vars)) {
+                const val = (v == null) ? '' : String(v);
+                text = text.replace(new RegExp(`\\$\\{${k}\\}`, 'g'), val);
+            }
+        }
+        return text;
     }
 
     /** 获取当前聊天记录 */
@@ -3333,14 +3347,21 @@ class HoraeManager {
     }
 
     getDefaultSystemPrompt() {
+        const sceneDescLine = this.settings?.sendLocationMemory ? '\nscene_desc:地点固定物理特征（见场景记忆规则，触发时才写）' : '';
+        const relLine = this.settings?.sendRelationships ? '\nrel:角色A>角色B=关系类型|备注（见关系网络规则，触发时才写）' : '';
+        const moodLine = this.settings?.sendMood ? '\nmood:角色名=情绪/心理状态（见情绪追踪规则，触发时才写）' : '';
+        const fromResource = this._getPromptDefaultFromResource('customSystemPrompt', {
+            sceneDescLine,
+            relLine,
+            moodLine,
+        });
+        if (fromResource) return fromResource;
+
         const lang = this._getAiOutputLang();
         if (lang === 'ja') return this._getDefaultSystemPromptJa();
         if (lang === 'ko') return this._getDefaultSystemPromptKo();
         if (lang === 'ru') return this._getDefaultSystemPromptRu();
         if (lang !== 'zh-CN' && lang !== 'zh-TW') return this._getDefaultSystemPromptEn();
-        const sceneDescLine = this.settings?.sendLocationMemory ? '\nscene_desc:地点固定物理特征（见场景记忆规则，触发时才写）' : '';
-        const relLine = this.settings?.sendRelationships ? '\nrel:角色A>角色B=关系类型|备注（见关系网络规则，触发时才写）' : '';
-        const moodLine = this.settings?.sendMood ? '\nmood:角色名=情绪/心理状态（见情绪追踪规则，触发时才写）' : '';
         return `【Horae记忆系统】（以下示例仅为示范，勿直接原句用于正文！）
 
 ═══ 核心原则：变化驱动 ═══
@@ -4131,6 +4152,8 @@ ${this._generateMustTagsReminder()}
     }
 
     getDefaultTablesPrompt() {
+        const fromResource = this._getPromptDefaultFromResource('customTablesPrompt');
+        if (fromResource) return fromResource;
         const lang = this._getAiOutputLang();
         if (lang === 'ja') return this._getDefaultTablesPromptJa();
         if (lang === 'ko') return this._getDefaultTablesPromptKo();
@@ -4206,6 +4229,8 @@ There are user-defined tables above. Fill in data according to the "Fill Require
     }
 
     getDefaultLocationPrompt() {
+        const fromResource = this._getPromptDefaultFromResource('customLocationPrompt');
+        if (fromResource) return fromResource;
         const lang = this._getAiOutputLang();
         if (lang === 'ja') return this._getDefaultLocationPromptJa();
         if (lang === 'ko') return this._getDefaultLocationPromptKo();
@@ -4431,6 +4456,8 @@ Scene Memory records a location's core layout and permanent features (architectu
 
     getDefaultRelationshipPrompt() {
         const userName = this.context?.name1 || '{{user}}';
+        const fromResource = this._getPromptDefaultFromResource('customRelationshipPrompt', { userName });
+        if (fromResource) return fromResource;
         const lang = this._getAiOutputLang();
         if (lang === 'ja') return this._getDefaultRelationshipPromptJa(userName);
         if (lang === 'ko') return this._getDefaultRelationshipPromptKo(userName);
@@ -4556,6 +4583,8 @@ System automatically records and displays the relationship network between chara
     }
 
     getDefaultMoodPrompt() {
+        const fromResource = this._getPromptDefaultFromResource('customMoodPrompt');
+        if (fromResource) return fromResource;
         const lang = this._getAiOutputLang();
         if (lang === 'ja') return this._getDefaultMoodPromptJa();
         if (lang === 'ko') return this._getDefaultMoodPromptKo();
@@ -4736,13 +4765,147 @@ Therefore, when writing this turn's <horae> tags, you MUST also include events f
     /** RPG 提示词（rpgMode 开启才注入） */
     generateRpgPrompt() {
         if (!this.settings?.rpgMode) return '';
-        if (this.settings.customRpgPrompt) {
-            const [userName, charName] = this._getDefaultNames();
-            return '\n' + this.settings.customRpgPrompt
-                .replace(/\{\{user\}\}/gi, userName)
-                .replace(/\{\{char\}\}/gi, charName);
+        const customPrompt = this.settings?.customRpgPrompt || '';
+        if (customPrompt.trim()) return '\n' + this._resolveRpgPromptTemplate(customPrompt);
+        return '\n' + this.getDefaultRpgPromptResolved();
+    }
+
+    /** RPG 默认提示词（资源优先，支持分段占位符） */
+    getDefaultRpgPromptResolved() {
+        const fromResource = this._getPromptDefaultFromResource('customRpgPrompt');
+        if (!fromResource || !fromResource.trim()) return this.getDefaultRpgPrompt();
+        return this._resolveRpgPromptTemplate(fromResource);
+    }
+
+    _resolveRpgPromptTemplate(template) {
+        let out = String(template || '');
+        if (/\[\[\s*rpg\./i.test(out)) {
+            const lang = this._getAiOutputLang();
+            const sections = this._extractRpgPromptSections(this.getDefaultRpgPrompt(), lang);
+            out = this._renderRpgPromptSectionTemplate(out, sections);
         }
-        return '\n' + this.getDefaultRpgPrompt();
+        const [userName, charName] = this._getDefaultNames();
+        return out
+            .replace(/\{\{user\}\}/gi, userName)
+            .replace(/\{\{char\}\}/gi, charName);
+    }
+
+    _getRpgSectionHeadingsByLang(lang) {
+        if (lang === 'ja') {
+            return {
+                bars: '【ステータスバー——毎ターン必須、欠落＝不合格！】',
+                attrs: '【多次元属性】初登場時または属性変化時のみ記載、変化なしなら省略可',
+                skills: '【スキル】習得/レベルアップ/喪失時のみ記載、変化なしなら省略可',
+                equipment: '【装備】キャラクターが装備/解除した時に記載、変化なしなら省略可',
+                reputation: '【評判】評判が変化した時のみ記載、変化なしなら省略可',
+                level: '【レベルと経験値】レベルアップ/ダウンまたは経験値変化時のみ記載、変化なしなら省略可',
+                currency: '【通貨——取引/拾得/消費が発生した時は必ず記載！】',
+                stronghold: '【拠点/基地】拠点の状態が変化した時に記載（アップグレード/建設/破壊/説明更新）、変化なしなら省略可。既存の拠点名は下記「現在の拠点」と完全一致させる — 省略・言い換え・接頭辞変形は禁止',
+            };
+        }
+        if (lang === 'ko') {
+            return {
+                bars: '【스테이터스 바 — 매 턴 필수, 누락 = 불합격!】',
+                attrs: '【다차원 속성】첫 등장 또는 속성 변화 시에만 기재, 변화 없으면 생략 가능',
+                skills: '【스킬】습득/승급/상실 시에만 기재, 변화 없으면 생략 가능',
+                equipment: '【장비】캐릭터가 장비 착용/해제 시 기재, 변화 없으면 생략 가능',
+                reputation: '【평판】평판 변화 시에만 기재, 변화 없으면 생략 가능',
+                level: '【레벨과 경험치】레벨 업/다운 또는 경험치 변화 시에만 기재, 변화 없으면 생략 가능',
+                currency: '【화폐 — 거래/획득/소비 발생 시 필수 기재!】',
+                stronghold: '【거점/기지】거점 상태 변화 시 기재(업그레이드/건설/파괴/설명 변경), 변화 없으면 생략 가능. 기존 거점은 아래 \'현재 거점\'에 표시된 이름과 정확히 일치해야 함 — 줄임/변형/접두사 변형 금지',
+            };
+        }
+        if (lang === 'ru') {
+            return {
+                bars: '[Шкалы статуса — обязательны каждый ход, пропуск = провал!]',
+                attrs: '[Многомерные атрибуты] Записывайте только при первом появлении или изменении; пропускайте, если без изменений',
+                skills: '[Навыки] Записывайте только при изучении/повышении/потере; пропускайте, если без изменений',
+                equipment: '[Снаряжение] Записывайте при экипировке/снятии; пропускайте, если без изменений',
+                reputation: '[Репутация] Записывайте только при изменении репутации; пропускайте, если без изменений',
+                level: '[Уровень и опыт] Записывайте только при повышении/понижении уровня или изменении опыта; пропускайте, если без изменений',
+                currency: '[Валюта — ОБЯЗАТЕЛЬНО записывать при любой сделке/подборе/трате!]',
+                stronghold: '[Крепости] Записывайте при изменении статуса крепости (улучшение/строительство/разрушение/обновление описания); пропускайте, если без изменений. Существующие крепости ДОЛЖНЫ использовать точно такие же названия, как в списке ниже — сокращения, переименования и варианты с префиксами запрещены',
+            };
+        }
+        if (lang !== 'zh-CN' && lang !== 'zh-TW') {
+            return {
+                bars: '[Status Bars — required every turn, missing = fail!]',
+                attrs: '[Multi-Dimensional Attributes] Write only on first appearance or attribute change; skip if unchanged',
+                skills: '[Skills] Write only when learned/upgraded/lost; skip if unchanged',
+                equipment: '[Equipment] Write when character equips/unequips; skip if unchanged',
+                reputation: '[Reputation] Write only when reputation changes; skip if unchanged',
+                level: '[Level & XP] Write only on level-up/down or XP change; skip if unchanged',
+                currency: '[Currency — MUST write on any trade/pickup/spending!]',
+                stronghold: '[Strongholds] Write when stronghold status changes (upgrade/build/destroy/description update); skip if unchanged. Existing strongholds MUST always use the exact same name as listed in "Current strongholds" below — no abbreviations, rewrites, or prefixed variants of existing names',
+            };
+        }
+        return {
+            bars: '【属性条——每回合必写，缺少=不合格！】',
+            attrs: '【多维属性】仅首次登场或属性变化时写，无变化可省略',
+            skills: '【技能】仅习得/升级/失去时写，无变化可省略',
+            equipment: '【装备】角色穿戴/卸下装备时写，无变化可省略',
+            reputation: '【声望】仅声望变化时写，无变化可省略',
+            level: '【等级与经验值】仅升级/降级或经验变化时写，无变化可省略',
+            currency: '【货币——发生交易/拾取/消费时必写！】',
+            stronghold: '【据点/基地】据点状态变化时写（升级/建造/损毁/描述变更），无变化可省略。已有据点必须始终使用与下方「当前据点」完全一致的名称，禁止对已有名称做缩写/改写/加前缀变体',
+        };
+    }
+
+    _extractRpgPromptSections(promptText, lang) {
+        const empty = {
+            full: '',
+            header: '',
+            bars: '',
+            attrs: '',
+            skills: '',
+            equipment: '',
+            reputation: '',
+            level: '',
+            currency: '',
+            stronghold: '',
+        };
+        if (!promptText || typeof promptText !== 'string') return empty;
+
+        const headings = this._getRpgSectionHeadingsByLang(lang);
+        const keys = ['bars', 'attrs', 'skills', 'equipment', 'reputation', 'level', 'currency', 'stronghold'];
+        const marks = [];
+        for (const key of keys) {
+            const h = headings[key];
+            if (!h) continue;
+            const idx = promptText.indexOf(h);
+            if (idx >= 0) marks.push({ key, idx });
+        }
+        marks.sort((a, b) => a.idx - b.idx);
+
+        const out = { ...empty, full: promptText.trimEnd() };
+        out.header = marks.length > 0 ? promptText.slice(0, marks[0].idx).trimEnd() : promptText.trimEnd();
+
+        for (let i = 0; i < marks.length; i++) {
+            const start = marks[i].idx;
+            const end = i + 1 < marks.length ? marks[i + 1].idx : promptText.length;
+            out[marks[i].key] = promptText.slice(start, end).trimEnd();
+        }
+        return out;
+    }
+
+    _renderRpgPromptSectionTemplate(template, sections) {
+        if (!template || typeof template !== 'string') return template || '';
+        const map = {
+            full: sections.full || '',
+            header: sections.header || '',
+            bars: sections.bars || '',
+            attrs: sections.attrs || '',
+            skills: sections.skills || '',
+            equipment: sections.equipment || '',
+            reputation: sections.reputation || '',
+            level: sections.level || '',
+            currency: sections.currency || '',
+            stronghold: sections.stronghold || '',
+        };
+        return template.replace(/\[\[\s*rpg\.(full|header|bars|attrs|skills|equipment|reputation|level|currency|stronghold)\s*\]\]/gi, (_, key) => {
+            const k = String(key || '').toLowerCase();
+            return map[k] ?? '';
+        });
     }
 
     /** RPG 默认提示词 */

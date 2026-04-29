@@ -14,6 +14,7 @@ import { horaeManager, createEmptyMeta, getItemBaseName } from './core/horaeMana
 import { vectorManager } from './core/vectorManager.js';
 import { calculateRelativeTime, calculateDetailedRelativeTime, formatRelativeTime, generateTimeReference, getCurrentSystemTime, formatStoryDate, formatFullDateTime, parseStoryDate } from './utils/timeUtils.js';
 import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './core/i18n.js';
+import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from './core/promptDefaults.js';
 
 // ============================================
 // 常量定义
@@ -266,6 +267,20 @@ const DEFAULT_SETTINGS = {
     vectorStripTags: '',
 };
 
+const PROMPT_SETTING_KEYS = [
+    'customSystemPrompt',
+    'customBatchPrompt',
+    'customAnalysisPrompt',
+    'customCompressPrompt',
+    'customAutoSummaryPrompt',
+    'customAutoResummaryPrompt',
+    'customTablesPrompt',
+    'customLocationPrompt',
+    'customRelationshipPrompt',
+    'customMoodPrompt',
+    'customRpgPrompt',
+];
+
 // ============================================
 // 全局变量
 // ============================================
@@ -493,6 +508,38 @@ async function initNavbarFunction() {
  * 加载设置
  */
 let _isFirstTimeUser = false;
+
+function _normalizeLf(text) {
+    return typeof text === 'string' ? text.replace(/\r\n?/g, '\n') : text;
+}
+
+function _normalizePromptTextFields(obj, keys = PROMPT_SETTING_KEYS) {
+    if (!obj || typeof obj !== 'object') return false;
+    let changed = false;
+    for (const key of keys) {
+        const val = obj[key];
+        if (typeof val !== 'string') continue;
+        const normalized = _normalizeLf(val);
+        if (normalized !== val) {
+            obj[key] = normalized;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+function _normalizePromptSettingsInPlace() {
+    let changed = _normalizePromptTextFields(settings, PROMPT_SETTING_KEYS);
+    if (Array.isArray(settings.promptPresets)) {
+        for (const preset of settings.promptPresets) {
+            if (!preset || typeof preset !== 'object') continue;
+            if (!preset.prompts || typeof preset.prompts !== 'object') continue;
+            changed = _normalizePromptTextFields(preset.prompts, PROMPT_SETTING_KEYS) || changed;
+        }
+    }
+    return changed;
+}
+
 function loadSettings() {
     if (extension_settings[EXTENSION_NAME]) {
         settings = { ...DEFAULT_SETTINGS, ...extension_settings[EXTENSION_NAME] };
@@ -501,6 +548,7 @@ function loadSettings() {
         extension_settings[EXTENSION_NAME] = { ...DEFAULT_SETTINGS };
         settings = { ...DEFAULT_SETTINGS };
     }
+    if (_normalizePromptSettingsInPlace()) saveSettings();
 }
 
 /** 迁移旧版属性配置到 DND 六维 */
@@ -520,6 +568,7 @@ function _migrateAttrConfig() {
  * 保存设置
  */
 function saveSettings() {
+    _normalizePromptTextFields(settings, PROMPT_SETTING_KEYS);
     extension_settings[EXTENSION_NAME] = settings;
     saveSettingsDebounced();
 }
@@ -10980,6 +11029,7 @@ function initSettingsEvents() {
         settings.uiLanguage = this.value;
         saveSettings();
         const newLang = await setLanguage(this.value === 'auto' ? 'auto' : this.value);
+        await ensurePromptDefaults(detectEffectiveAiLang(settings));
         applyI18nToDOM(document.getElementById('horae-drawer') || document);
         initTabs();
         refreshAllDisplays();
@@ -10989,9 +11039,10 @@ function initSettingsEvents() {
         }
     });
     
-    $('#horae-setting-ai-output-language').val(settings.aiOutputLanguage || 'auto').on('change', function() {
+    $('#horae-setting-ai-output-language').val(settings.aiOutputLanguage || 'auto').on('change', async function() {
         settings.aiOutputLanguage = this.value;
         saveSettings();
+        await ensurePromptDefaults(detectEffectiveAiLang(settings));
         horaeManager.init(getContext(), settings);
         _refreshSystemPromptDisplay();
         updateTokenCounter();
@@ -11453,7 +11504,7 @@ function initSettingsEvents() {
     // RPG 自定义提示词
     $('#horae-custom-rpg-prompt').on('input', function() {
         const val = this.value;
-        settings.customRpgPrompt = (val.trim() === horaeManager.getDefaultRpgPrompt().trim()) ? '' : val;
+        settings.customRpgPrompt = (val.trim() === horaeManager.getDefaultRpgPromptResolved().trim()) ? '' : val;
         $('#horae-rpg-prompt-count').text(val.length);
         saveSettings(); horaeManager.init(getContext(), settings);
         _refreshSystemPromptDisplay(); updateTokenCounter();
@@ -11462,26 +11513,22 @@ function initSettingsEvents() {
         if (!confirm(t('confirm.restoreRpgPrompts'))) return;
         settings.customRpgPrompt = '';
         saveSettings();
-        const def = horaeManager.getDefaultRpgPrompt();
+        const def = horaeManager.getDefaultRpgPromptResolved();
         $('#horae-custom-rpg-prompt').val(def);
         $('#horae-rpg-prompt-count').text(def.length);
         horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
     });
 
     // ── 提示词预设存档 ──
-    const _PRESET_PROMPT_KEYS = [
-        'customSystemPrompt', 'customBatchPrompt', 'customAnalysisPrompt',
-        'customCompressPrompt', 'customAutoSummaryPrompt', 'customAutoResummaryPrompt', 'customTablesPrompt',
-        'customLocationPrompt', 'customRelationshipPrompt', 'customMoodPrompt',
-        'customRpgPrompt'
-    ];
+    const _PRESET_PROMPT_KEYS = [...PROMPT_SETTING_KEYS];
     function _collectCurrentPrompts() {
         const obj = {};
-        for (const k of _PRESET_PROMPT_KEYS) obj[k] = settings[k] || '';
+        for (const k of _PRESET_PROMPT_KEYS) obj[k] = _normalizeLf(settings[k] || '');
         return obj;
     }
     function _applyPresetPrompts(prompts) {
-        for (const k of _PRESET_PROMPT_KEYS) settings[k] = prompts[k] || '';
+        for (const k of _PRESET_PROMPT_KEYS) settings[k] = _normalizeLf(prompts[k] || '');
+        _normalizePromptTextFields(settings, _PRESET_PROMPT_KEYS);
         saveSettings();
         const pairs = [
             ['customSystemPrompt', 'horae-custom-system-prompt', 'horae-system-prompt-count', () => horaeManager.getDefaultSystemPrompt()],
@@ -11494,7 +11541,7 @@ function initSettingsEvents() {
             ['customLocationPrompt', 'horae-custom-location-prompt', 'horae-location-prompt-count', () => horaeManager.getDefaultLocationPrompt()],
             ['customRelationshipPrompt', 'horae-custom-relationship-prompt', 'horae-relationship-prompt-count', () => horaeManager.getDefaultRelationshipPrompt()],
             ['customMoodPrompt', 'horae-custom-mood-prompt', 'horae-mood-prompt-count', () => horaeManager.getDefaultMoodPrompt()],
-            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPrompt()],
+            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPromptResolved()],
         ];
         for (const [key, textareaId, countId, getDefault] of pairs) {
             const val = settings[key] || getDefault();
@@ -11612,7 +11659,7 @@ function initSettingsEvents() {
             ['customLocationPrompt', 'horae-custom-location-prompt', 'horae-location-prompt-count', () => horaeManager.getDefaultLocationPrompt()],
             ['customRelationshipPrompt', 'horae-custom-relationship-prompt', 'horae-relationship-prompt-count', () => horaeManager.getDefaultRelationshipPrompt()],
             ['customMoodPrompt', 'horae-custom-mood-prompt', 'horae-mood-prompt-count', () => horaeManager.getDefaultMoodPrompt()],
-            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPrompt()],
+            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPromptResolved()],
         ];
         for (const [, textareaId, countId, getDefault] of pairs) {
             const val = getDefault();
@@ -11680,6 +11727,8 @@ function initSettingsEvents() {
                 for (const k of keys) {
                     settings[k] = JSON.parse(JSON.stringify(imported[k]));
                 }
+                _normalizePromptSettingsInPlace();
+                await ensurePromptDefaults(detectEffectiveAiLang(settings));
                 saveSettings();
                 syncSettingsToUI();
                 try { renderBarConfig(); } catch (_) {}
@@ -11696,11 +11745,12 @@ function initSettingsEvents() {
         input.click();
     });
 
-    $('#horae-settings-reset').on('click', () => {
+    $('#horae-settings-reset').on('click', async () => {
         if (!confirm(t('confirm.resetAllSettings'))) return;
         for (const k of _SETTINGS_EXPORT_KEYS) {
             settings[k] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS[k]));
         }
+        await ensurePromptDefaults(detectEffectiveAiLang(settings));
         saveSettings();
         syncSettingsToUI();
         try { renderBarConfig(); } catch (_) {}
@@ -12461,7 +12511,7 @@ function _refreshSystemPromptDisplay() {
         ['customLocationPrompt', 'horae-custom-location-prompt', 'horae-location-prompt-count', () => horaeManager.getDefaultLocationPrompt()],
         ['customRelationshipPrompt', 'horae-custom-relationship-prompt', 'horae-relationship-prompt-count', () => horaeManager.getDefaultRelationshipPrompt()],
         ['customMoodPrompt', 'horae-custom-mood-prompt', 'horae-mood-prompt-count', () => horaeManager.getDefaultMoodPrompt()],
-        ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPrompt()],
+        ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPromptResolved()],
     ];
     for (const [key, textareaId, countId, getDefault] of pairs) {
         if (settings[key]) continue;
@@ -12583,7 +12633,7 @@ function syncSettingsToUI() {
     const locationPromptVal = settings.customLocationPrompt || horaeManager.getDefaultLocationPrompt();
     const relPromptVal = settings.customRelationshipPrompt || horaeManager.getDefaultRelationshipPrompt();
     const moodPromptVal = settings.customMoodPrompt || horaeManager.getDefaultMoodPrompt();
-    const rpgPromptVal = settings.customRpgPrompt || horaeManager.getDefaultRpgPrompt();
+    const rpgPromptVal = settings.customRpgPrompt || horaeManager.getDefaultRpgPromptResolved();
     $('#horae-custom-system-prompt').val(sysPrompt);
     $('#horae-custom-batch-prompt').val(batchPromptVal);
     $('#horae-custom-analysis-prompt').val(analysisPromptVal);
@@ -13010,8 +13060,15 @@ async function scanHistoryWithProgress() {
     }
 }
 
+function _getPromptDefaultFromResource(key) {
+    const lang = detectEffectiveAiLang(settings);
+    return getPromptDefaultSync(lang, key) || '';
+}
+
 /** 默认的批量摘要提示词模板 */
 function getDefaultBatchPrompt() {
+    const fromResource = _getPromptDefaultFromResource('customBatchPrompt');
+    if (fromResource) return fromResource;
     const lang = detectEffectiveAiLang(settings);
     if (lang === 'ja') return _getDefaultBatchPromptJa();
     if (lang === 'ko') return _getDefaultBatchPromptKo();
@@ -13184,6 +13241,8 @@ event:важность|краткое описание (50–100 символо�
 
 /** 默认的AI分析提示词模板 */
 function getDefaultAnalysisPrompt() {
+    const fromResource = _getPromptDefaultFromResource('customAnalysisPrompt');
+    if (fromResource) return fromResource;
     const lang = detectEffectiveAiLang(settings);
     if (lang === 'ja') return _getDefaultAnalysisPromptJa();
     if (lang === 'ko') return _getDefaultAnalysisPromptKo();
@@ -14968,6 +15027,8 @@ async function checkAutoSummary() {
 
 /** 默认的剧情压缩提示词（含事件压缩和全文摘要两段，以分隔线区分） */
 function getDefaultCompressPrompt() {
+    const fromResource = _getPromptDefaultFromResource('customCompressPrompt');
+    if (fromResource) return fromResource;
     const lang = detectEffectiveAiLang(settings);
     if (lang === 'ja') return _getDefaultCompressPromptJa();
     if (lang === 'ko') return _getDefaultCompressPromptKo();
@@ -15128,6 +15189,8 @@ function _getDefaultCompressPromptRu() {
 
 /** 默认的自动摘要提示词（独立于手动压缩，由副API使用） */
 function getDefaultAutoSummaryPrompt() {
+    const fromResource = _getPromptDefaultFromResource('customAutoSummaryPrompt');
+    if (fromResource) return fromResource;
     const lang = detectEffectiveAiLang(settings);
     if (lang === 'ja') return _getDefaultAutoSummaryPromptJa();
     if (lang === 'ko') return _getDefaultAutoSummaryPromptKo();
@@ -15160,6 +15223,8 @@ function getDefaultAutoSummaryPrompt() {
 
 /** 默认的二次总结提示词（仅基于时间线/已有摘要） */
 function getDefaultAutoResummaryPrompt() {
+    const fromResource = _getPromptDefaultFromResource('customAutoResummaryPrompt');
+    if (fromResource) return fromResource;
     return `=====【事件压缩】=====
 你是剧情压缩助手。请将以下{{count}}条剧情事件，压缩为一段信息密度极高的连贯摘要。
 
@@ -17978,6 +18043,7 @@ jQuery(async () => {
 
     const pluginBasePath = `/scripts/extensions/${EXTENSION_FOLDER}`;
     await initI18n(pluginBasePath, settings);
+    await initPromptDefaults(pluginBasePath, detectEffectiveAiLang(settings));
 
     if (_isFirstTimeUser && !detectEffectiveAiLangIsZh(settings)) {
         settings.rpgAttributeConfig = _getDefaultRpgAttrConfig();
