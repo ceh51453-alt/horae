@@ -13077,6 +13077,45 @@ function getDefaultAnalysisPrompt() {
     return _getPromptDefaultFromResource('customAnalysisPrompt') || '';
 }
 
+/**
+ * 自动摘要生成入口
+ * useProfile=true 时允许切换连接配置（仅在AI回复后的顺序模式使用）
+ * useProfile=false 时直接调用 generateRaw（并行安全）
+ */
+async function generateForSummary(prompt) {
+    // 从 DOM 补读一次副API设置，防止浏览器自动填充未触发 input 事件导致设置为空
+    _syncSubApiSettingsFromDom();
+    const useCustom = settings.autoSummaryUseCustomApi;
+    const hasUrl = !!(settings.autoSummaryApiUrl && settings.autoSummaryApiUrl.trim());
+    const hasKey = !!(settings.autoSummaryApiKey && settings.autoSummaryApiKey.trim());
+    const hasModel = !!(settings.autoSummaryModel && settings.autoSummaryModel.trim());
+    console.log(`[Horae] generateForSummary: useCustom=${useCustom}, hasUrl=${hasUrl}, hasKey=${hasKey}, hasModel=${hasModel}`);
+    if (useCustom && hasUrl && hasKey && hasModel) {
+        return await generateWithDirectApi(prompt);
+    }
+    if (useCustom && (!hasUrl || !hasKey || !hasModel)) {
+        const missing = [!hasUrl && 'API地址', !hasKey && 'API密钥', !hasModel && '模型名称'].filter(Boolean).join('、');
+        console.warn(`[Horae] 副API已勾选但缺少: ${missing}，回退主API`);
+        showToast(t('toast.subApiMissing', {missing}), 'warning');
+    } else if (!useCustom) {
+        console.log('[Horae] 副API未启用，使用主API');
+    }
+    const context = getContext();
+    const shouldMarkNoRecall = !!(
+        context?.mainApi === 'openai' &&
+        settings.injectContext &&
+        settings.vectorEnabled
+    );
+    const shouldSkipContextInject = !!(
+        context?.mainApi === 'openai' &&
+        settings.injectContext
+    );
+    return await _generateForAiTasks(prompt, {
+        noVectorRecallMarker: shouldMarkNoRecall,
+        noContextInjectionMarker: shouldSkipContextInject,
+    });
+}
+
 function _getSummaryEntryRange(entry) {
     if (!entry) return null;
     if (Array.isArray(entry.range) && entry.range.length >= 2) {
