@@ -13238,7 +13238,8 @@ function _pickAutoResummaryPlan(chat, cutoff, threshold) {
     const eligible = [];
     for (const s of normalized) {
         const { depth, start, end } = s;
-        if (start < 1 || end >= cutoff) continue;
+        // 允许 #0 起始的摘要参与二次总结（例如首段自动总结覆盖 #0-#N）
+        if (start < 0 || end >= cutoff) continue;
         const overlappedByHigher = normalized.some(h =>
             h.depth > depth && !(h.end < start || h.start > end)
         );
