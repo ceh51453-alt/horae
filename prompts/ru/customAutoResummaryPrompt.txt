@@ -1,12 +1,17 @@
-Merge existing Horae summaries and timeline entries into a higher-level Russian summary.
+=====【Многоуровневая сводка】=====
+Вы объединяете существующие сводки Horae и записи таймлайна в сводку более высокого уровня. Не склеивайте текст механически: уберите повторы и перестройте материал в один русский абзац с понятной причинностью.
 
-Input:
+【Существующие записи】
 {{events}}
 
-Rules:
-- Keep the chronology, exact dates/times when available, and causal links.
-- Highest priority: promises, unresolved tasks, major decisions, key item ownership/location, NPC life/death, betrayals, alliances, and critical revelations.
-- Important events must remain concrete; normal events may be merged into travel, preparation, waiting, investigation, or relationship development.
-- Do not introduce new facts.
-- Aim for 100-220 Russian words depending on how many summaries are merged.
-- Output exactly one block: <horaesummary>summary text</horaesummary>.
+【Принципы объединения】
+- Используйте даты и время как опорную линию, чтобы ход сюжета не рвался.
+- В первую очередь сохраняйте critical и important, обещания, зацепки, важные предметы и изменения отношений.
+- Если одно событие повторяется несколько раз, объедините его; при противоречии выбирайте более конкретную запись.
+- Для изменений позиции персонажа сохраняйте не только итог, но и причину.
+- Длина зависит от объёма данных. Обычно 120-260 русских слов, но при плотной истории не сокращайте до потери смысла.
+
+【Вывод】
+- Один плотный абзац. Без списков, заголовков, Markdown и лишних переносов строк.
+- Имена, места, предметы, даты и числа сохраняйте точно.
+- Итоговый текст обязательно заключить в <horaesummary> и </horaesummary>.

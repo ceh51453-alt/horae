@@ -1,4 +1,4 @@
-# Horae - 时光记忆 v1.12.2 | SillyTavern 记忆增强插件
+# Horae - 时光记忆 v1.12.3 | SillyTavern 记忆增强插件
 
 [English](README.md) | **简体中文** | [繁體中文](README.zh-TW.md)
 
@@ -105,3 +105,7 @@ Horae 目前支持以下语言的界面显示：
 ### 翻译致谢
 
 - **俄语 (Русский)** — [@KiskaSora](https://github.com/KiskaSora)
+
+### 致谢
+
+- [@baibai-git](https://github.com/baibai-git) — PR #5 整合贡献

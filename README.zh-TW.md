@@ -1,4 +1,4 @@
-# Horae - 時光記憶 v1.12.2 | SillyTavern 記憶增強插件
+# Horae - 時光記憶 v1.12.3 | SillyTavern 記憶增強插件
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **繁體中文**
 
@@ -73,3 +73,7 @@
 ### 翻譯致謝
 
 - **俄語 (Русский)** — [@KiskaSora](https://github.com/KiskaSora)
+
+### 致謝
+
+- [@baibai-git](https://github.com/baibai-git) — PR #5 整合貢獻

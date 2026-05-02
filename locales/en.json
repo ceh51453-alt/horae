@@ -463,7 +463,7 @@
         "aiScanConfirm": "Estimated {{batches}} batches, consuming {{batches}} generations\n\n· Only fills messages without timeline data\n· Cancel mid-way keeps completed batches\n· Use 'Undo Summary' to revert{{skippedHint}}\n\nContinue?",
         "aiScanStopConfirm": "{{n}} completed summaries will be retained and can be reviewed.\n\nStop remaining batches?",
         "importMode": "Select import mode:\n\n[OK] → Match by message index (same conversation restore)\n[Cancel] → Import as initial state (new conversation metadata)",
-        "languageChanged": "Language changed to {{lang}}.\n\nPlease go to Settings → Custom Prompts and click 'Restore Default' for each prompt, or use 'Reset All', to load the prompt set for this language."
+        "languageChanged": "Language changed to {{lang}}.\n\nTo switch custom prompts to this language, go to Settings → Custom Prompts and click 'Reset All'. Use per-prompt 'Restore Default' only if you want to keep some custom prompts."
     },
     "tooltip": {
         "addAgenda": "Add agenda item",

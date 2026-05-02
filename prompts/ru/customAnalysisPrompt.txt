@@ -1,32 +1,39 @@
-Analyze the selected message and extract only facts explicitly present in it. Keep format labels in English and write descriptive text in Russian. Do not invent missing fields.
+Проанализируйте следующий текст и извлеките только явно присутствующие факты в заданном формате. Если поля нет в тексте, не пишите его. Не додумывайте.
 
-Output format:
+【Текст】
+{{content}}
+
+【Формат вывода】
 <horae>
-time:date and time
-location:current location
-atmosphere:scene mood
-characters:present characters, comma separated
-costume:character name=outfit description
-item:emojiItemName(quantity)|description=holder@exact location
-item!:emojiItemName(quantity)|description=holder@exact location
-item!!:emojiItemName(quantity)|description=holder@exact location
-item-:item name
-affection:character name=value
-npc:Name|appearance=personality@relationship to {{user}}~gender:value~age:value~race:value~job:value~birthday:value~note:value
-agenda:date created|task or plan
-agenda-:task keywords
-rel:CharacterA>CharacterB=relationship type|optional note
-mood:character name=emotional state
+time:дата и время (обязательно. Если не указано явно, подобрать конкретное время по контексту; не писать «неизвестно» или «однажды»)
+location:текущее место (обязательно)
+atmosphere:атмосфера сцены
+characters:присутствующие персонажи через запятую (обязательно)
+costume:имя персонажа=полное описание одежды (обязательно, каждый персонаж отдельной строкой)
+item:эмодзиНазвание(количество)|описание=владелец@точное место
+item!:эмодзиНазвание(количество)|описание=владелец@точное место
+item!!:эмодзиНазвание(количество)|описание=владелец@точное место
+item-:название предмета
+affection:имя персонажа=число расположения
+npc:имя персонажа|внешность=характер@отношение к {{user}}~gender:value~age:value~race:value~job:value~birthday:value
+agenda:дата создания|содержание плана или обещания
+agenda-:ключевые слова плана
 </horae>
 <horaeevent>
-event:normal|event summary
-event:important|event summary
-event:critical|event summary
+event:normal|краткое содержание события
+event:important|краткое содержание события
+event:critical|краткое содержание события
 </horaeevent>
 
-Extraction rules:
-- time, location, characters, costume, and at least one event are required if the message contains a scene.
-- If time is not explicit, infer a specific reasonable time from context rather than writing ?nknown??
-- Use Russian descriptions, but keep field names and separators exactly as shown.
-- Event summaries should be dense and concrete, about 40-90 Russian words.
-- {{user}} is the protagonist. Record NPC attitude toward {{user}} only, not {{user}}'s affection toward NPCs.
+【Условия】
+· Предметы: писать только при получении, расходе, изменении количества, владельца, места или свойств. Для единичного предмета не писать (1).
+· Персонажи: первое появление требует внешности, характера, отношения и gender/age/race/job. Затем писать только изменившиеся поля.
+· Расположение: писать только отношение персонажа к {{user}}. Ориентиры: незнакомец 0-20, знакомый 30-50, друг 50-70, возлюбленный 70-90.
+· Планы: новые обещания, планы и зацепки писать через agenda:. Выполненные или отменённые удалять через agenda-:.
+· event должен находиться внутри <horaeevent>, не внутри <horae>.
+
+【event】
+· Обычно 45-100 русских слов. Укажите, кто кому что сделал или сообщил, как изменились эмоции или отношения, какие улики, решения или последствия появились.
+· Запрещены абстрактные формулировки.
+  ❌ «{{user}} и Артём поговорили, и их отношения немного улучшились.»
+  ✅ «{{user}} на заброшенной станции показал Артёму дневник пропавшей сестры. Артём всё ещё сомневался, но признал, что шифр в дневнике указывает на номер склада в старом районе, и начал относиться к {{user}} не как к случайному нанимателю, а как к союзнику.»

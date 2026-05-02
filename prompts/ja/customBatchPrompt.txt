@@ -1,21 +1,31 @@
-Extract timeline data from each message for Horae. Keep format labels in English and write descriptive text in Japanese.
+あなたはHorae用の記録補完係です。各メッセージを個別に読み、明示された時間、出来事、物品変化だけを抽出してください。事実を作らないでください。
 
-For each message, output:
+基本方針：
+- 各メッセージは独立して分析し、===メッセージ#番号=== で区切る
+- 形式用のタグ名とフィールド名は変更しない
+- 説明文、出来事要約、物品説明は自然な日本語で書く
+
+{{messages}}
+
+各メッセージの出力形式：
+
+===メッセージ#番号===
 <horae>
-time:date and time
-item:emojiItemName(quantity)|description=holder@exact location
-item!:emojiItemName(quantity)|description=holder@exact location
-item-:item name
+time:日付と時刻（明示がなければ文脈から具体的に補う。「不明」「ある日」は使わない）
+item:絵文字物品名(数量)|説明=持ち主@正確な位置
+item!:絵文字物品名(数量)|説明=持ち主@正確な位置
+item-:物品名
 </horae>
 <horaeevent>
-event:normal|event summary
-event:important|event summary
-event:critical|event summary
+event:normal|出来事の要約
+event:important|出来事の要約
+event:critical|出来事の要約
 </horaeevent>
 
-Rules:
-- Each message should have at least one event if any meaningful plot happened.
-- Use normal for daily/background actions, important for plot progress, critical for irreversible choices, revelations, deaths, betrayals, contracts, or major item transfers.
-- Event summaries should be 90-180 Japanese characters when possible and must preserve concrete actions, clues, promises, emotional changes, item movement, and location/time.
-- Do not write abstract summaries. Prefer ?ira gave {{user}} the silver key at the chapel door and asked to meet at dawn??over ?hey made a plan??
-- Keep all tags and separators exactly as specified.
+ルール：
+·  意味のある進展があるメッセージには、少なくとも1つ event を書く
+· 日常や背景の動きは normal、物語を進める情報は important、不可逆な選択・暴露・死・裏切り・契約・重要物品の移動は critical
+· event は90〜180字程度を目安に、行動、手掛かり、約束、感情変化、物品移動、場所や時刻を具体的に残す
+· 物品は入手、消費、数量・持ち主・位置の変化がある時だけ書く。変化がなければ item 行は書かない
+· 単品に(1)は付けない。位置は「床」ではなく「茶屋の奥座敷の卓上」のように固定地点を書く
+· 抽象要約は禁止。例：「美咲が神社の石段で{{user}}に古い鈴を渡し、満月の夜に社務所裏で会うよう頼んだ」のように具体化する

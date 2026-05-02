@@ -1,33 +1,39 @@
-Analyze the selected message and extract only facts explicitly present in it. Keep format labels in English and write descriptive text in Japanese. Do not invent missing fields.
+次のテキストを分析し、明示されている事実だけを指定形式で抽出してください。存在しない項目は書かず、推測で作らないでください。
 
-Output format:
+【対象テキスト】
+{{content}}
+
+【出力形式】
 <horae>
-time:date and time
-location:current location
-atmosphere:scene mood
-characters:present characters, comma separated
-costume:character name=outfit description
-item:emojiItemName(quantity)|description=holder@exact location
-item!:emojiItemName(quantity)|description=holder@exact location
-item!!:emojiItemName(quantity)|description=holder@exact location
-item-:item name
-affection:character name=value
-npc:Name|appearance=personality@relationship to {{user}}~gender:value~age:value~race:value~job:value~birthday:value~note:value
-agenda:date created|task or plan
-agenda-:task keywords
-rel:CharacterA>CharacterB=relationship type|optional note
-mood:character name=emotional state
+time:日付と時刻（必須。明示がなければ文脈に合う具体的な時刻を補う。「不明」「ある日」は使わない）
+location:現在地（必須）
+atmosphere:場面の雰囲気
+characters:その場にいる人物をカンマ区切りで書く（必須）
+costume:人物名=服装の完全な描写（必須。人物ごとに1行）
+item:絵文字物品名(数量)|説明=持ち主@正確な位置
+item!:絵文字物品名(数量)|説明=持ち主@正確な位置
+item!!:絵文字物品名(数量)|説明=持ち主@正確な位置
+item-:物品名
+affection:人物名=好感度数値
+npc:人物名|外見=性格@{{user}}との関係~gender:value~age:value~race:value~job:value~birthday:value
+agenda:作成日|予定や約束の内容
+agenda-:予定のキーワード
 </horae>
 <horaeevent>
-event:normal|event summary
-event:important|event summary
-event:critical|event summary
+event:normal|出来事の要約
+event:important|出来事の要約
+event:critical|出来事の要約
 </horaeevent>
 
-Extraction rules:
-- time, location, characters, costume, and at least one event are required if the message contains a scene.
-- If time is not explicit, infer a specific reasonable time from context rather than writing ?nknown??
-- Use Japanese descriptions, but keep field names and separators exactly as shown.
-- Event summaries should be dense and concrete, about 90-180 Japanese characters.
-- Use natural examples and relationship labels appropriate to Japanese; do not force direct translations.
-- {{user}} is the protagonist. Do not record affection for {{user}} toward others; record NPC attitude toward {{user}} only.
+【発動条件】
+· 物品：入手、消費、数量・持ち主・位置・性質の変化がある時だけ書く。単品に(1)は付けない。
+· 人物：初登場は外見、性格、関係、gender/age/race/job を含める。以後は変化した項目だけ書く。
+· 好感度：人物が{{user}}に向ける好感度だけを書く。初対面0〜20、顔見知り30〜50、友人50〜70、恋人70〜90を目安にする。
+· 予定：新しい約束、計画、伏線が出た時だけ agenda: を書く。完了や取消は agenda-: で消す。
+· event は <horaeevent> 内に置く。<horae> 内に入れない。
+
+【event 要約】
+· 90〜180字程度を目安に、誰が誰に何をしたか、何を伝えたか、感情や関係がどう変わったか、何の手掛かりや結果が生まれたかを書く。
+· 抽象的な言い方は禁止。
+  ❌ 「{{user}}と蓮は話し合い、関係が少し良くなった。」
+  ✅ 「{{user}}は廃駅で蓮に失踪した妹の手帳を見せ、蓮は疑いを残しつつも、手帳の暗号が旧市街の倉庫番号を示すと認めた。蓮は{{user}}を単なる依頼人ではなく協力者として扱い始めた。」

@@ -1,15 +1,16 @@
-Create a Russian long-context summary for the messages that will be hidden after automatic summarization.
+=====【Автоматическая сводка】=====
+Вы составляете памятку перед скрытием длинного фрагмента диалога, чтобы дальнейший сюжет не потерял контекст. Сведите следующий материал в объективный, насыщенный фактами русский абзац.
 
-Existing event timeline:
 {{events}}
 
-Original message text:
-{{fulltext}}
+【Принципы】
+- Не привязывайтесь к жёсткому лимиту. Обычный фрагмент чаще всего требует 90-200 русских слов; при большом количестве важных фактов можно писать длиннее.
+- Точно сохраняйте даты, места, имена, предметы, числа, обещания и зацепки.
+- Конкретно пишите, кто кому что сделал, что сказал и как изменилась позиция персонажей.
+- Бытовые разговоры сжимайте до фона, но решения и изменения отношений сохраняйте.
+- Не ограничивайтесь словами «они сблизились» или «поговорили»: укажите, из-за чего и как именно изменилась ситуация.
 
-Rules:
-- Use the event timeline as the skeleton and the original text for details.
-- Preserve exact dates/times, order of events, names, places, promises, tasks, item movement, clues, emotional turns, and relationship changes.
-- Use concrete descriptions, not vague wording.
-- For Russian, aim for about 90-180 words for a normal batch; use more only when the batch contains many critical facts.
-- Plain text only inside the wrapper; no Markdown, headings, or bullet points.
-- Output exactly one block: <horaesummary>summary text</horaesummary>.
+【Вывод】
+- Один естественный абзац. Без списков, заголовков, Markdown и лишних переносов строк.
+- Стиль: спокойное, объективное повествование.
+- Итоговый текст обязательно заключить в <horaesummary> и </horaesummary>.

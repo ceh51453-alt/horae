@@ -1,15 +1,16 @@
-Create a Japanese long-context summary for the messages that will be hidden after automatic summarization.
+=====【自動要約】=====
+あなたは長い会話を隠す前に、後続の物語が困らないよう記憶用の要約を作る係です。次の内容を、客観的で情報密度の高い日本語の段落にまとめてください。
 
-Existing event timeline:
 {{events}}
 
-Original message text:
-{{fulltext}}
+【方針】
+- 固定の文字数に縛られず、重要情報の量に合わせて長さを決める。通常のまとまりなら250〜600字程度、重要な事実が多い場合は長くしてよい。
+- 日付、場所、人物名、物品名、数値、約束、伏線を正確に残す。
+- 誰が誰に何をしたか、何を言ったか、どんな態度変化が起きたかを具体的に書く。
+- 日常的なやり取りは背景として圧縮し、物語上の決定や関係変化を優先する。
+- 「仲良くなった」「話し合った」だけで済ませず、何をきっかけにどう変わったのかを書く。
 
-Rules:
-- Use the event timeline as the skeleton and the original text for details.
-- Preserve exact dates/times, order of events, names, places, promises, tasks, item movement, clues, emotional turns, and relationship changes.
-- Use concrete descriptions, not vague wording.
-- For Japanese, aim for about 220-500 characters for a normal batch; use more only when the batch contains many critical facts.
-- Plain text only inside the wrapper; no Markdown, headings, or bullet points.
-- Output exactly one block: <horaesummary>summary text</horaesummary>.
+【出力】
+- 一つの自然な段落で書く。箇条書き、見出し、マークダウン、余分な改行は禁止。
+- 文体は冷静で客観的な叙事体にする。
+- 最終出力は必ず <horaesummary> と </horaesummary> で包む。

@@ -1,4 +1,4 @@
-# Horae v1.12.2 - Memory Engine for SillyTavern
+# Horae v1.12.3 - Memory Engine for SillyTavern
 
 **English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 
@@ -102,3 +102,7 @@ Bug reports and suggestions are welcome!
 ### Translation Credits
 
 - **Russian (Русский)** — [@KiskaSora](https://github.com/KiskaSora)
+
+### Credits
+
+- [@baibai-git](https://github.com/baibai-git) — PR #5 integration contribution

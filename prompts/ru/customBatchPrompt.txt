@@ -1,21 +1,31 @@
-Extract timeline data from each message for Horae. Keep format labels in English and write descriptive text in Russian.
+Вы отвечаете за пополнение записей Horae. Читайте каждое сообщение отдельно и извлекайте только явно указанные время, события и изменения предметов. Не придумывайте факты.
 
-For each message, output:
+Основные правила:
+- Каждое сообщение анализируется отдельно и отделяется строкой ===сообщение#номер===
+- Названия тегов и полей не менять
+- Описания, события и сведения о предметах писать естественным русским языком
+
+{{messages}}
+
+Формат для каждого сообщения:
+
+===сообщение#номер===
 <horae>
-time:date and time
-item:emojiItemName(quantity)|description=holder@exact location
-item!:emojiItemName(quantity)|description=holder@exact location
-item-:item name
+time:дата и время (если не указано явно, подобрать конкретное время по контексту; не писать «неизвестно» или «однажды»)
+item:эмодзиНазвание(количество)|описание=владелец@точное место
+item!:эмодзиНазвание(количество)|описание=владелец@точное место
+item-:название предмета
 </horae>
 <horaeevent>
-event:normal|event summary
-event:important|event summary
-event:critical|event summary
+event:normal|краткое содержание события
+event:important|краткое содержание события
+event:critical|краткое содержание события
 </horaeevent>
 
-Rules:
-- Each message should have at least one event if any meaningful plot happened.
-- Use normal for routine/background actions, important for plot progress, critical for irreversible choices, revelations, deaths, betrayals, contracts, or major item transfers.
-- Event summaries should be 40-90 Russian words when possible and must preserve concrete actions, clues, promises, emotional changes, item movement, and location/time.
-- Do not write abstract summaries. Prefer ?ira gave {{user}} the silver key at the chapel door and asked to meet at dawn??over ?hey made a plan??
-- Keep all tags and separators exactly as specified.
+Правила:
+· Если в сообщении есть значимое развитие сюжета, запишите хотя бы один event.
+· Повседневные действия и фон — normal; сведения, двигающие сюжет, — important; необратимые решения, разоблачения, смерть, предательство, договоры и перемещение важных предметов — critical.
+· event обычно должен быть около 45-100 русских слов: сохраняйте действия, улики, обещания, эмоциональные сдвиги, перемещение предметов, место и время.
+· Предметы писать только при получении, расходе, изменении количества, владельца или места. Если изменений нет, строки item не нужны.
+· Для единичного предмета не пишите (1). Место должно быть точным: не «на полу», а «на столе в дальней комнате чайной».
+· Не используйте пустые обобщения. Пишите конкретно: «Марина на ступенях часовни передала {{user}} старый колокольчик и попросила прийти за алтарь в полнолуние».
