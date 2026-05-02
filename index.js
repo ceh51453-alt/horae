@@ -1,9 +1,9 @@
-﻿/**
+/**
  * Horae - 时光记忆插件 
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.12.1
+ * 版本: 1.12.2
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from '
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.12.1';
+const VERSION = '1.12.2';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -122,12 +122,14 @@ const DEFAULT_SETTINGS = {
     showMessagePanel: true,
     injectionDepthSource: 'system', // 注入深度来源: system(原逻辑) / preset(按完整提示词末尾偏移)
     injectionPosition: 0,
+    timelineInjectionMode: 'inline', // inline(原逻辑合并注入) / separate(剧情轨迹独立前置)
     lastStoryDate: '',
     lastStoryTime: '',
     favoriteNpcs: [],  // 用户标记的星标NPC列表
     pinnedNpcs: [],    // 用户手动标记的重要角色列表（特殊边框）
     // 发送给AI的内容控制
     sendTimeline: true,    // 发送剧情轨迹（关闭则无法计算相对时间）
+    contextDepth: 15,      // 一般级别剧情轨迹数量
     sendCharacters: true,  // 发送角色信息（服装、好感度）
     sendItems: true,       // 发送物品栏
     customTables: [],      // 自定义表格 [{id, name, rows, cols, data, prompt}]
@@ -156,7 +158,7 @@ const DEFAULT_SETTINGS = {
     customRelationshipPrompt: '',  // 自定义关系网络提示词（空=使用默认）
     customMoodPrompt: '',          // 自定义情绪追踪提示词（空=使用默认）
     // 自动摘要
-    autoSummaryEnabled: true,      // 自动摘要开关
+    autoSummaryEnabled: false,     // 自动摘要开关
     autoSummaryKeepRecent: 5,      // 保留最近N条AI消息不压缩（中间用户消息会随全文一起发送）
     autoSummaryBufferMode: 'messages', // 'messages'(按AI条数) | 'tokens'
     autoSummaryBufferLimit: 10,     // 缓冲阈值（连续未总结AI条数或Token数）
@@ -272,8 +274,10 @@ const DEFAULT_SETTINGS = {
     vectorRerankMinScore: 0.95,         // Rerank 后的相关性最低分（低于此值丢弃）
     vectorFallbackEnabled: false,      // 首次召回为空时用上一楼 AI 回复内容重试
     vectorFallbackMinScore: 0.85,       // 非 Rerank 模式下 fallback 触发阈值（最高分低于此值即 fallback）
-    vectorTopK: 25,
-    vectorThreshold: 0.85,
+    vectorRecallPresets: [],            // 用户自定义向量召回参数预设
+    vectorRecallPresetSelected: 'builtin:small',
+    vectorTopK: 5,
+    vectorThreshold: 0.72,
     vectorFullTextCount: 3,
     vectorFullTextThreshold: 0.9,
     vectorStripTags: '',
@@ -559,6 +563,127 @@ function _normalizePromptSettingsInPlace() {
     return changed;
 }
 
+const VECTOR_RECALL_PRESET_FIELDS = [
+    'vectorPureMode',
+    'vectorRerankEnabled',
+    'vectorRerankFullText',
+    'vectorRerankCandidates',
+    'vectorRerankRecallThreshold',
+    'vectorRerankMinScore',
+    'vectorTopK',
+    'vectorThreshold',
+    'vectorFullTextCount',
+    'vectorFullTextThreshold',
+];
+
+const BUILTIN_VECTOR_RECALL_PRESETS = [
+    {
+        id: 'small',
+        labelKey: 'vector.presetSmall',
+        values: {
+            vectorPureMode: false,
+            vectorRerankEnabled: false,
+            vectorRerankFullText: false,
+            vectorRerankCandidates: 25,
+            vectorRerankRecallThreshold: 0.3,
+            vectorRerankMinScore: 0.5,
+            vectorTopK: 5,
+            vectorThreshold: 0.72,
+            vectorFullTextCount: 3,
+            vectorFullTextThreshold: 0.9,
+        },
+    },
+    {
+        id: 'large',
+        labelKey: 'vector.presetLarge',
+        values: {
+            vectorPureMode: true,
+            vectorRerankEnabled: false,
+            vectorRerankFullText: false,
+            vectorRerankCandidates: 25,
+            vectorRerankRecallThreshold: 0.3,
+            vectorRerankMinScore: 0.5,
+            vectorTopK: 8,
+            vectorThreshold: 0.8,
+            vectorFullTextCount: 3,
+            vectorFullTextThreshold: 0.9,
+        },
+    },
+    {
+        id: 'rerank',
+        labelKey: 'vector.presetRerank',
+        values: {
+            vectorPureMode: true,
+            vectorRerankEnabled: true,
+            vectorRerankFullText: false,
+            vectorRerankCandidates: 25,
+            vectorRerankRecallThreshold: 0.3,
+            vectorRerankMinScore: 0.95,
+            vectorTopK: 5,
+            vectorThreshold: 0.85,
+            vectorFullTextCount: 3,
+            vectorFullTextThreshold: 0.9,
+        },
+    },
+];
+
+function _sanitizeVectorRecallPresetValues(values = {}) {
+    const out = {};
+    out.vectorPureMode = !!values.vectorPureMode;
+    out.vectorRerankEnabled = !!values.vectorRerankEnabled;
+    out.vectorRerankFullText = !!values.vectorRerankFullText;
+    out.vectorRerankCandidates = Math.max(5, parseInt(values.vectorRerankCandidates, 10) || 25);
+    const recallThreshold = parseFloat(values.vectorRerankRecallThreshold);
+    out.vectorRerankRecallThreshold = Number.isFinite(recallThreshold) ? Math.min(0.8, Math.max(0, recallThreshold)) : 0.3;
+    const minScore = parseFloat(values.vectorRerankMinScore);
+    out.vectorRerankMinScore = Number.isFinite(minScore) ? Math.min(1, Math.max(0, minScore)) : 0.5;
+    out.vectorTopK = Math.min(10, Math.max(1, parseInt(values.vectorTopK, 10) || 5));
+    const threshold = parseFloat(values.vectorThreshold);
+    out.vectorThreshold = Number.isFinite(threshold) ? Math.min(0.95, Math.max(0.3, threshold)) : 0.72;
+    out.vectorFullTextCount = Math.min(5, Math.max(0, parseInt(values.vectorFullTextCount, 10) || 0));
+    const fullTextThreshold = parseFloat(values.vectorFullTextThreshold);
+    out.vectorFullTextThreshold = Number.isFinite(fullTextThreshold) ? Math.min(1, Math.max(0.6, fullTextThreshold)) : 0.9;
+    return out;
+}
+
+function _collectCurrentVectorRecallPresetValues() {
+    const values = {};
+    for (const key of VECTOR_RECALL_PRESET_FIELDS) values[key] = settings[key];
+    return _sanitizeVectorRecallPresetValues(values);
+}
+
+function _applyVectorRecallPresetValues(values) {
+    const sanitized = _sanitizeVectorRecallPresetValues(values);
+    for (const key of VECTOR_RECALL_PRESET_FIELDS) settings[key] = sanitized[key];
+}
+
+function _normalizeVectorRecallPresetsInPlace() {
+    let changed = false;
+    if (!Array.isArray(settings.vectorRecallPresets)) {
+        settings.vectorRecallPresets = [];
+        changed = true;
+    }
+    const normalized = [];
+    for (const preset of settings.vectorRecallPresets) {
+        if (!preset || typeof preset !== 'object' || !preset.name || !preset.values) {
+            changed = true;
+            continue;
+        }
+        const clean = {
+            name: String(preset.name).trim(),
+            values: _sanitizeVectorRecallPresetValues(preset.values),
+        };
+        if (!clean.name) {
+            changed = true;
+            continue;
+        }
+        normalized.push(clean);
+        if (JSON.stringify(clean) !== JSON.stringify(preset)) changed = true;
+    }
+    settings.vectorRecallPresets = normalized;
+    return changed;
+}
+
 function loadSettings() {
     if (extension_settings[EXTENSION_NAME]) {
         settings = { ...DEFAULT_SETTINGS, ...extension_settings[EXTENSION_NAME] };
@@ -567,7 +692,7 @@ function loadSettings() {
         extension_settings[EXTENSION_NAME] = { ...DEFAULT_SETTINGS };
         settings = { ...DEFAULT_SETTINGS };
     }
-    if (_normalizePromptSettingsInPlace()) saveSettings();
+    if (_normalizePromptSettingsInPlace() || _normalizeVectorRecallPresetsInPlace()) saveSettings();
 }
 
 /** 迁移旧版属性配置到 DND 六维 */
@@ -1325,7 +1450,7 @@ function updateTimelineDisplay() {
         }
 
         const restoreBtn = isRestoredFromCompress ? `
-                <button class="horae-summary-toggle-btn horae-btn-inline-toggle" data-summary-id="${compressedBy}" title="${t('tooltip.toggleSummary')}"
+                <button class="horae-summary-toggle-btn horae-btn-inline-toggle" data-summary-id="${compressedBy}" title="${t('tooltip.toggleSummary')}">
                     <i class="fa-solid fa-compress"></i>
                 </button>` : '';
 
@@ -8312,9 +8437,9 @@ async function enforceHiddenState() {
 
     let fixed = 0;
     for (const s of sums) {
-        if (!s.active || !s.range) continue;
+        if (!s.active) continue;
         const summaryId = s.id;
-        for (let i = s.range[0]; i <= s.range[1]; i++) {
+        for (const i of getSummaryMsgIndices(s)) {
             if (i === 0 || !chat[i]) continue;
             if (!chat[i].is_hidden) {
                 chat[i].is_hidden = true;
@@ -8353,9 +8478,9 @@ function repairAllSummaryStates() {
 
     let fixed = 0;
     for (const s of sums) {
-        if (!s.active || !s.range) continue;
+        if (!s.active) continue;
         const summaryId = s.id;
-        for (let i = s.range[0]; i <= s.range[1]; i++) {
+        for (const i of getSummaryMsgIndices(s)) {
             if (i === 0 || !chat[i]) continue;
             if (!chat[i].is_hidden) {
                 chat[i].is_hidden = true;
@@ -11120,6 +11245,12 @@ function initSettingsEvents() {
         saveSettings();
     });
 
+    $('#horae-setting-timeline-injection-mode').on('change', function () {
+        const v = String(this.value || 'inline');
+        settings.timelineInjectionMode = (v === 'separate') ? 'separate' : 'inline';
+        saveSettings();
+    });
+
     $('#horae-btn-scan-all, #horae-btn-scan-history').on('click', scanHistoryWithProgress);
     $('#horae-btn-ai-scan').on('click', batchAIScan);
     $('#horae-btn-undo-ai-scan').on('click', undoAIScan);
@@ -11696,8 +11827,8 @@ function initSettingsEvents() {
     // ── Horae 全局配置 导出/导入/重置 ──
     const _SETTINGS_EXPORT_KEYS = [
         'enabled', 'autoParse', 'autoFillPrevTimelineOnSend', 'injectContext', 'useMainPresetForAiTasks', 'showMessagePanel', 'showTopIcon',
-        'injectionDepthSource', 'injectionPosition',
-        'sendTimeline', 'sendCharacters', 'sendItems',
+        'injectionDepthSource', 'injectionPosition', 'timelineInjectionMode',
+        'sendTimeline', 'contextDepth', 'sendCharacters', 'sendItems',
         'sendLocationMemory', 'sendRelationships', 'sendMood',
         'antiParaphraseMode', 'sideplayMode',
         'aiScanIncludeNpc', 'aiScanIncludeAffection', 'aiScanIncludeScene', 'aiScanIncludeRelationship',
@@ -11706,6 +11837,8 @@ function initSettingsEvents() {
         'rpgBarsUserOnly', 'rpgSkillsUserOnly', 'rpgAttrsUserOnly', 'rpgReputationUserOnly',
         'rpgEquipmentUserOnly', 'rpgLevelUserOnly', 'rpgCurrencyUserOnly', 'rpgUserOnly',
         'rpgBarConfig', 'rpgAttributeConfig', 'rpgAttrViewMode', 'equipmentTemplates',
+        'vectorRecallPresets', 'vectorRecallPresetSelected',
+        ...VECTOR_RECALL_PRESET_FIELDS,
         ..._PRESET_PROMPT_KEYS,
     ];
 
@@ -11749,6 +11882,7 @@ function initSettingsEvents() {
                     settings[k] = JSON.parse(JSON.stringify(imported[k]));
                 }
                 _normalizePromptSettingsInPlace();
+                _normalizeVectorRecallPresetsInPlace();
                 await ensurePromptDefaults(detectEffectiveAiLang(settings));
                 saveSettings();
                 syncSettingsToUI();
@@ -11831,6 +11965,15 @@ function initSettingsEvents() {
 
     $('#horae-setting-send-timeline').on('change', function () {
         settings.sendTimeline = this.checked;
+        saveSettings();
+        horaeManager.init(getContext(), settings);
+        updateTokenCounter();
+    });
+
+    $('#horae-setting-context-depth').on('change', function () {
+        const val = parseInt(this.value, 10);
+        settings.contextDepth = Number.isNaN(val) ? 15 : Math.max(0, val);
+        this.value = settings.contextDepth;
         saveSettings();
         horaeManager.init(getContext(), settings);
         updateTokenCounter();
@@ -12123,7 +12266,7 @@ function initSettingsEvents() {
 
     $('#horae-btn-export').on('click', exportData);
     $('#horae-btn-import').on('click', importData);
-    $('#horae-btn-carry-new-chat, #horae-btn-carry-new-chat-timeline').on('click', createNewChatWithCarryover);
+    $('#horae-btn-carry-new-chat').on('click', createNewChatWithCarryover);
     $('#horae-btn-clear').on('click', clearAllData);
 
     // 好感度显示/隐藏（不可用hidden类名，酒馆全局有display:none规则）
@@ -12457,6 +12600,63 @@ function initSettingsEvents() {
     $('#horae-btn-fetch-rerank-models').on('click', fetchRerankModels);
     $('#horae-btn-test-vector-api').on('click', testVectorApiConnection);
 
+    const loadSelectedVectorRecallPreset = () => {
+        const preset = _getSelectedVectorRecallPreset();
+        if (!preset) {
+            showToast(t('toast.selectPresetFirst'), 'warning');
+            return;
+        }
+        _applyVectorRecallPresetValues(preset.values);
+        settings.vectorRecallPresetSelected = $('#horae-vector-recall-preset-select').val() || 'builtin:small';
+        saveSettings();
+        _syncVectorRecallPresetInputs();
+        showToast(t('toast.presetLoaded', { name: preset.name }), 'success');
+    };
+
+    $('#horae-vector-recall-preset-select').on('change', loadSelectedVectorRecallPreset);
+    $('#horae-vector-recall-preset-load').on('click', loadSelectedVectorRecallPreset);
+
+    $('#horae-vector-recall-preset-save').on('click', () => {
+        const preset = _getSelectedVectorRecallPreset();
+        if (!preset) { showToast(t('toast.selectPresetFirst'), 'warning'); return; }
+        if (preset.type !== 'custom') {
+            showToast(t('toast.vectorBuiltinPresetReadonly'), 'warning');
+            return;
+        }
+        settings.vectorRecallPresets[preset.index].values = _collectCurrentVectorRecallPresetValues();
+        saveSettings();
+        showToast(t('toast.presetSaved', { name: preset.name }), 'success');
+    });
+
+    $('#horae-vector-recall-preset-new').on('click', () => {
+        const name = prompt(t('vector.newRecallPresetPrompt'));
+        if (!name?.trim()) return;
+        if (!Array.isArray(settings.vectorRecallPresets)) settings.vectorRecallPresets = [];
+        settings.vectorRecallPresets.push({
+            name: name.trim(),
+            values: _collectCurrentVectorRecallPresetValues(),
+        });
+        settings.vectorRecallPresetSelected = `custom:${settings.vectorRecallPresets.length - 1}`;
+        saveSettings();
+        _renderVectorRecallPresetSelect();
+        showToast(t('toast.presetCreated', { name: name.trim() }), 'success');
+    });
+
+    $('#horae-vector-recall-preset-delete').on('click', () => {
+        const preset = _getSelectedVectorRecallPreset();
+        if (!preset) { showToast(t('toast.selectPresetFirst'), 'warning'); return; }
+        if (preset.type !== 'custom') {
+            showToast(t('toast.vectorBuiltinPresetReadonly'), 'warning');
+            return;
+        }
+        if (!confirm(t('confirm.deleteTheme', { name: preset.name }))) return;
+        settings.vectorRecallPresets.splice(preset.index, 1);
+        settings.vectorRecallPresetSelected = 'builtin:small';
+        saveSettings();
+        _renderVectorRecallPresetSelect();
+        showToast(t('toast.saveSuccess'), 'success');
+    });
+
     $('#horae-setting-vector-rerank-url').on('change', function () {
         settings.vectorRerankUrl = this.value.trim();
         saveSettings();
@@ -12548,6 +12748,65 @@ function _syncVectorSourceUI() {
     $('#horae-vector-api-options').toggle(isApi);
 }
 
+function _renderVectorRecallPresetSelect() {
+    const sel = document.getElementById('horae-vector-recall-preset-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+
+    for (const preset of BUILTIN_VECTOR_RECALL_PRESETS) {
+        const opt = document.createElement('option');
+        opt.value = `builtin:${preset.id}`;
+        opt.textContent = t(preset.labelKey);
+        sel.appendChild(opt);
+    }
+
+    const customPresets = Array.isArray(settings.vectorRecallPresets) ? settings.vectorRecallPresets : [];
+    if (customPresets.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = t('vector.customRecallPresets');
+        customPresets.forEach((preset, index) => {
+            const opt = document.createElement('option');
+            opt.value = `custom:${index}`;
+            opt.textContent = preset.name;
+            group.appendChild(opt);
+        });
+        sel.appendChild(group);
+    }
+
+    const selected = settings.vectorRecallPresetSelected || 'builtin:small';
+    sel.value = selected;
+    if (sel.value !== selected) sel.value = 'builtin:small';
+}
+
+function _getSelectedVectorRecallPreset() {
+    const selected = String($('#horae-vector-recall-preset-select').val() || settings.vectorRecallPresetSelected || 'builtin:small');
+    if (selected.startsWith('builtin:')) {
+        const id = selected.slice('builtin:'.length);
+        const preset = BUILTIN_VECTOR_RECALL_PRESETS.find(p => p.id === id);
+        return preset ? { type: 'builtin', id, name: t(preset.labelKey), values: preset.values } : null;
+    }
+    if (selected.startsWith('custom:')) {
+        const idx = parseInt(selected.slice('custom:'.length), 10);
+        const preset = settings.vectorRecallPresets?.[idx];
+        return preset ? { type: 'custom', index: idx, name: preset.name, values: preset.values } : null;
+    }
+    return null;
+}
+
+function _syncVectorRecallPresetInputs() {
+    $('#horae-setting-vector-pure-mode').prop('checked', !!settings.vectorPureMode);
+    $('#horae-setting-vector-rerank-enabled').prop('checked', !!settings.vectorRerankEnabled);
+    $('#horae-vector-rerank-options').toggle(!!settings.vectorRerankEnabled);
+    $('#horae-setting-vector-rerank-fulltext').prop('checked', !!settings.vectorRerankFullText);
+    $('#horae-setting-vector-rerank-candidates').val(settings.vectorRerankCandidates ?? 25);
+    $('#horae-setting-vector-rerank-recall-threshold').val(settings.vectorRerankRecallThreshold ?? 0.3);
+    $('#horae-setting-vector-rerank-min-score').val(settings.vectorRerankMinScore ?? 0.5);
+    $('#horae-setting-vector-topk').val(settings.vectorTopK || 5);
+    $('#horae-setting-vector-threshold').val(settings.vectorThreshold || 0.72);
+    $('#horae-setting-vector-fulltext-count').val(settings.vectorFullTextCount ?? 3);
+    $('#horae-setting-vector-fulltext-threshold').val(settings.vectorFullTextThreshold ?? 0.9);
+}
+
 function syncSettingsToUI() {
     $('#horae-setting-enabled').prop('checked', settings.enabled);
     $('#horae-setting-auto-parse').prop('checked', settings.autoParse);
@@ -12559,7 +12818,9 @@ function syncSettingsToUI() {
     $('#horae-ext-show-top-icon').prop('checked', settings.showTopIcon !== false);
     $('#horae-setting-injection-depth-source').val(settings.injectionDepthSource === 'preset' ? 'preset' : 'system');
     $('#horae-setting-injection-position').val(settings.injectionPosition);
+    $('#horae-setting-timeline-injection-mode').val(settings.timelineInjectionMode === 'separate' ? 'separate' : 'inline');
     $('#horae-setting-send-timeline').prop('checked', settings.sendTimeline);
+    $('#horae-setting-context-depth').val(Number.isFinite(parseInt(settings.contextDepth, 10)) ? Math.max(0, parseInt(settings.contextDepth, 10)) : 15);
     $('#horae-setting-send-characters').prop('checked', settings.sendCharacters);
     $('#horae-setting-send-items').prop('checked', settings.sendItems);
 
@@ -12733,11 +12994,8 @@ function syncSettingsToUI() {
     $('#horae-setting-vector-rerank-key').val(settings.vectorRerankKey || '');
     $('#horae-setting-vector-rerank-candidates').val(settings.vectorRerankCandidates ?? 25);
     $('#horae-setting-vector-rerank-recall-threshold').val(settings.vectorRerankRecallThreshold ?? 0.3);
-    $('#horae-setting-vector-rerank-min-score').val(settings.vectorRerankMinScore ?? 0.5);
-    $('#horae-setting-vector-topk').val(settings.vectorTopK || 5);
-    $('#horae-setting-vector-threshold').val(settings.vectorThreshold || 0.72);
-    $('#horae-setting-vector-fulltext-count').val(settings.vectorFullTextCount ?? 3);
-    $('#horae-setting-vector-fulltext-threshold').val(settings.vectorFullTextThreshold ?? 0.9);
+    _renderVectorRecallPresetSelect();
+    _syncVectorRecallPresetInputs();
     $('#horae-setting-vector-strip-tags').val(settings.vectorStripTags || '');
     _syncVectorSourceUI();
     _updateVectorStatus();
@@ -13712,9 +13970,86 @@ function _syncSubApiSettingsFromDom() {
     } catch (_) { }
 }
 
-/** 通用：从 OpenAI 兼容端点拉取模型列表 */
+function _isGeminiEmbeddingEndpoint(rawUrl, model = '') {
+    return /gemini|googleapis|generativelanguage|v1beta/i.test(`${rawUrl || ''} ${model || ''}`);
+}
+
+function _isGoogleGenerativeLanguageUrl(rawUrl) {
+    return /googleapis\.com|generativelanguage/i.test(rawUrl || '');
+}
+
+function _geminiEmbeddingBase(rawUrl) {
+    return String(rawUrl || '')
+        .trim()
+        .replace(/\/+$/, '')
+        .replace(/\/chat\/completions$/i, '')
+        .replace(/\/embeddings$/i, '')
+        .replace(/\/v\d+(beta\d*|alpha\d*)?(?:\/.*)?$/i, '');
+}
+
+function _buildEmbeddingRequest(rawUrl, apiKey, model, texts) {
+    const isGemini = _isGeminiEmbeddingEndpoint(rawUrl, model);
+    if (!isGemini) {
+        const base = String(rawUrl || '').trim().replace(/\/+$/, '').replace(/\/embeddings$/i, '');
+        return {
+            endpoint: `${base}/embeddings`,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({ model, input: texts }),
+            parseVector: json => json?.data?.[0]?.embedding,
+        };
+    }
+
+    const base = _geminiEmbeddingBase(rawUrl);
+    const modelName = String(model || '').startsWith('models/') ? String(model) : `models/${model}`;
+    const isGoogle = _isGoogleGenerativeLanguageUrl(base);
+    const endpoint = `${base}/v1beta/${modelName}:batchEmbedContents${isGoogle ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (!isGoogle) headers.Authorization = `Bearer ${apiKey}`;
+    return {
+        endpoint,
+        headers,
+        body: JSON.stringify({
+            requests: texts.map(text => ({
+                model: modelName,
+                content: { parts: [{ text }] },
+            })),
+        }),
+        parseVector: json => json?.embeddings?.[0]?.values,
+    };
+}
+
+/** 通用：从端点拉取模型列表 */
 async function _fetchModelList(rawUrl, apiKey) {
     if (!rawUrl || !apiKey) throw new Error('请先填写 API 地址和密钥');
+    const isGemini = _isGeminiEmbeddingEndpoint(rawUrl);
+    if (isGemini) {
+        const base = _geminiEmbeddingBase(rawUrl);
+        const isGoogle = _isGoogleGenerativeLanguageUrl(base);
+        const testUrl = `${base}/v1beta/models${isGoogle ? `?key=${encodeURIComponent(apiKey.trim())}` : ''}`;
+        const headers = { 'Content-Type': 'application/json' };
+        if (!isGoogle) headers.Authorization = `Bearer ${apiKey.trim()}`;
+        const resp = await fetch(testUrl, {
+            method: 'GET',
+            headers,
+            signal: AbortSignal.timeout(15000)
+        });
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            throw new Error(`${resp.status}: ${errText.slice(0, 150)}`);
+        }
+        const data = await resp.json();
+        return (data.models || [])
+            .filter(m => {
+                const methods = m.supportedGenerationMethods || [];
+                return methods.length === 0 || methods.some(x => /embedContent|batchEmbedContents/i.test(x));
+            })
+            .map(m => (m.name || '').replace(/^models\//, '') || m.displayName)
+            .filter(Boolean);
+    }
+
     let base = rawUrl.trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '').replace(/\/embeddings$/i, '');
     if (!base.endsWith('/v1')) base = base.replace(/\/+$/, '') + '/v1';
     const testUrl = `${base}/models`;
@@ -13775,17 +14110,13 @@ async function testVectorApiConnection() {
             showToast(t('toast.vectorApiRequired'), 'warning');
             return;
         }
-        const cleanUrl = url.replace(/\/+$/, '');
-        const endpoint = `${cleanUrl}/embeddings`;
+        const req = _buildEmbeddingRequest(url, key, model, ['ping']);
         let resp;
         try {
-            resp = await fetch(endpoint, {
+            resp = await fetch(req.endpoint, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${key}`,
-                },
-                body: JSON.stringify({ model, input: ['ping'] }),
+                headers: req.headers,
+                body: req.body,
             });
         } catch (err) {
             const wrapped = new Error(err?.message || 'Network error');
@@ -13810,7 +14141,7 @@ async function testVectorApiConnection() {
             wrapped.code = 'FORMAT';
             throw wrapped;
         }
-        const vec = json?.data?.[0]?.embedding;
+        const vec = req.parseVector(json);
         if (!Array.isArray(vec) || vec.length === 0) {
             const wrapped = new Error('Missing embedding data');
             wrapped.code = 'FORMAT';
@@ -16953,7 +17284,10 @@ async function onPromptReady(eventData) {
         }
 
         const rawDataPrompt = horaeManager.generateCompactPrompt(skipLast);
-        const { mainPrompt: dataPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
+        const timelineMode = settings.timelineInjectionMode === 'separate' ? 'separate' : 'inline';
+        const { mainPrompt: dataPrompt, timelinePrompt } = timelineMode === 'separate'
+            ? _splitTimelineSection(rawDataPrompt)
+            : { mainPrompt: rawDataPrompt, timelinePrompt: '' };
 
         let recallPrompt = '';
         console.log(`[Horae] 向量检查: vectorEnabled=${settings.vectorEnabled}, isReady=${vectorManager.isReady}, vectors=${vectorManager.vectors.size}`);
@@ -17304,6 +17638,7 @@ function _getTutorialSteps() {
             title: t('tutorial.step4Title'), content: t('tutorial.step4Content'), target: '#horae-vector-collapse-toggle',
             action: () => { const b = document.getElementById('horae-vector-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-vector-collapse-toggle')?.click(); }
         },
+        { title: t('tutorial.step5Title'), content: t('tutorial.step5Content'), target: '#horae-setting-context-depth', action: null },
         { title: t('tutorial.step6Title'), content: t('tutorial.step6Content'), target: '#horae-setting-injection-position', action: null },
         {
             title: t('tutorial.step7Title'), content: t('tutorial.step7Content'), target: '#horae-prompt-collapse-toggle',

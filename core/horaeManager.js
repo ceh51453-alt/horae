@@ -1081,10 +1081,12 @@ class HoraeManager {
                 const criticalAndImportant = sortedEvents.filter(e =>
                     e.event?.level === '关键' || e.event?.level === '關鍵' || e.event?.level === '重要' || e.event?.level === '摘要' || e.event?.isSummary
                 );
-                // 普通事件改为全量发送；由自动总结机制控制历史体量
-                const normalEvents = sortedEvents.filter(e =>
+                const depthRaw = parseInt(this.settings?.contextDepth, 10);
+                const contextDepth = Number.isFinite(depthRaw) ? Math.max(0, depthRaw) : 15;
+                const normalEventsAll = sortedEvents.filter(e =>
                     (e.event?.level === '一般' || !e.event?.level) && !e.event?.isSummary
                 );
+                const normalEvents = contextDepth > 0 ? normalEventsAll.slice(-contextDepth) : [];
                 
                 const allToShow = [...criticalAndImportant, ...normalEvents]
                     .sort((a, b) => (a.messageIndex || 0) - (b.messageIndex || 0));

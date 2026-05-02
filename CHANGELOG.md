@@ -4,18 +4,20 @@
 
 ---
 
-## v1.11.19
+## v1.12.0
 
-- Vector recall query is now unified into a single embedding pass with merged format:
+- 基于 baibai-git 的 PR #5 整合。
+- 针对 issue #4 的需求新增 Gemini Embedding API 兼容。
+- 向量召回查询改为单次 Embedding 的合并格式：
   - `[当前情境] <time/location/characters/events from latest AI state>`
   - `[玩家输入] <latest user input>`
-- Rerank query now uses the same merged query format instead of user text only.
-- State query now includes time (prefer latest AI turn timestamp; fallback to aggregated state time).
-- Removed fallback recall runtime path (retry with previous AI response) from vector recall flow.
-- Removed fallback controls from settings UI (fallback switch and fallback threshold panel).
-- Added runtime log for effective retrieval threshold to help debugging recall behavior.
+- Rerank 查询同步使用合并后的召回查询，不再只使用玩家输入文本。
+- 状态查询会附带时间信息，优先使用最新 AI 回合时间，缺失时回退到聚合状态时间。
+- 移除向量召回运行时的 fallback 路径，不再用上一条 AI 回复重试召回。
+- 新增向量召回参数预设，可在小模型、大模型、Rerank 建议和用户自定义参数之间快速切换；默认回到小模型建议（Top-K 5 / 阈值 0.72）。
+- 新增有效召回阈值的运行日志，便于调试召回效果。
 - 修复楼层 AI 分析时会触发向量召回的问题。
-- 将剧情轨迹（Story Timeline）的注入深度调整为聊天记录最上方。
+- 剧情轨迹注入支持“原版合并注入”和“独立前置注入”双模式，默认保留原版合并注入。
 
 ---
 

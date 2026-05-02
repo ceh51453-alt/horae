@@ -10,7 +10,7 @@
                 <i class="fa-regular fa-clock"></i>
                 Horae 时光记忆
             </div>
-            <span class="horae-version">1.12.1</span>
+            <span class="horae-version">1.12.2</span>
         </div>
         
         <!-- 标签页导航 -->
@@ -152,12 +152,6 @@
                             <i class="fa-solid fa-rotate"></i>
                         </button>
                     </div>
-                </div>
-                <div class="horae-action-buttons">
-                    <button id="horae-btn-carry-new-chat-timeline" class="horae-btn primary" title="带着记忆创建新对话">
-                        <i class="fa-solid fa-code-branch"></i>
-                        <span>带着记忆创建新对话</span>
-                    </button>
                 </div>
                 <div class="horae-timeline-search-row">
                     <i class="fa-solid fa-magnifying-glass horae-search-icon"></i>
@@ -524,16 +518,6 @@
                     </div>
                     
                     <div class="horae-setting-item">
-                        <label data-i18n="settings.useMainPresetForAiTasks">
-                            <input type="checkbox" id="horae-setting-use-main-preset">
-                            使用酒馆主预设
-                        </label>
-                        <span class="horae-setting-hint" data-i18n="settings.useMainPresetForAiTasksHint">
-                            摘要、总结等默认不使用酒馆预设，如果破不开甲，开启这个选项。如果不开也能用，那不推荐开，有些时候会很奇怪。
-                        </span>
-                    </div>
-                    
-                    <div class="horae-setting-item">
                         <label data-i18n="settings.showPanel">
                             <input type="checkbox" id="horae-setting-show-panel" checked>
                             显示消息元数据面板
@@ -622,6 +606,16 @@
                     </div>
                     
                     <div class="horae-setting-item">
+                        <label data-i18n="settings.contextDepth">
+                            上下文深度
+                            <input type="number" id="horae-setting-context-depth" min="0" max="99999" value="15">
+                        </label>
+                        <span class="horae-setting-sub-hint" data-i18n="settings.contextDepthHint">
+                            控制发送给 AI 的一般级别剧情轨迹数量。0 = 不发送一般事件；重要/关键/摘要仍会发送。
+                        </span>
+                    </div>
+
+                    <div class="horae-setting-item">
                         <label data-i18n="settings.injectionDepth">
                             注入深度
                         </label>
@@ -637,6 +631,30 @@
                             选择 @D 来源并设置注入深度数值。<br>
                             系统 @D = 与世界书同理<br>
                             预设 @D = 在整个预设中从末端开始定位，例如0是注入到预设最末尾，1就是注入到最后一条前
+                        </span>
+                    </div>
+
+                    <div class="horae-setting-item">
+                        <label data-i18n="settings.timelineInjectionMode">
+                            剧情轨迹注入模式
+                        </label>
+                        <select id="horae-setting-timeline-injection-mode">
+                            <option value="inline" data-i18n="settings.timelineInjectionInline">原版合并注入</option>
+                            <option value="separate" data-i18n="settings.timelineInjectionSeparate">独立前置注入</option>
+                        </select>
+                        <span class="horae-setting-hint" data-i18n="settings.timelineInjectionModeHint">
+                            <i class="fa-solid fa-circle-info"></i>
+                            原版合并注入会把剧情轨迹和状态信息放在同一注入块；独立前置注入会把剧情轨迹单独放到聊天记录更靠前的位置。
+                        </span>
+                    </div>
+
+                    <div class="horae-setting-item">
+                        <label data-i18n="settings.useMainPresetForAiTasks">
+                            <input type="checkbox" id="horae-setting-use-main-preset">
+                            后台 AI 任务使用酒馆主预设
+                        </label>
+                        <span class="horae-setting-hint" data-i18n="settings.useMainPresetForAiTasksHint">
+                            影响 AI 智能补全、单条分析、手动/自动总结等 Horae 后台 AI 任务。默认不使用酒馆主预设；只有在破不开甲或副任务输出异常时再开启。
                         </span>
                     </div>
                 </div>
@@ -965,7 +983,7 @@
                             <i class="fa-solid fa-circle-info"></i>
                             对 Horae 标签数据做向量检索，自动召回相关历史片段注入给 AI。<br>
                             <strong>本地模式：</strong>下载约 25MB 量化模型到浏览器缓存，占用 50-80MB 内存，⚠ 2GB 以下手机或云酒馆不建议使用，请务必确保有配置—max-old-space-size解除Node.js运行内存限制再启用。<br>
-                            <strong>API 模式：</strong>使用远程 Embedding API，无需本地资源。
+                            <strong>API 模式：</strong>使用远程 Embedding API，无需本地资源。支持 OpenAI Embeddings 与 Gemini v1beta/batchEmbedContents；Gemini 官方地址请填 Google Generative Language API 基础地址。
                         </span>
                         <div class="horae-setting-item">
                             <label data-i18n="vector.enableVector">
@@ -1130,6 +1148,30 @@
                                         <span class="horae-setting-sub-hint" data-i18n="vector.rerankMinScoreHint">Rerank 给出的相关性分数低于此值的结果会被丢弃，不进入上下文。建议 0.9+。</span>
                                     </div>
                                 </div>
+                            </div>
+                            <div class="horae-setting-item">
+                                <label data-i18n="vector.recallPreset">召回参数预设</label>
+                                <div class="horae-prompt-presets-bar" style="margin-bottom: 6px;">
+                                    <i class="fa-solid fa-sliders" style="opacity:.5;font-size:12px"></i>
+                                    <select id="horae-vector-recall-preset-select" class="horae-edit-field"></select>
+                                    <button id="horae-vector-recall-preset-load" class="horae-rpg-btn-sm" data-i18n-title="tooltip.loadPreset" title="">
+                                        <i class="fa-solid fa-arrows-rotate"></i>
+                                    </button>
+                                </div>
+                                <div class="horae-prompt-presets-bar horae-prompt-presets-actions" style="margin-top:0;justify-content:flex-end;flex-wrap:wrap;row-gap:4px;">
+                                    <button id="horae-vector-recall-preset-save" class="horae-rpg-btn-sm" data-i18n="vector.saveRecallPreset">
+                                        <i class="fa-solid fa-floppy-disk"></i> 保存
+                                    </button>
+                                    <button id="horae-vector-recall-preset-new" class="horae-rpg-btn-sm" data-i18n="vector.newRecallPreset">
+                                        <i class="fa-solid fa-plus"></i> 新建
+                                    </button>
+                                    <button id="horae-vector-recall-preset-delete" class="horae-rpg-btn-sm" data-i18n="vector.deleteRecallPreset">
+                                        <i class="fa-solid fa-trash"></i> 删除
+                                    </button>
+                                </div>
+                                <span class="horae-setting-sub-hint" data-i18n="vector.recallPresetHint">
+                                    选择预设后会立即套用当前召回参数。小模型建议适合本地模型和免费 Embedding；大模型建议适合高维 API Embedding；搭配 Rerank 建议会使用更大的候选池再精排。
+                                </span>
                             </div>
                             <div class="horae-setting-item">
                                 <label data-i18n="vector.topK">
@@ -1413,7 +1455,7 @@
                 </div>
                 
                 <div class="horae-about">
-                    <p>Horae v1.12.1 | 作者: SenriYuki</p>
+                    <p>Horae v1.12.2 | 作者: SenriYuki</p>
                     <p>基于时间锚点的AI记忆增强系统</p>
                 </div>
             </div>

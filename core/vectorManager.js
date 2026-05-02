@@ -197,8 +197,9 @@ export class VectorManager {
                     staleKeys.push(item.messageIndex);
                     continue;
                 }
-                const doc = this.buildVectorDocument(chat[item.messageIndex]?.horae_meta);
-                if (doc && this._hashString(doc) !== item.hash) {
+                const meta = chat[item.messageIndex]?.horae_meta;
+                const doc = this.buildVectorDocument(meta);
+                if (!doc || this._hashString(doc) !== item.hash) {
                     staleKeys.push(item.messageIndex);
                     continue;
                 }
@@ -231,6 +232,7 @@ export class VectorManager {
      */
     buildVectorDocument(meta) {
         if (!meta) return '';
+        if (meta._skipHorae) return '';
 
         const eventTexts = [];
         if (meta.events?.length > 0) {
@@ -1446,12 +1448,27 @@ export class VectorManager {
         });
     }
 
-    async _embedApi(texts) {
-        const endpoint = `${this._apiUrl}/embeddings`;
-        let resp;
-        try {
-            resp = await fetch(endpoint, {
-                method: 'POST',
+    _isGeminiEmbeddingEndpoint() {
+        return /gemini|googleapis|generativelanguage|v1beta/i.test(`${this._apiUrl || ''} ${this._apiModel || ''}`);
+    }
+
+    _isGoogleGenerativeLanguageUrl(rawUrl) {
+        return /googleapis\.com|generativelanguage/i.test(rawUrl || '');
+    }
+
+    _geminiEmbeddingBase() {
+        return String(this._apiUrl || '')
+            .replace(/\/+$/, '')
+            .replace(/\/chat\/completions$/i, '')
+            .replace(/\/embeddings$/i, '')
+            .replace(/\/v\d+(beta\d*|alpha\d*)?(?:\/.*)?$/i, '');
+    }
+
+    _buildApiEmbeddingRequest(texts) {
+        if (!this._isGeminiEmbeddingEndpoint()) {
+            const base = String(this._apiUrl || '').replace(/\/+$/, '').replace(/\/embeddings$/i, '');
+            return {
+                endpoint: `${base}/embeddings`,
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${this._apiKey}`,
@@ -1460,6 +1477,54 @@ export class VectorManager {
                     model: this._apiModel,
                     input: texts,
                 }),
+                parseVectors: json => {
+                    if (!json.data || !Array.isArray(json.data)) {
+                        const wrapped = new Error('API 返回格式异常：缺少 data 数组');
+                        wrapped.code = 'FORMAT';
+                        throw wrapped;
+                    }
+                    return json.data
+                        .sort((a, b) => a.index - b.index)
+                        .map(d => d.embedding);
+                },
+            };
+        }
+
+        const base = this._geminiEmbeddingBase();
+        const modelName = String(this._apiModel || '').startsWith('models/') ? String(this._apiModel) : `models/${this._apiModel}`;
+        const isGoogle = this._isGoogleGenerativeLanguageUrl(base);
+        const endpoint = `${base}/v1beta/${modelName}:batchEmbedContents${isGoogle ? `?key=${encodeURIComponent(this._apiKey)}` : ''}`;
+        const headers = { 'Content-Type': 'application/json' };
+        if (!isGoogle) headers.Authorization = `Bearer ${this._apiKey}`;
+
+        return {
+            endpoint,
+            headers,
+            body: JSON.stringify({
+                requests: texts.map(text => ({
+                    model: modelName,
+                    content: { parts: [{ text }] },
+                })),
+            }),
+            parseVectors: json => {
+                if (!json.embeddings || !Array.isArray(json.embeddings)) {
+                    const wrapped = new Error('Gemini API 返回格式异常：缺少 embeddings 数组');
+                    wrapped.code = 'FORMAT';
+                    throw wrapped;
+                }
+                return json.embeddings.map(e => e.values);
+            },
+        };
+    }
+
+    async _embedApi(texts) {
+        const req = this._buildApiEmbeddingRequest(texts);
+        let resp;
+        try {
+            resp = await fetch(req.endpoint, {
+                method: 'POST',
+                headers: req.headers,
+                body: req.body,
             });
         } catch (err) {
             console.error('[Horae Vector] API embedding 网络异常:', err);
@@ -1489,14 +1554,12 @@ export class VectorManager {
 
         try {
             const json = await resp.json();
-            if (!json.data || !Array.isArray(json.data)) {
-                const wrapped = new Error('API 返回格式异常：缺少 data 数组');
+            const vectors = req.parseVectors(json);
+            if (!Array.isArray(vectors) || vectors.some(v => !Array.isArray(v))) {
+                const wrapped = new Error('API 返回格式异常：向量数据无效');
                 wrapped.code = 'FORMAT';
                 throw wrapped;
             }
-            const vectors = json.data
-                .sort((a, b) => a.index - b.index)
-                .map(d => d.embedding);
             return { vectors };
         } catch (err) {
             if (err.code === 'FORMAT') throw err;

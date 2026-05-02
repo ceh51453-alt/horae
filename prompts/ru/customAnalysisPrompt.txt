@@ -1,45 +1,32 @@
-Проанализируй следующий текст, извлеки ключевую информацию и выведи ее в заданном формате. Ключевой принцип: извлекать только явно упомянутую в тексте информацию. Поля без данных не писать. Выдумывать запрещено.
+Analyze the selected message and extract only facts explicitly present in it. Keep format labels in English and write descriptive text in Russian. Do not invent missing fields.
 
-【Содержимое текста】
-{{content}}
-
-【Формат вывода】
+Output format:
 <horae>
-time:дата время (обязательно, например 2026/2/4 15:00 или 霜降月第一日 19:50. Если точное время определить невозможно, укажи разумное конкретное время; запрещены бессмысленные формулировки вроде "неизвестно" и "в некий день".)
-location:текущее место (обязательно)
-atmosphere:атмосфера
-characters:в присутствии персонажи, через запятую (обязательно)
-costume:имя персонажа=полное описание одежды (обязательно, по одной строке на человека, объединять через ; запрещено)
-item:emoji物品名(数量)|描述=持有者@精确位置 (только новые или изменившиеся предметы)
-item!:emoji物品名(数量)|描述=持有者@精确位置 (важные предметы, описание обязательно)
-item!!:emoji物品名(数量)|描述=持有者@精确位置 (ключевые предметы, описание должно быть подробным)
-item-:物品名 (израсходованный/утраченный предмет)
-affection:имя персонажа=значение симпатии (только симпатия NPC к {{user}}, {{user}} не записывать, комментарии после числа запрещены)
-npc:角色名|外貌=性格@与{{user}}的关系~性别:男或女~年龄:数字~种族:种族名~职业:职业名
-agenda:дата фиксации|содержимое задачи (писать только при появлении новой договоренности/плана/фоreshadowing; относительное время указывать с абсолютной датой в скобках)
-agenda-:ключевое слово задачи (писать при завершении/утрате актуальности/отмене; система автоматически удаляет совпавшую задачу)
+time:date and time
+location:current location
+atmosphere:scene mood
+characters:present characters, comma separated
+costume:character name=outfit description
+item:emojiItemName(quantity)|description=holder@exact location
+item!:emojiItemName(quantity)|description=holder@exact location
+item!!:emojiItemName(quantity)|description=holder@exact location
+item-:item name
+affection:character name=value
+npc:Name|appearance=personality@relationship to {{user}}~gender:value~age:value~race:value~job:value~birthday:value~note:value
+agenda:date created|task or plan
+agenda-:task keywords
+rel:CharacterA>CharacterB=relationship type|optional note
+mood:character name=emotional state
 </horae>
 <horaeevent>
-event:重要程度|事件描述
+event:normal|event summary
+event:important|event summary
+event:critical|event summary
 </horaeevent>
 
-【Условия срабатывания】Выводи поле только при выполнении условия:
-· Предметы: писать только при новом получении, изменении количества/принадлежности/позиции, расходе или потере. Без изменений не писать. Для одиночного предмета не писать (1). Emoji-префикс, например 🔑🍞.
-· NPC: при первом появлении запись должна быть полной (включая ~пол/возраст/расу/профессию). Далее писать только изменившиеся поля.
-  Разделители: | имя, = внешность и характер, @ отношение, ~ расширенные поля
-· Симпатия: первое значение по отношению (陌生0-20/熟人30-50/朋友50-70), далее только при изменениях.
-· Задачи: писать только при новых договоренностях/планах/фоreshadowing. Завершенные/неактуальные удалять через agenda-:.
-  Добавить: agenda:2026/02/10|艾伦邀请{{user}}情人节晚上约会(2026/02/14 18:00)
-  Завершить: agenda-:艾伦邀请{{user}}情人节晚上约会
-· event: размещать внутри <horaeevent>, не внутри <horae>.
-
-═══ 【Правила написания сводки события (event)】═══
-★ Цель: дать будущему ИИ без потерь "предысторию". Должно быть конкретно и плотно по информации, объем 80-150 слов.
-★ Обязательные элементы (5W1H):
-  ① Ключевое взаимодействие: кто кому что сделал/сказал? (конкретные действия или смысл ключевых реплик)
-  ② Смена состояния/эмоций: какие тонкие изменения произошли в психологии, отношении или связи персонажей? (например, настороженность → доверие, тайная влюбленность)
-  ③ Новая информация/результат: как продвинулся сюжет в этом ходе? (какие улики получены, к какому согласию пришли, что случилось)
-  ④ Фоreshadowing/интрига (если есть): какие вопросы остались нерешенными?
-★ Запрещены общие формулировки:
-  ❌ Неверно: "U и 艾伦 беседовали в таверне, им было весело, и в конце договорились встретиться снова." (нет деталей)
-  ✅ Верно: "U в таверне расспросил 艾伦 о местонахождении торговца черного рынка. Сначала 艾伦 насторожился, но после 10金币 от U раскрыл, что торговец появится завтра вечером у заброшенного причала. Отношение 艾伦 к U сменилось с настороженности на жадность. Они договорились действовать вместе завтра вечером."
+Extraction rules:
+- time, location, characters, costume, and at least one event are required if the message contains a scene.
+- If time is not explicit, infer a specific reasonable time from context rather than writing ?nknown??
+- Use Russian descriptions, but keep field names and separators exactly as shown.
+- Event summaries should be dense and concrete, about 40-90 Russian words.
+- {{user}} is the protagonist. Record NPC attitude toward {{user}} only, not {{user}}'s affection toward NPCs.
