@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.12.4
+ * 版本: 1.12.5
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from '
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.12.4';
+const VERSION = '1.12.5';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -722,6 +722,7 @@ function saveSettings() {
     _normalizePromptTextFields(settings, PROMPT_SETTING_KEYS);
     extension_settings[EXTENSION_NAME] = settings;
     saveSettingsDebounced();
+    eventSource.emit('horae:settingsChanged', { enabled: !!settings.enabled });
 }
 
 /**
@@ -17906,6 +17907,15 @@ jQuery(async () => {
     if (_isFirstTimeUser) {
         setTimeout(() => startTutorial(), 800);
     }
+
+    window.Horae = Object.freeze({
+        version: VERSION,
+        isEnabled: () => !!settings.enabled,
+        getSettings: () => ({ ...settings }),
+        getLatestState: (skipLast) => horaeManager.getLatestState(skipLast),
+        getEvents: (limit, filterLevel) => horaeManager.getEvents(limit, filterLevel),
+        getChat: () => horaeManager.getChat(),
+    });
 
     isInitialized = true;
     _chatFullyLoaded = true;

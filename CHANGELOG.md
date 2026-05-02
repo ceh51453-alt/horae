@@ -6,6 +6,7 @@
 
 ## v1.12.0
 
+- 新增公开只读 API（`window.Horae`）：`isEnabled()`、`getLatestState()`、`getEvents()`、`getSettings()`、`version`，供其他扩展和预设脚本读取 Horae 状态；设置变更通过 `eventSource` 广播 `horae:settingsChanged` 事件。
 - 基于 baibai-git 的 PR #5 整合。
 - 针对 issue #4 的需求新增 Gemini Embedding API 兼容。
 - 向量召回查询改为单次 Embedding 的合并格式：

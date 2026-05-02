@@ -1,4 +1,4 @@
-# Horae - 時光記憶 v1.12.4 | SillyTavern 記憶增強插件
+# Horae - 時光記憶 v1.12.5 | SillyTavern 記憶增強插件
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **繁體中文**
 
@@ -59,6 +59,39 @@
 | Русский | ✅ 完整 |
 
 希望 Horae 支援你的語言？歡迎提交 [Issue](https://github.com/SenriYuki/SillyTavern-Horae/issues) 或直接 PR 翻譯檔案！
+
+---
+
+## 公開 API（供其他擴充 / 預設腳本調用）
+
+Horae 載入完成後，會在 `window.Horae` 上暴露唯讀 API：
+
+```js
+// 判斷 Horae 是否已安裝且啟用
+window.Horae?.isEnabled()        // → true / false
+
+// 讀取當前世界狀態（時間、地點、在場角色、服裝、物品、情緒、NPC……）
+window.Horae?.getLatestState()   // → state 物件
+
+// 讀取時間線事件
+window.Horae?.getEvents(10)      // → 最近 10 筆事件
+
+// 讀取設定（淺拷貝）
+window.Horae?.getSettings()
+
+// 版本號
+window.Horae?.version            // → "1.12.5"
+```
+
+設定變更事件透過酒館的 `eventSource` 廣播：
+
+```js
+eventSource.on('horae:settingsChanged', (data) => {
+    console.log('Horae enabled:', data.enabled);
+});
+```
+
+> 所有方法均為**唯讀**，不暴露任何寫入操作。
 
 ---
 

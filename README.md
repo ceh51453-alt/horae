@@ -1,4 +1,4 @@
-# Horae v1.12.4 - Memory Engine for SillyTavern
+# Horae v1.12.5 - Memory Engine for SillyTavern
 
 **English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 
@@ -63,6 +63,39 @@ Long-form RP players know the pain: AI memory is basically a goldfish. Yesterday
 
 - **SillyTavern**: 1.12.6+ (AI analysis requires 1.13.5+)
 - **Platforms**: Desktop + Mobile
+
+---
+
+## Public API (for other extensions / presets)
+
+After Horae loads, a read-only API is available at `window.Horae`:
+
+```js
+// Check if Horae is installed and enabled
+window.Horae?.isEnabled()        // → true / false
+
+// Read current world state (time, location, characters, costumes, items, mood, npcs…)
+window.Horae?.getLatestState()   // → state object
+
+// Read timeline events
+window.Horae?.getEvents(10)      // → last 10 events
+
+// Read settings (shallow copy)
+window.Horae?.getSettings()
+
+// Version string
+window.Horae?.version            // → "1.12.5"
+```
+
+Settings change events are broadcast via SillyTavern's `eventSource`:
+
+```js
+eventSource.on('horae:settingsChanged', (data) => {
+    console.log('Horae enabled:', data.enabled);
+});
+```
+
+> All methods are **read-only**. No write operations are exposed.
 
 ---
 
