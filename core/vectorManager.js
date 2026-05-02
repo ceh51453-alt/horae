@@ -355,7 +355,7 @@ export class VectorManager {
 
         if (tasks.length === 0) return { indexed: 0, skipped: chat.length };
 
-        const batchSize = this.isApiMode ? 8 : 16;
+        const batchSize = this.isApiMode ? 64 : 16;
         let indexed = 0;
 
         for (let b = 0; b < tasks.length; b += batchSize) {
@@ -411,6 +411,14 @@ export class VectorManager {
     buildStateQuery(currentState, lastMeta) {
         const parts = [];
 
+        // 优先使用上一条 AI 消息时间；无则回退到当前聚合状态时间
+        const storyDate = lastMeta?.timestamp?.story_date || currentState.timestamp?.story_date || '';
+        const storyTime = lastMeta?.timestamp?.story_time || currentState.timestamp?.story_time || '';
+        if (storyDate || storyTime) {
+            const timeText = [storyDate, storyTime].filter(Boolean).join(' ');
+            parts.push(`时间 ${timeText}`);
+        }
+
         if (currentState.scene?.location) parts.push(currentState.scene.location);
 
         const chars = currentState.scene?.characters_present || [];
@@ -426,6 +434,16 @@ export class VectorManager {
         }
 
         return parts.filter(Boolean).join(' ');
+    }
+
+    /**
+     * 构建合并召回查询文本
+     */
+    buildMergedRecallQuery(stateQuery, userQuery) {
+        const sections = [];
+        if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
+        if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
+        return sections.join('\n').trim();
     }
 
     /**
@@ -453,6 +471,7 @@ export class VectorManager {
 
         const prepared = this._prepareText(queryText, true);
         console.log('[Horae Vector] 开始 embedding 查询...');
+        console.log(`[Horae Vector] 实际检索阈值: ${Number(threshold).toFixed(4)} | topK=${topK} | pureMode=${!!pureMode}`);
         const result = await this._embed([prepared]);
         if (!result?.vectors?.[0]) {
             console.warn('[Horae Vector] embedding 返回空结果:', result);
@@ -556,7 +575,7 @@ export class VectorManager {
     /**
      * 智能召回：结构化查询 + 向量搜索并行，合并结果
      */
-    async generateRecallPrompt(horaeManager, skipLast, settings) {
+    async generateRecallPrompt(horaeManager, skipLast, settings, extraExcludeIndices = new Set()) {
         const chat = horaeManager.getChat();
         const state = horaeManager.getLatestState(skipLast);
         const topK = settings.vectorTopK || 5;
@@ -578,10 +597,31 @@ export class VectorManager {
         }
         const userQuery = this.cleanUserMessage(rawUserMsg);
 
+        // 构建统一查询：使用最近一条 AI 元数据补充“当前情境”
+        let lastMetaForQuery = null;
+        for (let i = chat.length - 1 - skipLast; i >= 0; i--) {
+            if (!chat[i].is_user && chat[i].horae_meta && !chat[i].horae_meta._skipHorae) {
+                lastMetaForQuery = chat[i].horae_meta;
+                break;
+            }
+        }
+        const stateQueryForRecall = this.buildStateQuery(state, lastMetaForQuery);
+        const mergedRecallQuery = this.buildMergedRecallQuery(stateQueryForRecall, userQuery);
+
         const EXCLUDE_RECENT = 5;
         const excludeIndices = new Set();
         for (let i = Math.max(0, chat.length - EXCLUDE_RECENT); i < chat.length; i++) {
             excludeIndices.add(i);
+        }
+        if (extraExcludeIndices && typeof extraExcludeIndices[Symbol.iterator] === 'function') {
+            for (const idx of extraExcludeIndices) {
+                if (Number.isInteger(idx) && idx >= 0 && idx < chat.length) {
+                    excludeIndices.add(idx);
+                }
+            }
+        }
+        if (excludeIndices.size > EXCLUDE_RECENT) {
+            console.log(`[Horae Vector] 额外排除已在Prompt中的楼层: +${excludeIndices.size - EXCLUDE_RECENT}`);
         }
 
         const merged = new Map();
@@ -612,7 +652,7 @@ export class VectorManager {
         const allKnownChars = new Set();
         for (let i = 0; i < chat.length; i++) {
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             (m.scene?.characters_present || []).forEach(c => allKnownChars.add(c));
             if (m.npcs) Object.keys(m.npcs).forEach(c => allKnownChars.add(c));
         }
@@ -620,11 +660,12 @@ export class VectorManager {
             if (userQuery && userQuery.includes(c)) relevantChars.add(c);
         }
 
-        let results = Array.from(merged.values());
+        let results = Array.from(merged.values())
+            .filter(r => !chat[r.messageIndex]?.horae_meta?._skipHorae);
         if (relevantChars.size > 0) {
             for (const r of results) {
                 const meta = chat[r.messageIndex]?.horae_meta;
-                if (!meta) continue;
+                if (!meta || meta._skipHorae) continue;
                 const docChars = new Set([
                     ...(meta.scene?.characters_present || []),
                     ...Object.keys(meta.npcs || {}),
@@ -645,7 +686,7 @@ export class VectorManager {
         // Rerank：对候选结果做二次精排
         if (useRerank && results.length > 1) {
             const rerankCandidates = results.slice(0, recallTopK);
-            const rerankQuery = userQuery || this.buildStateQuery(state, null);
+            const rerankQuery = mergedRecallQuery || userQuery || this.buildStateQuery(state, null);
             if (rerankQuery) {
                 try {
                     const useFullText = !!settings.vectorRerankFullText;
@@ -686,82 +727,7 @@ export class VectorManager {
         }
 
         results = results.slice(0, topK);
-
-        // Fallback：首次召回无效时用上一楼 AI 回复重跑一次
-        if (settings.vectorFallbackEnabled) {
-            // 开 rerank 看过滤后是否为空；空集 或 最高分太低
-            const bestScore = results.length ? Math.max(...results.map(r => r.similarity)) : 0;
-            const fbMinScore = settings.vectorFallbackMinScore ?? 0.5;
-            const needFallback = useRerank
-                ? results.length === 0
-                : (results.length === 0 || bestScore < fbMinScore);
-
-            if (needFallback) {
-                // 取上一楼 AI 回复
-                let fallbackText = '';
-                for (let i = chat.length - 1; i >= 0; i--) {
-                    if (!chat[i].is_user && chat[i].mes) {
-                        const meta = chat[i].horae_meta;
-                        // 优先用 horae_meta 事件摘要
-                        const evts = meta?.events || (meta?.event ? [meta.event] : []);
-                        if (evts.length) {
-                            fallbackText = evts
-                                .filter(e => e && !e.isSummary)
-                                .map(e => e.summary || '')
-                                .filter(Boolean)
-                                .join('；');
-                        }
-                        if (!fallbackText) {
-                            fallbackText = this.cleanUserMessage(chat[i].mes);
-                        }
-                        break;
-                    }
-                }
-                if (fallbackText) {
-                    console.log(`[Horae Vector] 首次召回无效，Fallback 用上一楼内容重试: "${fallbackText.substring(0, 60)}..."`);
-                    let fbResults = await this.search(fallbackText, recallTopK, recallThreshold, excludeIndices, pureMode);
-                    fbResults.sort((a, b) => b.similarity - a.similarity);
-
-                    if (useRerank && fbResults.length > 1) {
-                        try {
-                            const useFullText = !!settings.vectorRerankFullText;
-                            const _stripTags = settings.vectorStripTags || '';
-                            const fbCandidates = fbResults.slice(0, recallTopK);
-                            const fbDocs = fbCandidates.map(r => {
-                                if (useFullText) {
-                                    const ft = this._extractCleanText(chat[r.messageIndex]?.mes, _stripTags);
-                                    return ft || r.document;
-                                }
-                                return r.document;
-                            });
-                            const reranked = await this._rerank(fallbackText, fbDocs, fbCandidates.length, settings);
-                            if (reranked?.length) {
-                                const minScore = settings.vectorRerankMinScore ?? 0.5;
-                                const passed = reranked.filter(rr => (rr.relevance_score ?? 0) >= minScore);
-                                console.log(`[Horae Vector] Fallback Rerank: ${reranked.length} → ${passed.length} 条通过`);
-                                fbResults = passed.map(rr => ({
-                                    ...fbCandidates[rr.index],
-                                    similarity: rr.relevance_score,
-                                    source: 'fallback+rerank',
-                                }));
-                            }
-                        } catch (err) {
-                            console.warn('[Horae Vector] Fallback Rerank 失败:', err.message);
-                        }
-                    } else {
-                        fbResults = fbResults.filter(r => r.similarity >= fbMinScore);
-                    }
-                    fbResults = fbResults.slice(0, topK);
-                    if (fbResults.length > 0) {
-                        console.log(`[Horae Vector] Fallback 召回 ${fbResults.length} 条`);
-                        for (const r of fbResults) {
-                            if (!r.source?.includes('fallback')) r.source = (r.source || '') + '+fallback';
-                        }
-                        results = fbResults;
-                    }
-                }
-            }
-        }
+        // Fallback 机制已移除：主查询已统一为“当前情境 + 玩家输入”
 
         console.log(`[Horae Vector] === 最终合并: ${results.length} 条 ===`);
         for (const r of results) {
@@ -791,7 +757,7 @@ export class VectorManager {
         const knownChars = new Set();
         for (let i = 0; i < chat.length; i++) {
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             (m.scene?.characters_present || []).forEach(c => knownChars.add(c));
             if (m.npcs) Object.keys(m.npcs).forEach(c => knownChars.add(c));
         }
@@ -976,7 +942,7 @@ export class VectorManager {
         for (let i = 0; i < chat.length; i++) {
             if (excludeIndices.has(i) || skipIds.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             const searchText = this._buildSearchableText(meta);
             if (!searchText) continue;
@@ -1069,7 +1035,7 @@ export class VectorManager {
         for (let i = 0; i < chat.length; i++) {
             if (excludeIndices.has(i)) continue;
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             if (m.npcs && m.npcs[charName]) return i;
             if (m.scene?.characters_present?.includes(charName)) return i;
         }
@@ -1079,7 +1045,9 @@ export class VectorManager {
     _findLastCostume(chat, charName, costumeKw, excludeIndices) {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (excludeIndices.has(i)) continue;
-            const costume = chat[i].horae_meta?.costumes?.[charName];
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const costume = meta.costumes?.[charName];
             if (costume && costume.includes(costumeKw)) return i;
         }
         return -1;
@@ -1089,7 +1057,9 @@ export class VectorManager {
         const matches = [];
         for (let i = chat.length - 1; i >= 0 && matches.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
-            const costumes = chat[i].horae_meta?.costumes;
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const costumes = meta.costumes;
             if (!costumes) continue;
             for (const v of Object.values(costumes)) {
                 if (v && v.includes(costumeKw)) { matches.push({ idx: i }); break; }
@@ -1101,7 +1071,9 @@ export class VectorManager {
     _findLastMood(chat, charName, moodKw, excludeIndices) {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (excludeIndices.has(i)) continue;
-            const mood = chat[i].horae_meta?.mood;
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const mood = meta.mood;
             if (!mood) continue;
             if (charName) {
                 if (mood[charName] && mood[charName].includes(moodKw)) return i;
@@ -1141,7 +1113,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i) || seen.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             let matched = false;
             const matchedItems = [];
@@ -1193,7 +1165,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.items) continue;
+            if (!meta || meta._skipHorae || !meta.items) continue;
 
             const importantNames = [];
             for (const [name, info] of Object.entries(meta.items)) {
@@ -1221,7 +1193,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.events) continue;
+            if (!meta || meta._skipHorae || !meta.events) continue;
 
             for (const evt of meta.events) {
                 if (evt.isSummary || evt.level === '摘要' || evt._summaryId) continue;
@@ -1263,7 +1235,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.events) continue;
+            if (!meta || meta._skipHorae || !meta.events) continue;
 
             for (const evt of meta.events) {
                 if (evt.isSummary || evt.level === '摘要' || evt._summaryId) continue;
@@ -1294,36 +1266,23 @@ export class VectorManager {
         const chat = horaeManager.getChat();
         let lastMeta = null;
         for (let i = chat.length - 1 - skipLast; i >= 0; i--) {
-            if (!chat[i].is_user && chat[i].horae_meta) {
+            if (!chat[i].is_user && chat[i].horae_meta && !chat[i].horae_meta._skipHorae) {
                 lastMeta = chat[i].horae_meta;
                 break;
             }
         }
+
         const stateQuery = this.buildStateQuery(state, lastMeta);
+        const mergedQuery = this.buildMergedRecallQuery(stateQuery, userQuery);
+        if (!mergedQuery) return [];
 
-        const merged = new Map();
+        // 严格使用用户设置阈值
+        const mergedThreshold = threshold;
 
-        if (userQuery) {
-            const intentThreshold = Math.max(threshold - 0.25, 0.4);
-            const intentResults = await this.search(userQuery, topK * 2, intentThreshold, excludeIndices, pureMode);
-            console.log(`[Horae Vector] 意图搜索: ${intentResults.length} 条`);
-            for (const r of intentResults) {
-                merged.set(r.messageIndex, { ...r, source: 'intent' });
-            }
-        }
+        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode);
+        results = results.map(r => ({ ...r, source: 'merged' }));
+        console.log(`[Horae Vector] 合并查询搜索: ${results.length} 条 | threshold=${mergedThreshold.toFixed(2)}`);
 
-        if (stateQuery) {
-            const stateResults = await this.search(stateQuery, topK * 2, threshold, excludeIndices, pureMode);
-            console.log(`[Horae Vector] 状态搜索: ${stateResults.length} 条`);
-            for (const r of stateResults) {
-                const existing = merged.get(r.messageIndex);
-                if (!existing || r.similarity > existing.similarity) {
-                    merged.set(r.messageIndex, { ...r, source: existing ? 'both' : 'state' });
-                }
-            }
-        }
-
-        let results = Array.from(merged.values());
         results.sort((a, b) => b.similarity - a.similarity);
         results = this._deduplicateResults(results).slice(0, topK);
 
@@ -1341,7 +1300,7 @@ export class VectorManager {
         for (let rank = 0; rank < results.length; rank++) {
             const r = results[rank];
             const meta = chat[r.messageIndex]?.horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             const isFullText = fullTextCount > 0 && rank < fullTextCount && r.similarity >= fullTextThreshold;
 
@@ -1698,6 +1657,7 @@ export class VectorManager {
     // ========================================
 
     _hasOriginalEvents(meta) {
+        if (meta?._skipHorae) return false;
         if (!meta?.events?.length) return false;
         return meta.events.some(e => !e.isSummary && e.level !== '摘要' && !e._summaryId);
     }
