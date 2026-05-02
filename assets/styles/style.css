@@ -434,6 +434,8 @@
     cursor: pointer;
     transition: all 0.2s ease;
     min-height: 70px;
+    font-family: inherit;
+    text-align: center;
 }
 
 .horae-data-btn i {
@@ -445,6 +447,8 @@
 .horae-data-btn span {
     font-size: 12px;
     font-weight: 500;
+    line-height: 1.35;
+    letter-spacing: 0;
 }
 
 .horae-data-btn:hover {

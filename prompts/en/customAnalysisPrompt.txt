@@ -1,6 +1,12 @@
-Please analyze the following text, extract key information, and output it in the specified format. Core principle: only extract information explicitly mentioned in the text. If a field is absent, do not write it. Fabrication is forbidden.
+Please analyze the following AI reply text, extract key information, and output it in the specified format. Core principle: only extract information explicitly mentioned in the text. If a field is absent, do not write it. Fabrication is forbidden.
 
-[Text Content]
+[Reference State (known info before this message; read-only reference, do not treat as new facts for this message)]
+{{context}}
+
+[Previous User Action]
+{{previousUserMessage}}
+
+[Text to Analyze]
 {{content}}
 
 [Output Format]

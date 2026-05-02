@@ -93,6 +93,8 @@
         "basicSettings": "基本設置",
         "enableHorae": "啟用 Horae",
         "autoParse": "自動解析AI回覆中的標籤",
+        "autoFillPrevTimelineOnSend": "發送時自動補全上一條 AI 訊息時間線",
+        "autoFillPrevTimelineOnSendHint": "發送前若上一條 AI 回覆缺少 <horae>/<horaeevent>，會使用該樓層之前的輕量狀態、角色身份和上一條用戶行動作為參考，對該樓層進行完整 AI 分析並寫回歷史。此功能會調用 AI，預設關閉。",
         "injectContext": "自動注入狀態上下文",
         "useMainPresetForAiTasks": "後台 AI 任務使用酒館主預設",
         "useMainPresetForAiTasksHint": "影響 AI 智慧補全、單條分析、手動/自動總結等 Horae 後台 AI 任務。預設不使用酒館主預設；只有在破不開甲或副任務輸出異常時再開啟。",

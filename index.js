@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.12.3
+ * 版本: 1.12.4
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from '
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.12.3';
+const VERSION = '1.12.4';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -116,7 +116,7 @@ const DEFAULT_SETTINGS = {
     aiOutputLanguage: 'auto',
     enabled: true,
     autoParse: true,
-    autoFillPrevTimelineOnSend: true, // 发送前自动补全上一条AI消息的时间线
+    autoFillPrevTimelineOnSend: false, // 发送前自动补全上一条AI消息的时间线（默认关闭，避免静默误写历史）
     injectContext: true,
     useMainPresetForAiTasks: false, // AI分析/批量扫描/手动压缩是否使用酒馆主预设（generate）
     showMessagePanel: true,
@@ -685,6 +685,7 @@ function _normalizeVectorRecallPresetsInPlace() {
 }
 
 function loadSettings() {
+    let changed = false;
     if (extension_settings[EXTENSION_NAME]) {
         settings = { ...DEFAULT_SETTINGS, ...extension_settings[EXTENSION_NAME] };
     } else {
@@ -692,7 +693,13 @@ function loadSettings() {
         extension_settings[EXTENSION_NAME] = { ...DEFAULT_SETTINGS };
         settings = { ...DEFAULT_SETTINGS };
     }
-    if (_normalizePromptSettingsInPlace() || _normalizeVectorRecallPresetsInPlace()) saveSettings();
+    if (!settings._autoFillPrevTimelineDefaultOffMigrated) {
+        settings.autoFillPrevTimelineOnSend = false;
+        settings._autoFillPrevTimelineDefaultOffMigrated = true;
+        changed = true;
+    }
+    if (_normalizePromptSettingsInPlace() || _normalizeVectorRecallPresetsInPlace()) changed = true;
+    if (changed) saveSettings();
 }
 
 /** 迁移旧版属性配置到 DND 六维 */
@@ -10483,8 +10490,7 @@ function bindPanelEvents(panelEl) {
         btn.disabled = true;
 
         try {
-            // 调用AI分析
-            const result = await analyzeMessageWithAI(message.mes);
+            const result = await analyzeMessageWithAI(message.mes, { messageIndex: messageId });
 
             if (result) {
                 const existingMeta = horaeManager.getMessageMeta(messageId) || createEmptyMeta();
@@ -12810,7 +12816,7 @@ function _syncVectorRecallPresetInputs() {
 function syncSettingsToUI() {
     $('#horae-setting-enabled').prop('checked', settings.enabled);
     $('#horae-setting-auto-parse').prop('checked', settings.autoParse);
-    $('#horae-setting-auto-fill-prev-timeline').prop('checked', settings.autoFillPrevTimelineOnSend !== false);
+    $('#horae-setting-auto-fill-prev-timeline').prop('checked', settings.autoFillPrevTimelineOnSend === true);
     $('#horae-setting-inject-context').prop('checked', settings.injectContext);
     $('#horae-setting-use-main-preset').prop('checked', !!settings.useMainPresetForAiTasks);
     $('#horae-setting-show-panel').prop('checked', settings.showMessagePanel);
@@ -16600,22 +16606,41 @@ async function _generateForAiTasks(prompt, opts = {}) {
     return await context.generateRaw(prompt, null, false, false);
 }
 
-/** 使用AI分析消息内容 */
+/** 使用AI分析消息内容（支持轻量上下文 + 上一条 USER 行动 + 角色身份） */
 async function analyzeMessageWithAI(messageContent, opts = {}) {
-    const { noContextInjectionMarker = false } = opts;
+    const { messageIndex, noContextInjectionMarker = false } = opts;
     const context = getContext();
     const userName = context?.name1 || t('ui.protagonist');
 
-    let analysisPrompt;
-    if (settings.customAnalysisPrompt) {
-        analysisPrompt = settings.customAnalysisPrompt
-            .replace(/\{\{user\}\}/gi, userName)
-            .replace(/\{\{content\}\}/gi, messageContent);
-    } else {
-        analysisPrompt = getDefaultAnalysisPrompt()
-            .replace(/\{\{user\}\}/gi, userName)
-            .replace(/\{\{content\}\}/gi, messageContent);
+    let contextText = '';
+    let previousUserMessage = '';
+
+    if (typeof messageIndex === 'number' && messageIndex >= 0) {
+        const chat = horaeManager.getChat();
+        if (chat?.length) {
+            const skipLast = Math.max(0, chat.length - messageIndex);
+            const stateBeforeTarget = horaeManager.getLatestState(skipLast);
+            contextText = _buildAnalysisContext(stateBeforeTarget, messageIndex, userName);
+
+            for (let i = messageIndex - 1; i >= Math.max(0, messageIndex - 3); i--) {
+                if (chat[i]?.is_user) {
+                    previousUserMessage = _stripConfiguredTags(chat[i].mes || '')
+                        .replace(/<horae>[\s\S]*?<\/horae>/gi, '')
+                        .replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, '')
+                        .trim();
+                    if (previousUserMessage.length > 2000) previousUserMessage = previousUserMessage.slice(0, 2000) + '…';
+                    break;
+                }
+            }
+        }
     }
+
+    const template = settings.customAnalysisPrompt || getDefaultAnalysisPrompt();
+    const analysisPrompt = template
+        .replace(/\{\{user\}\}/gi, userName)
+        .replace(/\{\{context\}\}/gi, contextText)
+        .replace(/\{\{previousUserMessage\}\}/gi, previousUserMessage)
+        .replace(/\{\{content\}\}/gi, messageContent);
 
     try {
         const shouldMarkNoRecall = !!(
@@ -16640,8 +16665,56 @@ async function analyzeMessageWithAI(messageContent, opts = {}) {
     return null;
 }
 
+function _buildAnalysisContext(state, targetIndex, userName) {
+    const lines = [];
+    if (userName) lines.push(`- user: ${userName}`);
+    const dateTime = [state?.timestamp?.story_date, state?.timestamp?.story_time].filter(Boolean).join(' ');
+    if (dateTime) lines.push(`- time: ${dateTime}`);
+    if (state?.scene?.location) lines.push(`- location: ${state.scene.location}`);
+    if (state?.scene?.atmosphere) lines.push(`- atmosphere: ${state.scene.atmosphere}`);
+
+    const present = state?.scene?.characters_present || [];
+    if (present.length > 0) {
+        const costumes = state?.costumes || {};
+        const charText = present
+            .slice(0, 12)
+            .map(name => costumes[name] ? `${name}（${costumes[name]}）` : name)
+            .join('、');
+        lines.push(`- characters: ${charText}`);
+    }
+
+    const npcNames = Object.keys(state?.npcs || {});
+    if (npcNames.length > 0) {
+        const npcText = npcNames.slice(0, 15).map(name => {
+            const npc = state.npcs[name];
+            const rel = npc?.relationship || '';
+            return rel ? `${name}(${rel})` : name;
+        }).join('、');
+        lines.push(`- npcs: ${npcText}`);
+    }
+
+    const items = Object.entries(state?.items || {}).slice(0, 20);
+    if (items.length > 0) {
+        const itemText = items.map(([name, info]) => {
+            const holder = info?.holder ? `=${info.holder}` : '';
+            const loc = info?.location ? `@${info.location}` : '';
+            return `${info?.icon || ''}${name}${holder}${loc}`;
+        }).join('；');
+        lines.push(`- items: ${itemText}`);
+    }
+
+    const mood = Object.entries(state?.mood || {}).filter(([name]) => present.includes(name)).slice(0, 12);
+    if (mood.length > 0) {
+        lines.push(`- mood: ${mood.map(([name, val]) => `${name}:${val}`).join('；')}`);
+    }
+
+    return lines.join('\n');
+}
+
 /**
- * 发送前补齐上一条AI楼层：缺时间线时触发，命中后按解析结果全量写回
+ * 发送前补齐上一条AI楼层：缺 horae/horaeevent 时触发。
+ * 使用上下文增强的 analyzeMessageWithAI 进行完整分析（含轻量状态 + 上一条 USER 行动 + 角色身份），
+ * 并通过 mergeParsedToMeta 写回所有已提取字段。
  * 只在「最后一条是USER消息」时触发，避免干扰 regenerate/swipe。
  */
 async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
@@ -16675,17 +16748,28 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
     const sourceText = typeof targetMsg?.mes === 'string' ? targetMsg.mes.trim() : '';
     if (!sourceText) return;
 
-    console.log(`[Horae] 前置补全：检测到上一条AI楼层 #${targetIndex} 缺少时间线，尝试自动补全`);
+    const cleanedTargetText = _stripConfiguredTags(sourceText)
+        .replace(/<horae>[\s\S]*?<\/horae>/gi, '')
+        .replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, '')
+        .trim();
+    const targetTextForAnalysis = cleanedTargetText || sourceText;
+
+    console.log(`[Horae] 前置补全：检测到上一条AI楼层 #${targetIndex} 缺少时间线，尝试上下文增强分析`);
     showToast(t('toast.autoFillPrevTimelineStart', { id: targetIndex }), 'info');
 
-    // 先尝试本地解析，失败再调用AI补全
     let parsed = horaeManager.parseHoraeTag(sourceText);
     if (!parsed) {
         parsed = horaeManager.parseLooseFormat(sourceText);
     }
-    if (!parsed) {
+    const parsedEvents = Array.isArray(parsed?.events)
+        ? parsed.events.filter(evt => evt?.summary && String(evt.summary).trim())
+        : [];
+    if (!parsed || parsedEvents.length === 0) {
         try {
-            parsed = await analyzeMessageWithAI(sourceText, { noContextInjectionMarker: true });
+            parsed = await analyzeMessageWithAI(targetTextForAnalysis, {
+                messageIndex: targetIndex,
+                noContextInjectionMarker: true,
+            });
         } catch (err) {
             console.warn(`[Horae] 前置补全失败 #${targetIndex}:`, err);
             showToast(t('toast.aiEnrichFailed', { error: err?.message || err || 'unknown' }), 'error');
@@ -16694,41 +16778,20 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
     }
     if (!parsed) return;
 
-    const parsedEvents = Array.isArray(parsed.events)
-        ? parsed.events.filter(evt => evt?.summary && String(evt.summary).trim())
+    const mergedMeta = horaeManager.mergeParsedToMeta(existingMeta, parsed);
+    const mergedEvents = Array.isArray(mergedMeta?.events)
+        ? mergedMeta.events.filter(evt => evt?.summary && String(evt.summary).trim())
         : [];
-    const hasAnyParsedData = (
-        parsedEvents.length > 0 ||
-        !!parsed?.event?.summary ||
-        !!parsed?.timestamp?.story_date ||
-        !!parsed?.timestamp?.story_time ||
-        !!parsed?.scene?.location ||
-        !!parsed?.scene?.atmosphere ||
-        !!parsed?.scene?.scene_desc ||
-        (Array.isArray(parsed?.scene?.characters_present) && parsed.scene.characters_present.length > 0) ||
-        (parsed?.costumes && Object.keys(parsed.costumes).length > 0) ||
-        (parsed?.items && Object.keys(parsed.items).length > 0) ||
-        (Array.isArray(parsed?.deletedItems) && parsed.deletedItems.length > 0) ||
-        (parsed?.affection && Object.keys(parsed.affection).length > 0) ||
-        (parsed?.npcs && Object.keys(parsed.npcs).length > 0) ||
-        (Array.isArray(parsed?.agenda) && parsed.agenda.length > 0) ||
-        (Array.isArray(parsed?.deletedAgenda) && parsed.deletedAgenda.length > 0) ||
-        (parsed?.mood && Object.keys(parsed.mood).length > 0) ||
-        (Array.isArray(parsed?.relationships) && parsed.relationships.length > 0) ||
-        (Array.isArray(parsed?.tableUpdates) && parsed.tableUpdates.length > 0) ||
-        !!parsed?.rpg
-    );
-    if (!hasAnyParsedData) {
-        console.log(`[Horae] 前置补全跳过：#${targetIndex} 未提取到有效结构化数据`);
+    if (mergedEvents.length === 0) {
+        console.log(`[Horae] 前置补全跳过：#${targetIndex} 未提取到有效事件摘要`);
         return;
     }
 
-    const mergedMeta = horaeManager.mergeParsedToMeta(existingMeta, parsed);
     if (mergedMeta._tableUpdates) {
         horaeManager.applyTableUpdates(mergedMeta._tableUpdates);
         delete mergedMeta._tableUpdates;
     }
-    if (parsed.deletedAgenda && parsed.deletedAgenda.length > 0) {
+    if (parsed.deletedAgenda?.length > 0) {
         horaeManager.removeCompletedAgenda(parsed.deletedAgenda);
     }
     if (parsed.relationships?.length > 0) {
