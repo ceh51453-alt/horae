@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.12.5
+ * 版本: 1.12.6
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -13,7 +13,7 @@ import { slideToggle } from '/lib.js';
 import { horaeManager, createEmptyMeta, getItemBaseName } from './core/horaeManager.js';
 import { vectorManager } from './core/vectorManager.js';
 import { calculateRelativeTime, calculateDetailedRelativeTime, formatRelativeTime, generateTimeReference, getCurrentSystemTime, formatStoryDate, formatFullDateTime, parseStoryDate } from './utils/timeUtils.js';
-import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './core/i18n.js';
+import { t, tForLang, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './core/i18n.js';
 import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from './core/promptDefaults.js';
 
 // ============================================
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from '
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.12.5';
+const VERSION = '1.12.6';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -160,8 +160,11 @@ const DEFAULT_SETTINGS = {
     // 自动摘要
     autoSummaryEnabled: false,     // 自动摘要开关
     autoSummaryKeepRecent: 5,      // 保留最近N条AI消息不压缩（中间用户消息会随全文一起发送）
+    autoSummarySourceMode: 'fulltext', // 'fulltext'(全文+时间线) | 'events'(仅时间线事件)
     autoSummaryBufferMode: 'messages', // 'messages'(按AI条数) | 'tokens'
-    autoSummaryBufferLimit: 10,     // 缓冲阈值（连续未总结AI条数或Token数）
+    autoSummaryBufferLimit: 10,     // 旧版缓冲阈值（迁移用）
+    autoSummaryBufferMsgLimit: 10,  // 按AI条数触发的阈值
+    autoSummaryBufferTokenLimit: 30000, // 按Token数触发的阈值
     autoSummaryResummaryThreshold: 7, // <=0 关闭二次总结；>0 时同层摘要达到此值触发更高层摘要（2->3->4...）
     autoSummaryBatchMaxMsgs: 50,    // 单次摘要最大消息条数
     autoSummaryBatchMaxTokens: 80000, // 单次摘要最大Token数
@@ -189,67 +192,12 @@ const DEFAULT_SETTINGS = {
     rpgCurrencyUserOnly: false,     // 货币仅限主角
     rpgUserOnly: false,             // RPG全局仅限主角（总开关，联动所有子模块）
     sendRpgStronghold: false,       // 发送据点/基地系统
-    rpgBarConfig: [
-        { key: 'hp', name: 'HP', color: '#22c55e' },
-        { key: 'mp', name: 'MP', color: '#6366f1' },
-        { key: 'sp', name: 'SP', color: '#f59e0b' },
-    ],
-    rpgAttributeConfig: [
-        { key: 'str', name: '力量', desc: '物理攻击、负重与近战伤害' },
-        { key: 'dex', name: '敏捷', desc: '反射、闪避与远程精准' },
-        { key: 'con', name: '体质', desc: '生命力、耐久与抗毒' },
-        { key: 'int', name: '智力', desc: '学识、魔法与推理能力' },
-        { key: 'wis', name: '感知', desc: '洞察、直觉与意志力' },
-        { key: 'cha', name: '魅力', desc: '说服、领导与人格魅力' },
-    ],
+    rpgBarConfig: [],
+    rpgAttributeConfig: [],
     rpgAttrViewMode: 'radar',       // 'radar' 或 'text'
     customRpgPrompt: '',            // 自定义RPG提示词（空=默认）
     promptPresets: [],              // 提示词预设存档 [{name, prompts:{system,batch,...}}]
-    equipmentTemplates: [           // 装备格位模板
-        {
-            name: '人类', slots: [
-                { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-                { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-                { name: '项链', maxCount: 1 }, { name: '护身符', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-            ]
-        },
-        {
-            name: '兽人', slots: [
-                { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-                { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-                { name: '尾部', maxCount: 1 }, { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-            ]
-        },
-        {
-            name: '翼族', slots: [
-                { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-                { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-                { name: '翅膀', maxCount: 1 }, { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-            ]
-        },
-        {
-            name: '人马', slots: [
-                { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-                { name: '腰带', maxCount: 1 }, { name: '马甲', maxCount: 1 }, { name: '马蹄铁', maxCount: 4 },
-                { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-            ]
-        },
-        {
-            name: '拉弥亚', slots: [
-                { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-                { name: '腰带', maxCount: 1 }, { name: '蛇尾饰', maxCount: 1 },
-                { name: '项链', maxCount: 1 }, { name: '护身符', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-            ]
-        },
-        {
-            name: '恶魔', slots: [
-                { name: '头部', maxCount: 1 }, { name: '角饰', maxCount: 1 }, { name: '躯干', maxCount: 1 },
-                { name: '手部', maxCount: 1 }, { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 },
-                { name: '足部', maxCount: 1 }, { name: '翅膀', maxCount: 1 }, { name: '尾部', maxCount: 1 },
-                { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-            ]
-        },
-    ],
+    equipmentTemplates: [],          // 装备格位模板（i18n 初始化后生成）
     rpgDiceEnabled: false,          // RPG骰子面板
     dicePosX: null,                 // 骰子面板拖拽位置X（null=默认右下角）
     dicePosY: null,                 // 骰子面板拖拽位置Y
@@ -303,6 +251,7 @@ const PROMPT_SETTING_KEYS = [
 let settings = { ...DEFAULT_SETTINGS };
 let doNavbarIconClick = null;
 let isInitialized = false;
+let _i18nReady = false;
 let _isSummaryGeneration = false;
 let _summaryInProgress = false;
 let _chatFullyLoaded = false;
@@ -311,7 +260,6 @@ let _vectorEnsureIndexPromise = null;
 let _vectorEnsureIndexChatId = null;
 let itemsMultiSelectMode = false;  // 物品多选模式
 let selectedItems = new Set();     // 选中的物品名称
-let longPressTimer = null;         // 长按计时器
 let agendaMultiSelectMode = false; // 待办多选模式
 let selectedAgendaIndices = new Set(); // 选中的待办索引
 let agendaLongPressTimer = null;   // 待办长按计时器
@@ -365,70 +313,87 @@ async function getTemplate(name) {
 
 function _getDefaultRpgAttrConfig() {
     const lang = detectEffectiveAiLang(settings);
-    const L = (zh, en, ja, ko, ru) => {
-        if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
-        if (lang === 'ja') return ja;
-        if (lang === 'ko') return ko;
-        if (lang === 'ru') return ru;
-        return en;
-    };
-    return [
-        { key: 'str', name: L('力量', 'Strength', '筋力', '힘', 'Сила'), desc: L('物理攻击、负重与近战伤害', 'Physical attack, carrying capacity & melee damage', '物理攻撃、積載量、近接ダメージ', '물리 공격, 적재량, 근접 피해', 'Физическая атака, грузоподъёмность и урон в ближнем бою') },
-        { key: 'dex', name: L('敏捷', 'Dexterity', '器用', '민첩', 'Ловкость'), desc: L('反射、闪避与远程精准', 'Reflexes, evasion & ranged accuracy', '反射、回避、遠距離命中', '반사, 회피, 원거리 정확도', 'Рефлексы, уклонение и точность дальнего боя') },
-        { key: 'con', name: L('体质', 'Constitution', '耐久', '체력', 'Выносливость'), desc: L('生命力、耐久与抗毒', 'Vitality, endurance & poison resistance', '生命力、持久力、毒耐性', '생명력, 지구력, 독 저항', 'Жизненная сила, выносливость и сопротивление ядам') },
-        { key: 'int', name: L('智力', 'Intelligence', '知力', '지능', 'Интеллект'), desc: L('学识、魔法与推理能力', 'Knowledge, magic & reasoning ability', '学識、魔法、推理能力', '지식, 마법, 추리 능력', 'Знания, магия и аналитические способности') },
-        { key: 'wis', name: L('感知', 'Wisdom', '感知', '지혜', 'Мудрость'), desc: L('洞察、直觉与意志力', 'Insight, intuition & willpower', '洞察、直感、意志力', '통찰, 직감, 의지력', 'Проницательность, интуиция и сила воли') },
-        { key: 'cha', name: L('魅力', 'Charisma', '魅力', '매력', 'Харизма'), desc: L('说服、领导与人格魅力', 'Persuasion, leadership & personal charm', '説得、統率、人格的魅力', '설득, 리더십, 인격적 매력', 'Убеждение, лидерство и обаяние') },
-    ];
+    const attrKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    return attrKeys.map(key => ({
+        key,
+        name: tForLang(lang, `rpgDefaults.attributes.${key}.name`),
+        desc: tForLang(lang, `rpgDefaults.attributes.${key}.desc`),
+    }));
 }
+
+function _getDefaultRpgBarConfig() {
+    const lang = detectEffectiveAiLang(settings);
+    return [
+        { key: 'hp', color: '#22c55e' },
+        { key: 'mp', color: '#6366f1' },
+        { key: 'sp', color: '#f59e0b' },
+    ].map(bar => ({
+        ...bar,
+        name: tForLang(lang, `rpgDefaults.bars.${bar.key}.name`),
+        min: 0,
+        max: 100,
+        defaultMax: 100,
+        required: true,
+        desc: tForLang(lang, `rpgDefaults.bars.${bar.key}.desc`),
+    }));
+}
+
+const HORAEEQ_TEMPLATE_ALIAS_MAP = {
+    human: ['人类', '人類', 'Human', 'human', '人間', '인간', 'Человек'],
+    orc: ['兽人', '獸人', '兽化人形', '獸化人形', 'ORC', 'orc', '欧克', '歐克', '奥克', '奧克', 'オーク', '오크', 'орк'],
+    pigman: ['猪人', '豬人', '豚人', 'Pigfolk', 'pigfolk', 'Pigman', 'pigman', '돼지 수인', 'свинолюд'],
+    winged: ['翼族', '翼人', '有翼种', '有翼種', 'winged', 'Winged', '날개족', 'крылатый'],
+    centaur: ['人马', '人馬', 'Centaur', 'centaur', 'ケンタウロス', '켄타우로스', 'кентавр'],
+    lamia: ['拉弥亚', '拉彌亞', 'lamia', 'Lamia', 'ラミア', '라미아', 'ламия', '蛇尾人', 'serpentine', 'Serpentine', '뱀꼬리족', 'змеинохвостый'],
+    demon: ['恶魔', '惡魔', 'Demon', 'demon', '悪魔', '악마', 'демон'],
+    kitsune: ['九尾狐', '狐妖', 'Kitsune', 'kitsune', 'Fox Spirit', 'fox spirit', '구미호', '여우 요괴', 'кицунэ', 'лисий дух'],
+    shapeshifter: ['妖怪', '變身者', '变身者', 'Yokai', 'yokai', 'Youkai', 'youkai', 'Shapeshifter', 'shapeshifter', '変身者', '요괴', '변신자', 'ёкай', 'оборотень'],
+    feathered_serpent: ['羽蛇人', 'Feathered Serpent', 'feathered serpent', '깃털뱀족', 'пернатый змей'],
+};
+
+const HORAEEQ_AMBIGUOUS_TEMPLATE_ALIASES = new Set([
+    '兽人', '獸人', '獣人', 'beastfolk', 'beastman', 'beastwoman', '수인',
+    '妖怪', 'yokai', 'youkai', 'monster', 'shapeshifter', '變身者', '变身者', '変身者',
+]);
 
 function _getDefaultEquipTemplates() {
     const lang = detectEffectiveAiLang(settings);
-    const L = (zh, en, ja, ko, ru) => {
-        if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
-        if (lang === 'ja') return ja;
-        if (lang === 'ko') return ko;
-        if (lang === 'ru') return ru;
-        return en;
+    const T = (key) => tForLang(lang, `equipmentTemplates.${key}`);
+    const S = (key, { maxCount = 1, desc = false, nameKey = key } = {}) => {
+        const slot = { name: T(`slots.${nameKey}.name`), maxCount };
+        if (desc) slot.desc = T(`slots.${nameKey}.desc`);
+        return slot;
     };
-    const S = (zh, en, ja, ko, ru) => ({ name: L(zh, en, ja, ko, ru), maxCount: 1 });
-    const head = S('头部', 'Head', '頭部', '머리', 'Голова');
-    const torso = S('躯干', 'Torso', '胴体', '상체', 'Торс');
-    const hands = S('手部', 'Hands', '手', '손', 'Руки');
-    const belt = S('腰带', 'Belt', '腰', '허리띠', 'Пояс');
-    const legs = S('下身', 'Legs', '脚部', '하체', 'Ноги');
-    const feet = S('足部', 'Feet', '足', '발', 'Обувь');
-    const neck = S('项链', 'Necklace', 'ネックレス', '목걸이', 'Ожерелье');
-    const amulet = S('护身符', 'Amulet', 'お守り', '부적', 'Амулет');
-    const ring = { name: L('戒指', 'Ring', '指輪', '반지', 'Кольцо'), maxCount: 2 };
-    const tail = S('尾部', 'Tail', '尾', '꼬리', 'Хвост');
-    const wings = S('翅膀', 'Wings', '翼', '날개', 'Крылья');
+    const humanoid = () => [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('neck'), S('amulet'), S('ring', { maxCount: 2 })];
+    const tpl = (id, slots, forms = null, parts = []) => ({
+        id,
+        name: T(`templates.${id}.name`),
+        aliases: HORAEEQ_TEMPLATE_ALIAS_MAP[id] || [],
+        parts,
+        slots,
+        forms: forms || [{ id: 'default', name: T('forms.default'), slots }],
+    });
+    const serpentTailOrnament = () => S('serpentTailOrnament', { desc: true });
+    const tailOrnament = (maxCount = 1) => S('tailOrnament', { maxCount, desc: true });
     return [
-        { name: L('人类', 'Human', '人間', '인간', 'Человек'), slots: [head, torso, hands, belt, legs, feet, neck, amulet, ring] },
-        { name: L('兽人', 'Orc', '獣人', '수인', 'Орк'), slots: [head, torso, hands, belt, legs, feet, tail, neck, ring] },
-        { name: L('翼族', 'Winged', '翼族', '날개족', 'Крылатый'), slots: [head, torso, hands, belt, legs, feet, wings, neck, ring] },
-        {
-            name: L('人马', 'Centaur', 'ケンタウロス', '켄타우로스', 'Кентавр'), slots: [
-                head, torso, hands, belt,
-                { name: L('马甲', 'Barding', '馬鎧', '마갑', 'Конская броня'), maxCount: 1 },
-                { name: L('马蹄铁', 'Horseshoe', '蹄鉄', '말굽', 'Подкова'), maxCount: 4 },
-                neck, ring,
-            ]
-        },
-        {
-            name: L('拉弥亚', 'Lamia', 'ラミア', '라미아', 'Ламия'), slots: [
-                head, torso, hands, belt,
-                { name: L('蛇尾饰', 'Tail Ornament', '尾飾り', '꼬리 장식', 'Украшение хвоста'), maxCount: 1 },
-                neck, amulet, ring,
-            ]
-        },
-        {
-            name: L('恶魔', 'Demon', '悪魔', '악마', 'Демон'), slots: [
-                head,
-                { name: L('角饰', 'Horn Ornament', '角飾り', '뿔 장식', 'Украшение рогов'), maxCount: 1 },
-                torso, hands, belt, legs, feet, wings, tail, neck, ring,
-            ]
-        },
+        tpl('human', humanoid(), null, ['humanoid']),
+        tpl('orc', [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid']),
+        tpl('pigman', [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'tail_unwearable']),
+        tpl('winged', [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('wings', { desc: true }), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'winged']),
+        tpl('centaur', [S('head'), S('torso'), S('hands'), S('belt'), S('barding'), S('horseshoe', { maxCount: 4 }), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'quadruped']),
+        tpl('lamia', [S('head'), S('torso'), S('hands'), S('belt'), serpentTailOrnament(), S('neck'), S('amulet'), S('ring', { maxCount: 2 })], null, ['humanoid', 'serpentine']),
+        tpl('demon', [S('head'), S('hornOrnament'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('wings', { desc: true }), S('tail', { desc: true }), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'winged', 'tail']),
+        tpl('kitsune', humanoid(), [
+            { id: 'human', name: T('forms.human'), slots: humanoid() },
+            { id: 'hybrid', name: T('forms.hybridFox'), slots: [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), tailOrnament(9), S('neck'), S('ring', { maxCount: 2 })] },
+            { id: 'fox', name: T('forms.fox'), slots: [S('collar'), tailOrnament(9), S('clawGuard', { maxCount: 4 })] },
+        ], ['humanoid', 'shapeshifter', 'tail']),
+        tpl('shapeshifter', humanoid(), [
+            { id: 'human', name: T('forms.human'), slots: humanoid() },
+            { id: 'hybrid', name: T('forms.hybridBeast'), slots: [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('tail', { desc: true }), S('neck'), S('ring', { maxCount: 2 })] },
+            { id: 'animal', name: T('forms.animal'), slots: [S('collar'), S('tail', { desc: true }), S('clawGuard', { maxCount: 4 })] },
+        ], ['humanoid', 'shapeshifter']),
+        tpl('feathered_serpent', [S('head'), S('torso'), S('hands'), S('belt'), S('wings', { desc: true }), serpentTailOrnament(), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'winged', 'serpentine']),
     ];
 }
 
@@ -684,8 +649,176 @@ function _normalizeVectorRecallPresetsInPlace() {
     return changed;
 }
 
+function _normalizeRpgBarConfigInPlace() {
+    if (!Array.isArray(settings.rpgBarConfig)) {
+        settings.rpgBarConfig = [];
+        return true;
+    }
+    let changed = false;
+    settings.rpgBarConfig = settings.rpgBarConfig.map((bar, idx) => {
+        const fallback = DEFAULT_SETTINGS.rpgBarConfig[idx] || {};
+        const clean = {
+            key: String(bar?.key || fallback.key || `bar${idx + 1}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '') || `bar${idx + 1}`,
+            name: String(bar?.name || fallback.name || bar?.key || `BAR${idx + 1}`).trim(),
+            color: bar?.color || fallback.color || '#a78bfa',
+            min: Number.isFinite(parseInt(bar?.min, 10)) ? parseInt(bar.min, 10) : (fallback.min ?? 0),
+            max: Number.isFinite(parseInt(bar?.max, 10)) ? parseInt(bar.max, 10) : (fallback.max ?? 100),
+            defaultMax: Number.isFinite(parseInt(bar?.defaultMax, 10)) ? parseInt(bar.defaultMax, 10) : (fallback.defaultMax ?? 100),
+            required: bar?.required !== false,
+            desc: String(bar?.desc || fallback.desc || '').trim(),
+        };
+        if (clean.max <= clean.min) clean.max = clean.min + 1;
+        clean.defaultMax = Math.min(clean.max, Math.max(clean.min + 1, clean.defaultMax));
+        if (JSON.stringify(clean) !== JSON.stringify(bar)) changed = true;
+        return clean;
+    });
+    return changed;
+}
+
+function _ensureLocalizedRpgDefaults({ force = false } = {}) {
+    if (!_i18nReady) return false;
+    let changed = false;
+    if (force || !Array.isArray(settings.rpgBarConfig) || !settings.rpgBarConfig.length) {
+        settings.rpgBarConfig = _getDefaultRpgBarConfig();
+        changed = true;
+    }
+    if (force || !Array.isArray(settings.rpgAttributeConfig) || !settings.rpgAttributeConfig.length) {
+        settings.rpgAttributeConfig = _getDefaultRpgAttrConfig();
+        changed = true;
+    }
+    if (force || !Array.isArray(settings.equipmentTemplates) || !settings.equipmentTemplates.length) {
+        settings.equipmentTemplates = _getDefaultEquipTemplates();
+        settings._equipmentTemplateV2Migrated = true;
+        changed = true;
+    }
+    return changed;
+}
+
+function _normalizeEquipSlot(slot, idx = 0) {
+    const name = String(slot?.name || '').trim();
+    if (!name) return null;
+    const maxCount = Math.max(1, parseInt(slot?.maxCount, 10) || 1);
+    const clean = { name, maxCount };
+    const desc = String(slot?.desc || '').trim();
+    if (desc) clean.desc = desc;
+    if (slot?.forms && Array.isArray(slot.forms)) clean.forms = slot.forms.map(String).filter(Boolean);
+    return clean;
+}
+
+function _normalizeEquipTemplate(tpl, idx = 0) {
+    if (!tpl || typeof tpl !== 'object') return null;
+    const name = String(tpl.name || `Template ${idx + 1}`).trim();
+    if (!name) return null;
+    const baseSlots = (Array.isArray(tpl.slots) ? tpl.slots : []).map(_normalizeEquipSlot).filter(Boolean);
+    let forms = Array.isArray(tpl.forms) ? tpl.forms.map((form, formIdx) => {
+        const formSlots = (Array.isArray(form?.slots) ? form.slots : []).map(_normalizeEquipSlot).filter(Boolean);
+        if (!formSlots.length) return null;
+        return {
+            id: String(form.id || `form_${formIdx + 1}`).trim() || `form_${formIdx + 1}`,
+            name: String(form.name || form.id || `Form ${formIdx + 1}`).trim(),
+            slots: formSlots,
+        };
+    }).filter(Boolean) : [];
+    if (!forms.length && baseSlots.length) {
+        const defaultFormName = _i18nReady ? tForLang(detectEffectiveAiLang(settings), 'equipmentTemplates.forms.default') : 'default';
+        forms = [{ id: 'default', name: defaultFormName, slots: baseSlots }];
+    }
+    if (!baseSlots.length && forms.length) baseSlots.push(...forms[0].slots);
+    if (!baseSlots.length) return null;
+    const clean = {
+        id: String(tpl.id || name).trim().toLowerCase().replace(/\s+/g, '_'),
+        name,
+        aliases: Array.isArray(tpl.aliases) ? tpl.aliases.map(a => String(a).trim()).filter(Boolean) : [name],
+        parts: Array.isArray(tpl.parts) ? tpl.parts.map(p => String(p).trim()).filter(Boolean) : [],
+        slots: baseSlots,
+        forms,
+    };
+    return clean;
+}
+
+function _normalizeRpgEquipmentTemplatesInPlace() {
+    if (!Array.isArray(settings.equipmentTemplates)) {
+        settings.equipmentTemplates = [];
+        return true;
+    }
+    let normalized = settings.equipmentTemplates.map(_normalizeEquipTemplate).filter(Boolean);
+    let changed = JSON.stringify(normalized) !== JSON.stringify(settings.equipmentTemplates);
+    if (_i18nReady && !settings._equipmentTemplateV2Migrated) {
+        const hasOverlap = (tpl, list) => {
+            const keys = new Set(_getEquipTemplateMatchAliases(tpl));
+            return list.some(existing => _getEquipTemplateMatchAliases(existing).some(k => keys.has(k)));
+        };
+        for (const tpl of _getDefaultEquipTemplates().map(_normalizeEquipTemplate).filter(Boolean)) {
+            if (!hasOverlap(tpl, normalized)) {
+                normalized.push(tpl);
+                changed = true;
+            }
+        }
+        settings._equipmentTemplateV2Migrated = true;
+        changed = true;
+    }
+    settings.equipmentTemplates = normalized;
+    return changed;
+}
+
+function _normalizeRpgSettingsInPlace() {
+    let changed = false;
+    if (_normalizeRpgBarConfigInPlace()) changed = true;
+    if (_normalizeRpgEquipmentTemplatesInPlace()) changed = true;
+    return changed;
+}
+
+function _normalizeAutoSummarySettingsInPlace(saved = {}) {
+    let changed = false;
+    const legacyLimit = parseInt(saved.autoSummaryBufferLimit, 10);
+    const mode = settings.autoSummaryBufferMode === 'tokens' ? 'tokens' : 'messages';
+    if (settings.autoSummaryBufferMode !== mode) {
+        settings.autoSummaryBufferMode = mode;
+        changed = true;
+    }
+
+    if (settings.autoSummarySourceMode !== 'events' && settings.autoSummarySourceMode !== 'fulltext') {
+        settings.autoSummarySourceMode = DEFAULT_SETTINGS.autoSummarySourceMode;
+        changed = true;
+    }
+
+    if (saved.autoSummaryBufferMsgLimit === undefined) {
+        const migrated = mode === 'messages' && Number.isFinite(legacyLimit) ? legacyLimit : DEFAULT_SETTINGS.autoSummaryBufferMsgLimit;
+        settings.autoSummaryBufferMsgLimit = Math.max(5, parseInt(migrated, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+        changed = true;
+    } else {
+        const msgLimit = Math.max(5, parseInt(settings.autoSummaryBufferMsgLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+        if (settings.autoSummaryBufferMsgLimit !== msgLimit) {
+            settings.autoSummaryBufferMsgLimit = msgLimit;
+            changed = true;
+        }
+    }
+
+    if (saved.autoSummaryBufferTokenLimit === undefined) {
+        const migrated = mode === 'tokens' && Number.isFinite(legacyLimit) && legacyLimit >= 1000
+            ? legacyLimit
+            : DEFAULT_SETTINGS.autoSummaryBufferTokenLimit;
+        settings.autoSummaryBufferTokenLimit = Math.max(1000, parseInt(migrated, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+        changed = true;
+    } else {
+        const tokenLimit = Math.max(1000, parseInt(settings.autoSummaryBufferTokenLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+        if (settings.autoSummaryBufferTokenLimit !== tokenLimit) {
+            settings.autoSummaryBufferTokenLimit = tokenLimit;
+            changed = true;
+        }
+    }
+
+    const activeLimit = mode === 'tokens' ? settings.autoSummaryBufferTokenLimit : settings.autoSummaryBufferMsgLimit;
+    if (settings.autoSummaryBufferLimit !== activeLimit) {
+        settings.autoSummaryBufferLimit = activeLimit;
+        changed = true;
+    }
+    return changed;
+}
+
 function loadSettings() {
     let changed = false;
+    const saved = extension_settings[EXTENSION_NAME] || null;
     if (extension_settings[EXTENSION_NAME]) {
         settings = { ...DEFAULT_SETTINGS, ...extension_settings[EXTENSION_NAME] };
     } else {
@@ -698,7 +831,7 @@ function loadSettings() {
         settings._autoFillPrevTimelineDefaultOffMigrated = true;
         changed = true;
     }
-    if (_normalizePromptSettingsInPlace() || _normalizeVectorRecallPresetsInPlace()) changed = true;
+    if (_normalizeAutoSummarySettingsInPlace(saved || {}) || _normalizePromptSettingsInPlace() || _normalizeVectorRecallPresetsInPlace() || _normalizeRpgSettingsInPlace()) changed = true;
     if (changed) saveSettings();
 }
 
@@ -3397,6 +3530,12 @@ function updateItemsDisplay() {
 
     if (!listEl) return;
 
+    const multiSelectBtn = document.getElementById('horae-btn-items-multiselect');
+    if (multiSelectBtn) {
+        multiSelectBtn.classList.toggle('active', itemsMultiSelectMode);
+        multiSelectBtn.title = itemsMultiSelectMode ? t('ui.exitMultiSelect') : t('ui.multiSelectMode');
+    }
+
     const filterValue = filterEl?.value || 'all';
     const holderFilter = holderFilterEl?.value || 'all';
     const searchQuery = (searchEl?.value || '').trim().toLowerCase();
@@ -5502,14 +5641,6 @@ function bindItemsEvents() {
         const itemName = item.dataset.itemName;
         if (!itemName) return;
 
-        // 长按进入多选模式
-        item.addEventListener('mousedown', (e) => startLongPress(e, itemName));
-        item.addEventListener('touchstart', (e) => startLongPress(e, itemName), { passive: true });
-        item.addEventListener('mouseup', cancelLongPress);
-        item.addEventListener('mouseleave', cancelLongPress);
-        item.addEventListener('touchend', cancelLongPress);
-        item.addEventListener('touchcancel', cancelLongPress);
-
         // 多选模式下点击切换选中
         item.addEventListener('click', () => {
             if (itemsMultiSelectMode) {
@@ -5782,27 +5913,6 @@ function _openEquipItemDialog(itemName) {
 }
 
 /**
- * 开始长按计时
- */
-function startLongPress(e, itemName) {
-    if (itemsMultiSelectMode) return; // 已在多选模式
-
-    longPressTimer = setTimeout(() => {
-        enterMultiSelectMode(itemName);
-    }, 800); // 800ms 长按触发（延长防止误触）
-}
-
-/**
- * 取消长按
- */
-function cancelLongPress() {
-    if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-    }
-}
-
-/**
  * 进入多选模式
  */
 function enterMultiSelectMode(initialItem) {
@@ -5815,6 +5925,8 @@ function enterMultiSelectMode(initialItem) {
     // 显示多选工具栏
     const bar = document.getElementById('horae-items-multiselect-bar');
     if (bar) bar.style.display = 'flex';
+    const btn = document.getElementById('horae-btn-items-multiselect');
+    if (btn) { btn.classList.add('active'); btn.title = t('ui.exitMultiSelect'); }
 
     // 隐藏提示
     const hint = document.querySelector('#horae-tab-items .horae-items-hint');
@@ -5836,6 +5948,8 @@ function exitMultiSelectMode() {
     // 隐藏多选工具栏
     const bar = document.getElementById('horae-items-multiselect-bar');
     if (bar) bar.style.display = 'none';
+    const btn = document.getElementById('horae-btn-items-multiselect');
+    if (btn) { btn.classList.remove('active'); btn.title = t('ui.multiSelectMode'); }
 
     // 显示提示
     const hint = document.querySelector('#horae-tab-items .horae-items-hint');
@@ -6219,9 +6333,14 @@ function renderBarConfig() {
     if (!list) return;
     const bars = settings.rpgBarConfig || [];
     list.innerHTML = bars.map((b, i) => `
-        <div class="horae-rpg-config-row" data-idx="${i}">
-            <input class="horae-rpg-config-key" value="${escapeHtml(b.key)}" maxlength="10" data-idx="${i}" />
-            <input class="horae-rpg-config-name" value="${escapeHtml(b.name)}" maxlength="8" data-idx="${i}" />
+        <div class="horae-rpg-config-row horae-rpg-bar-config-row" data-idx="${i}">
+            <input class="horae-rpg-config-key" value="${escapeHtml(b.key)}" maxlength="10" data-idx="${i}" placeholder="key" title="${t('ui.rpgKeyHint')}" />
+            <input class="horae-rpg-config-name" value="${escapeHtml(b.name)}" maxlength="8" data-idx="${i}" title="${t('ui.rpgDisplayNameHint')}" />
+            <input class="horae-rpg-config-min" type="number" value="${b.min ?? 0}" data-idx="${i}" placeholder="${t('placeholder.rpgBarMin')}" title="${t('placeholder.rpgBarMin')}" />
+            <input class="horae-rpg-config-max" type="number" value="${b.max ?? 100}" data-idx="${i}" placeholder="${t('placeholder.rpgBarMax')}" title="${t('placeholder.rpgBarMax')}" />
+            <input class="horae-rpg-config-default-max" type="number" value="${b.defaultMax ?? b.max ?? 100}" data-idx="${i}" placeholder="${t('placeholder.rpgBarDefaultMax')}" title="${t('placeholder.rpgBarDefaultMax')}" />
+            <input class="horae-rpg-config-desc" value="${escapeHtml(b.desc || '')}" data-idx="${i}" placeholder="${t('placeholder.rpgBarDesc')}" title="${t('ui.rpgDefinitionHint')}" />
+            <label class="horae-rpg-config-required" title="${t('ui.rpgBarRequiredHint')}"><input type="checkbox" class="horae-rpg-config-required-check" data-idx="${i}" ${b.required !== false ? 'checked' : ''}>${t('ui.requiredShort')}</label>
             <input type="color" class="horae-rpg-config-color" value="${b.color}" data-idx="${i}" />
             <button class="horae-rpg-config-del" data-idx="${i}" title="${t('common.delete')}"><i class="fa-solid fa-xmark"></i></button>
         </div>
@@ -6478,13 +6597,25 @@ function updateRpgDisplay() {
         if (sendEq && (!settings.rpgEquipmentUserOnly || _isU)) {
             tabs.push({ id: `eq_${eid}`, label: t('ui.rpgTabEquip') });
             let html = '';
-            const slotEntries = Object.entries(charEq);
+            const rawCharEq = _getEqValues()?.[name] || charEq;
+            const cardCharCfg = _getCharEqConfig(name);
+            const cardDeletedSlots = new Set(cardCharCfg._deletedSlots || []);
+            const cardActiveSlots = _getActiveEqSlots(cardCharCfg);
+            const cardActiveSlotNames = new Set(cardActiveSlots.map(s => s.name));
+            const hasActiveSlotConfig = cardActiveSlotNames.size > 0;
+            const activeForm = _getActiveEqForm(cardCharCfg);
+            const inactiveTitle = t('ui.equipmentInactiveReason', { form: activeForm?.name || t('ui.defaultForm') });
+            const slotEntries = Object.entries(rawCharEq).filter(([slotName, items]) =>
+                !cardDeletedSlots.has(slotName) && Array.isArray(items) && items.length > 0);
             if (slotEntries.length > 0) {
                 html += '<div class="horae-rpg-card-eq">';
                 for (const [slotName, items] of slotEntries) {
                     for (const item of items) {
                         const attrStr = Object.entries(item.attrs || {}).map(([k, v]) => `${k}${v >= 0 ? '+' : ''}${v}`).join(', ');
-                        html += `<div class="horae-rpg-card-eq-item"><span class="horae-rpg-card-eq-slot">[${escapeHtml(slotName)}]</span> ${escapeHtml(item.name)}`;
+                        const inactive = hasActiveSlotConfig && !cardActiveSlotNames.has(slotName);
+                        html += `<div class="horae-rpg-card-eq-item${inactive ? ' horae-rpg-card-eq-item-inactive' : ''}"${inactive ? ` title="${escapeHtml(inactiveTitle)}"` : ''}>`;
+                        if (inactive) html += `<span class="horae-rpg-eq-inactive-badge"><i class="fa-solid fa-triangle-exclamation"></i> ${t('ui.inactive')}</span> `;
+                        html += `<span class="horae-rpg-card-eq-slot">[${escapeHtml(slotName)}]</span> ${escapeHtml(item.name)}`;
                         if (attrStr) html += ` <span class="horae-rpg-card-eq-attrs">(${attrStr})</span>`;
                         html += '</div>';
                     }
@@ -6713,9 +6844,9 @@ function renderAttrConfig() {
     const attrs = settings.rpgAttributeConfig || [];
     list.innerHTML = attrs.map((a, i) => `
         <div class="horae-rpg-config-row" data-idx="${i}">
-            <input class="horae-rpg-config-key" value="${escapeHtml(a.key)}" maxlength="10" data-idx="${i}" data-type="attr" />
-            <input class="horae-rpg-config-name" value="${escapeHtml(a.name)}" maxlength="8" data-idx="${i}" data-type="attr" />
-            <input class="horae-rpg-attr-desc" value="${escapeHtml(a.desc || '')}" placeholder="${t('label.description')}" data-idx="${i}" />
+            <input class="horae-rpg-config-key" value="${escapeHtml(a.key)}" maxlength="10" data-idx="${i}" data-type="attr" placeholder="key" title="${t('ui.rpgKeyHint')}" />
+            <input class="horae-rpg-config-name" value="${escapeHtml(a.name)}" maxlength="8" data-idx="${i}" data-type="attr" title="${t('ui.rpgDisplayNameHint')}" />
+            <input class="horae-rpg-attr-desc" value="${escapeHtml(a.desc || '')}" placeholder="${t('label.description')}" data-idx="${i}" title="${t('ui.rpgDefinitionHint')}" />
             <button class="horae-rpg-attr-del" data-idx="${i}" title="${t('common.delete')}"><i class="fa-solid fa-xmark"></i></button>
         </div>
     `).join('');
@@ -7087,7 +7218,110 @@ function _getEqConfigMap() {
 function _getCharEqConfig(owner) {
     const map = _getEqConfigMap();
     if (!map.perChar[owner]) map.perChar[owner] = { slots: [], _deletedSlots: [] };
+    _normalizeCharEqConfig(map.perChar[owner]);
     return map.perChar[owner];
+}
+
+function _normalizeCharEqConfig(charCfg) {
+    if (!charCfg) return;
+    if (!Array.isArray(charCfg.slots)) charCfg.slots = [];
+    if (!Array.isArray(charCfg._deletedSlots)) charCfg._deletedSlots = [];
+    if (Array.isArray(charCfg.forms) && charCfg.forms.length) {
+        charCfg.forms = charCfg.forms.map((form, idx) => ({
+            id: String(form.id || `form_${idx + 1}`),
+            name: String(form.name || form.id || `Form ${idx + 1}`),
+            slots: (Array.isArray(form.slots) ? form.slots : []).map(_normalizeEquipSlot).filter(Boolean),
+        })).filter(f => f.slots.length);
+        if (!charCfg.currentForm || !charCfg.forms.some(f => f.id === charCfg.currentForm)) {
+            charCfg.currentForm = charCfg.forms[0]?.id || 'default';
+        }
+        const active = _getActiveEqForm(charCfg);
+        if (active?.slots?.length) charCfg.slots = JSON.parse(JSON.stringify(active.slots));
+    } else if (charCfg.slots.length) {
+        charCfg.forms = [{ id: 'default', name: t('ui.defaultForm'), slots: JSON.parse(JSON.stringify(charCfg.slots)) }];
+        charCfg.currentForm = 'default';
+    }
+}
+
+function _getActiveEqForm(charCfg) {
+    if (!charCfg?.forms?.length) return null;
+    return charCfg.forms.find(f => f.id === charCfg.currentForm) || charCfg.forms[0] || null;
+}
+
+function _getActiveEqSlots(charCfg) {
+    const active = _getActiveEqForm(charCfg);
+    return Array.isArray(active?.slots) && active.slots.length ? active.slots : (charCfg?.slots || []);
+}
+
+function _applyEqForm(charCfg, formId) {
+    if (!charCfg?.forms?.length) return;
+    const form = charCfg.forms.find(f => f.id === formId) || charCfg.forms[0];
+    charCfg.currentForm = form.id;
+    charCfg.slots = JSON.parse(JSON.stringify(form.slots));
+}
+
+function _normalizeEqTemplateMatchText(value) {
+    return String(value || '')
+        .trim()
+        .toLocaleLowerCase()
+        .normalize('NFKC')
+        .replace(/[「」『』"'\s]/g, '');
+}
+
+function _getEquipTemplateMatchAliases(tpl) {
+    const aliases = new Set([tpl?.name, tpl?.id, ...(tpl?.aliases || [])].filter(Boolean));
+    return [...aliases].map(_normalizeEqTemplateMatchText).filter(Boolean);
+}
+
+function _findAutoEquipTemplateForRace(race) {
+    const raceKey = _normalizeEqTemplateMatchText(race);
+    if (!raceKey || HORAEEQ_AMBIGUOUS_TEMPLATE_ALIASES.has(raceKey)) return null;
+    const tpls = (settings.equipmentTemplates || []).map(_normalizeEquipTemplate).filter(Boolean);
+    const matches = tpls.filter(tpl => {
+        const aliases = _getEquipTemplateMatchAliases(tpl);
+        return aliases.includes(raceKey) && !aliases.some(a => a === raceKey && HORAEEQ_AMBIGUOUS_TEMPLATE_ALIASES.has(a));
+    });
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function _applyEquipTemplateToCharConfig(charCfg, tpl, race) {
+    const forms = JSON.parse(JSON.stringify(tpl.forms?.length ? tpl.forms : [{ id: 'default', name: t('ui.defaultForm'), slots: tpl.slots }]));
+    charCfg.forms = forms;
+    charCfg.currentForm = forms[0]?.id || 'default';
+    _applyEqForm(charCfg, charCfg.currentForm);
+    charCfg._deletedSlots = [];
+    charCfg._template = tpl.name;
+    charCfg._autoTemplate = true;
+    charCfg._autoRace = race;
+    charCfg._manualLocked = false;
+}
+
+function _autoApplyEquipmentTemplatesByRace({ persist = false } = {}) {
+    if (!settings.rpgMode || !settings.sendRpgEquipment) return false;
+    const state = horaeManager.getLatestState();
+    const npcs = state?.npcs || {};
+    if (!Object.keys(npcs).length) return false;
+    const cfgMap = _getEqConfigMap();
+    let changed = false;
+    for (const [owner, info] of Object.entries(npcs)) {
+        const race = String(info?.race || '').trim();
+        if (!race) continue;
+        const tpl = _findAutoEquipTemplateForRace(race);
+        if (!tpl) continue;
+        const charCfg = cfgMap.perChar[owner] || { slots: [], _deletedSlots: [] };
+        _normalizeCharEqConfig(charCfg);
+        const hasUserConfig = !!charCfg._manualLocked || ((charCfg.slots?.length || 0) > 0 && !charCfg._autoTemplate);
+        if (hasUserConfig) continue;
+        if (charCfg._autoTemplate && charCfg._template === tpl.name && charCfg._autoRace === race) continue;
+        _applyEquipTemplateToCharConfig(charCfg, tpl, race);
+        cfgMap.perChar[owner] = charCfg;
+        changed = true;
+    }
+    if (changed) {
+        _syncConfigsToRpg();
+        if (persist) _saveEqData();
+    }
+    return changed;
 }
 
 function _getEqValues() {
@@ -7110,6 +7344,7 @@ function renderEquipmentSlotConfig() { /* noop - per-char config in renderEquipm
 function renderEquipmentValues() {
     const section = document.getElementById('horae-rpg-eq-values-section');
     if (!section) return;
+    _autoApplyEquipmentTemplatesByRace({ persist: true });
     const eqValues = _getEqValues();
     const cfgMap = _getEqConfigMap();
     const lockBtn = document.getElementById('horae-rpg-eq-lock');
@@ -7133,13 +7368,21 @@ function renderEquipmentValues() {
         const charCfg = _getCharEqConfig(owner);
         const ownerSlots = eqValues[owner] || {};
         const deletedSlots = new Set(charCfg._deletedSlots || []);
+        const activeSlots = _getActiveEqSlots(charCfg);
+        const activeSlotNames = new Set(activeSlots.map(s => s.name));
+        const activeForm = _getActiveEqForm(charCfg);
+        const formSelectHtml = charCfg.forms?.length > 1 ? `
+            <select class="horae-rpg-eq-form-select" data-owner="${escapeHtml(owner)}" title="${t('ui.equipmentFormHint')}">
+                ${charCfg.forms.map(f => `<option value="${escapeHtml(f.id)}"${f.id === charCfg.currentForm ? ' selected' : ''}>${escapeHtml(f.name)}</option>`).join('')}
+            </select>` : (activeForm ? `<span class="horae-rpg-eq-form-badge">${escapeHtml(activeForm.name)}</span>` : '');
         let hasItems = false;
         let itemsHtml = '';
-        for (const slot of charCfg.slots) {
+        for (const slot of activeSlots) {
             if (deletedSlots.has(slot.name)) continue;
             const items = ownerSlots[slot.name] || [];
             if (items.length > 0) hasItems = true;
-            itemsHtml += `<div class="horae-rpg-eq-slot-group"><span class="horae-rpg-eq-slot-label">${escapeHtml(slot.name)} (${items.length}/${slot.maxCount ?? 1})</span>`;
+            const slotDesc = slot.desc ? `<span class="horae-rpg-eq-slot-desc" title="${escapeHtml(slot.desc)}">${escapeHtml(slot.desc)}</span>` : '';
+            itemsHtml += `<div class="horae-rpg-eq-slot-group"><span class="horae-rpg-eq-slot-label">${escapeHtml(slot.name)} (${items.length}/${slot.maxCount ?? 1})${slotDesc}</span>`;
             if (items.length > 0) {
                 for (const item of items) {
                     const attrStr = Object.entries(item.attrs || {}).map(([k, v]) => `<span class="horae-rpg-eq-attr">${escapeHtml(k)} ${v >= 0 ? '+' : ''}${v}</span>`).join(' ');
@@ -7159,9 +7402,38 @@ function renderEquipmentValues() {
             }
             itemsHtml += '</div>';
         }
+        const inactiveEntries = [];
+        for (const [slotName, items] of Object.entries(ownerSlots)) {
+            if (!items?.length || activeSlotNames.has(slotName) || deletedSlots.has(slotName)) continue;
+            for (const item of items) inactiveEntries.push({ slotName, item });
+        }
+        if (inactiveEntries.length) {
+            hasItems = true;
+            itemsHtml += `<div class="horae-rpg-eq-inactive-group">
+                <div class="horae-rpg-eq-inactive-title"><i class="fa-solid fa-triangle-exclamation"></i> ${t('ui.equipmentInactiveTitle')}</div>`;
+            for (const { slotName, item } of inactiveEntries) {
+                const meta = item._itemMeta || {};
+                const attrStr = Object.entries(item.attrs || {}).map(([k, v]) => `<span class="horae-rpg-eq-attr">${escapeHtml(k)} ${v >= 0 ? '+' : ''}${v}</span>`).join(' ');
+                const descHtml = meta.description ? `<div class="horae-rpg-eq-item-desc">${escapeHtml(meta.description)}</div>` : '';
+                const title = t('ui.equipmentInactiveReason', { form: activeForm?.name || t('ui.defaultForm') });
+                itemsHtml += `<div class="horae-rpg-eq-item horae-rpg-eq-item-inactive" title="${escapeHtml(title)}">
+                    <div class="horae-rpg-eq-item-header">
+                        <span class="horae-rpg-eq-inactive-badge"><i class="fa-solid fa-triangle-exclamation"></i> ${t('ui.inactive')}</span>
+                        ${meta.icon ? `<span class="horae-rpg-eq-item-icon">${meta.icon}</span>` : ''}
+                        <span class="horae-rpg-eq-item-name">${escapeHtml(item.name)}</span> ${attrStr}
+                        <span class="horae-rpg-eq-item-slot">${escapeHtml(slotName)}</span>
+                        <button class="horae-rpg-eq-item-del" data-owner="${escapeHtml(owner)}" data-slot="${escapeHtml(slotName)}" data-item="${escapeHtml(item.name)}" title="${t('tooltip.unequipReturn')}"><i class="fa-solid fa-arrow-right-from-bracket"></i></button>
+                    </div>
+                    ${descHtml}
+                    <div class="horae-rpg-eq-inactive-reason">${escapeHtml(title)}</div>
+                </div>`;
+            }
+            itemsHtml += '</div>';
+        }
         html += `<details class="horae-rpg-char-detail"${hasItems ? ' open' : ''}>
             <summary class="horae-rpg-char-summary">
                 <span class="horae-rpg-char-detail-name">${t('ui.equipLabel', { owner: escapeHtml(owner) })}</span>
+                ${formSelectHtml}
                 <span style="flex:1;"></span>
                 <button class="horae-rpg-btn-sm horae-rpg-eq-char-tpl" data-owner="${escapeHtml(owner)}" title="${t('tooltip.loadTemplate')}"><i class="fa-solid fa-shapes"></i></button>
                 <button class="horae-rpg-btn-sm horae-rpg-eq-char-add-slot" data-owner="${escapeHtml(owner)}" title="${t('tooltip.addSlot')}"><i class="fa-solid fa-plus"></i></button>
@@ -7248,15 +7520,16 @@ function _bindEquipmentEvents() {
     $(container).off('click.eqchartpl').on('click.eqchartpl', '.horae-rpg-eq-char-tpl', function (e) {
         e.stopPropagation();
         const owner = this.dataset.owner;
-        const tpls = settings.equipmentTemplates || [];
+        const tpls = (settings.equipmentTemplates || []).map(_normalizeEquipTemplate).filter(Boolean);
         if (!tpls.length) { showToast(t('toast.noTemplates'), 'warning'); return; }
         const modal = document.createElement('div');
         modal.className = 'horae-modal';
         let listHtml = tpls.map((tpl, i) => {
-            const slotsStr = tpl.slots.map(s => s.name).join('、');
+            const formStr = tpl.forms?.length > 1 ? tpl.forms.map(f => `${f.name}:${f.slots.map(s => s.name).join('、')}`).join(' / ') : tpl.slots.map(s => s.name).join('、');
+            const partsStr = tpl.parts?.length ? `<div class="horae-rpg-tpl-parts">${escapeHtml(tpl.parts.join(' + '))}</div>` : '';
             return `<div class="horae-rpg-tpl-item" data-idx="${i}" style="cursor:pointer;">
                 <div class="horae-rpg-tpl-name">${escapeHtml(tpl.name)}</div>
-                <div class="horae-rpg-tpl-slots">${escapeHtml(slotsStr)}</div>
+                <div class="horae-rpg-tpl-slots">${escapeHtml(formStr)}${partsStr}</div>
             </div>`;
         }).join('');
         modal.innerHTML = `
@@ -7283,7 +7556,10 @@ function _bindEquipmentEvents() {
             if (!name?.trim()) return;
             settings.equipmentTemplates.push({
                 name: name.trim(),
-                slots: JSON.parse(JSON.stringify(charCfg.slots.map(s => ({ name: s.name, maxCount: s.maxCount ?? 1 })))),
+                aliases: [name.trim()],
+                parts: ['manual'],
+                slots: JSON.parse(JSON.stringify(_getActiveEqSlots(charCfg).map(s => ({ name: s.name, maxCount: s.maxCount ?? 1, ...(s.desc ? { desc: s.desc } : {}) })))),
+                forms: JSON.parse(JSON.stringify(charCfg.forms?.length ? charCfg.forms : [{ id: 'default', name: t('ui.defaultForm'), slots: _getActiveEqSlots(charCfg) }])),
             });
             saveSettingsDebounced();
             modal.remove();
@@ -7295,9 +7571,12 @@ function _bindEquipmentEvents() {
                 const tpl = tpls[idx];
                 if (!tpl) return;
                 const charCfg = _getCharEqConfig(owner);
-                charCfg.slots = JSON.parse(JSON.stringify(tpl.slots));
+                charCfg.forms = JSON.parse(JSON.stringify(tpl.forms?.length ? tpl.forms : [{ id: 'default', name: t('ui.defaultForm'), slots: tpl.slots }]));
+                charCfg.currentForm = charCfg.forms[0]?.id || 'default';
+                _applyEqForm(charCfg, charCfg.currentForm);
                 charCfg._deletedSlots = [];
                 charCfg._template = tpl.name;
+                charCfg._manualLocked = true;
                 _saveEqData();
                 renderEquipmentValues();
                 _bindEquipmentEvents();
@@ -7320,7 +7599,11 @@ function _bindEquipmentEvents() {
         const maxCount = Math.max(1, parseInt(maxStr) || 1);
         const charCfg = _getCharEqConfig(owner);
         if (charCfg.slots.some(s => s.name === name.trim())) { showToast(t('toast.slotExists'), 'warning'); return; }
-        charCfg.slots.push({ name: name.trim(), maxCount });
+        const newSlot = { name: name.trim(), maxCount };
+        const activeForm = _getActiveEqForm(charCfg);
+        if (activeForm) activeForm.slots.push(newSlot);
+        charCfg.slots.push(newSlot);
+        charCfg._manualLocked = true;
         if (charCfg._deletedSlots) charCfg._deletedSlots = charCfg._deletedSlots.filter(n => n !== name.trim());
         _saveEqData();
         renderEquipmentValues();
@@ -7343,6 +7626,9 @@ function _bindEquipmentEvents() {
         if (idx < 0) { showToast(t('toast.itemNotFound', { name: name.trim() }), 'warning'); return; }
         if (!confirm(t('confirm.deleteTable'))) return;
         const deleted = charCfg.slots.splice(idx, 1)[0];
+        const activeForm = _getActiveEqForm(charCfg);
+        if (activeForm) activeForm.slots = activeForm.slots.filter(s => s.name !== deleted.name);
+        charCfg._manualLocked = true;
         if (!charCfg._deletedSlots) charCfg._deletedSlots = [];
         charCfg._deletedSlots.push(deleted.name);
         const eqValues = _getEqValues();
@@ -7356,6 +7642,25 @@ function _bindEquipmentEvents() {
         horaeManager.init(getContext(), settings);
         _refreshSystemPromptDisplay();
         updateTokenCounter();
+    });
+
+    // 切换角色当前形态。装备不会自动卸下，不兼容格位会显示为未激活。
+    $(container).off('change.eqform').on('change.eqform', '.horae-rpg-eq-form-select', function (e) {
+        e.stopPropagation();
+        const owner = this.dataset.owner;
+        const charCfg = _getCharEqConfig(owner);
+        _applyEqForm(charCfg, this.value);
+        charCfg._manualLocked = true;
+        _saveEqData();
+        renderEquipmentValues();
+        _bindEquipmentEvents();
+        horaeManager.init(getContext(), settings);
+        _refreshSystemPromptDisplay();
+        updateTokenCounter();
+        showToast(t('toast.equipmentFormChanged', { owner, form: _getActiveEqForm(charCfg)?.name || this.value }), 'success');
+    });
+    $(container).off('click.eqform').on('click.eqform', '.horae-rpg-eq-form-select', function (e) {
+        e.stopPropagation();
     });
 
     // 锁定/解锁
@@ -7452,11 +7757,14 @@ function _openEquipTemplateManageModal() {
     const modal = document.createElement('div');
     modal.className = 'horae-modal';
     function _render() {
-        const tpls = settings.equipmentTemplates || [];
+        const tpls = (settings.equipmentTemplates || []).map(_normalizeEquipTemplate).filter(Boolean);
         let listHtml = tpls.map((tpl, i) => {
-            const slotsStr = tpl.slots.map(s => s.name).join('、');
+            const slotsStr = tpl.forms?.length > 1
+                ? tpl.forms.map(f => `${f.name}:${f.slots.map(s => s.name).join('、')}`).join(' / ')
+                : tpl.slots.map(s => s.name).join('、');
+            const partsStr = tpl.parts?.length ? `<div class="horae-rpg-tpl-parts">${escapeHtml(tpl.parts.join(' + '))}</div>` : '';
             return `<div class="horae-rpg-tpl-item"><div class="horae-rpg-tpl-name">${escapeHtml(tpl.name)}</div>
-                <div class="horae-rpg-tpl-slots">${escapeHtml(slotsStr)}</div>
+                <div class="horae-rpg-tpl-slots">${escapeHtml(slotsStr)}${partsStr}</div>
                 <button class="horae-rpg-btn-sm horae-rpg-tpl-del" data-idx="${i}" title="${t('common.delete')}"><i class="fa-solid fa-trash"></i></button>
             </div>`;
         }).join('');
@@ -8064,6 +8372,8 @@ function _matchPresentChars(present, rpg) {
     const userName = getContext().name1 || '';
     const allRpgNames = new Set([
         ...Object.keys(rpg.bars || {}), ...Object.keys(rpg.status || {}),
+        ...Object.keys(rpg.skills || {}), ...Object.keys(rpg.attributes || {}),
+        ...Object.keys(rpg.reputation || {}), ...Object.keys(rpg.equipment || {}),
         ...Object.keys(rpg.levels || {}), ...Object.keys(rpg.xp || {}),
         ...Object.keys(rpg.currency || {}),
     ]);
@@ -8188,7 +8498,7 @@ function _buildRpgSnapshotMap(chat) {
             }
             for (const c of (changes.currency || [])) {
                 const o = resolve(c.owner);
-                if (!validDenoms.has(c.name)) continue;
+                if (validDenoms.size > 0 && !validDenoms.has(c.name)) continue;
                 if (!acc.currency[o]) acc.currency[o] = {};
                 if (c.isDelta) {
                     acc.currency[o][c.name] = (acc.currency[o][c.name] || 0) + c.value;
@@ -8946,7 +9256,7 @@ function applyPanelWidth() {
 /** 内置预设主题 */
 const BUILTIN_THEMES = {
     'sakura': {
-        name: '樱花粉',
+        nameKey: 'themes.builtin.sakura',
         variables: {
             '--horae-primary': '#ec4899', '--horae-primary-light': '#f472b6', '--horae-primary-dark': '#be185d',
             '--horae-accent': '#fb923c', '--horae-success': '#34d399', '--horae-warning': '#fbbf24',
@@ -8957,7 +9267,7 @@ const BUILTIN_THEMES = {
         }
     },
     'forest': {
-        name: '森林绿',
+        nameKey: 'themes.builtin.forest',
         variables: {
             '--horae-primary': '#059669', '--horae-primary-light': '#34d399', '--horae-primary-dark': '#047857',
             '--horae-accent': '#fbbf24', '--horae-success': '#10b981', '--horae-warning': '#f59e0b',
@@ -8968,7 +9278,7 @@ const BUILTIN_THEMES = {
         }
     },
     'ocean': {
-        name: '海洋蓝',
+        nameKey: 'themes.builtin.ocean',
         variables: {
             '--horae-primary': '#3b82f6', '--horae-primary-light': '#60a5fa', '--horae-primary-dark': '#1d4ed8',
             '--horae-accent': '#f59e0b', '--horae-success': '#10b981', '--horae-warning': '#f59e0b',
@@ -9067,7 +9377,7 @@ function applyCustomCSS() {
 /** 导出当前美化为JSON文件 */
 function exportTheme() {
     const theme = {
-        name: '我的Horae美化',
+        name: t('themes.defaultExportName'),
         author: '',
         version: '1.0',
         variables: {},
@@ -9138,7 +9448,7 @@ function refreshThemeSelector() {
     for (const [key, theme] of Object.entries(BUILTIN_THEMES)) {
         const opt = document.createElement('option');
         opt.value = key;
-        opt.textContent = `🎨 ${theme.name}`;
+        opt.textContent = `🎨 ${t(theme.nameKey)}`;
         sel.appendChild(opt);
     }
     // 用户导入的主题
@@ -11281,7 +11591,7 @@ function initSettingsEvents() {
     $('#horae-btn-merge-locations').on('click', openLocationMergeModal);
 
     // RPG 属性条配置
-    $(document).on('input', '.horae-rpg-config-key', function () {
+    $(document).on('input', '.horae-rpg-config-key:not([data-type="attr"])', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgBarConfig?.[i]) {
             const val = this.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
@@ -11292,10 +11602,45 @@ function initSettingsEvents() {
             updateTokenCounter();
         }
     });
-    $(document).on('input', '.horae-rpg-config-name', function () {
+    $(document).on('input', '.horae-rpg-config-name:not([data-type="attr"])', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgBarConfig?.[i]) {
             settings.rpgBarConfig[i].name = this.value.trim() || settings.rpgBarConfig[i].key.toUpperCase();
+            saveSettings();
+            horaeManager.init(getContext(), settings);
+            _refreshSystemPromptDisplay();
+            updateTokenCounter();
+        }
+    });
+    $(document).on('input', '.horae-rpg-config-desc', function () {
+        const i = parseInt(this.dataset.idx);
+        if (settings.rpgBarConfig?.[i]) {
+            settings.rpgBarConfig[i].desc = this.value.trim();
+            saveSettings();
+            horaeManager.init(getContext(), settings);
+            _refreshSystemPromptDisplay();
+            updateTokenCounter();
+        }
+    });
+    $(document).on('input', '.horae-rpg-config-min, .horae-rpg-config-max, .horae-rpg-config-default-max', function () {
+        const i = parseInt(this.dataset.idx);
+        const bar = settings.rpgBarConfig?.[i];
+        if (!bar) return;
+        const n = parseInt(this.value, 10);
+        if (!Number.isFinite(n)) return;
+        if (this.classList.contains('horae-rpg-config-min')) bar.min = n;
+        if (this.classList.contains('horae-rpg-config-max')) bar.max = n;
+        if (this.classList.contains('horae-rpg-config-default-max')) bar.defaultMax = n;
+        _normalizeRpgBarConfigInPlace();
+        saveSettings();
+        horaeManager.init(getContext(), settings);
+        _refreshSystemPromptDisplay();
+        updateTokenCounter();
+    });
+    $(document).on('change', '.horae-rpg-config-required-check', function () {
+        const i = parseInt(this.dataset.idx);
+        if (settings.rpgBarConfig?.[i]) {
+            settings.rpgBarConfig[i].required = this.checked;
             saveSettings();
             horaeManager.init(getContext(), settings);
             _refreshSystemPromptDisplay();
@@ -11323,7 +11668,7 @@ function initSettingsEvents() {
     // 属性条：恢复默认
     $('#horae-rpg-bar-reset').on('click', () => {
         if (!confirm(t('confirm.restoreDefaultBars'))) return;
-        settings.rpgBarConfig = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rpgBarConfig));
+        settings.rpgBarConfig = _getDefaultRpgBarConfig();
         saveSettings(); renderBarConfig();
         horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
         showToast(t('toast.rpgBarsRestored'), 'success');
@@ -11382,6 +11727,7 @@ function initSettingsEvents() {
                 const arr = JSON.parse(reader.result);
                 if (!Array.isArray(arr) || !arr.every(b => b.key && b.name)) throw new Error('invalid');
                 settings.rpgBarConfig = arr;
+                _normalizeRpgBarConfigInPlace();
                 saveSettings(); renderBarConfig();
                 horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
                 showToast(t('toast.rpgBarsImported', { n: arr.length }), 'success');
@@ -11429,7 +11775,7 @@ function initSettingsEvents() {
         const existing = new Set(settings.rpgBarConfig.map(b => b.key));
         let newKey = 'bar1';
         for (let n = 1; existing.has(newKey); n++) newKey = `bar${n}`;
-        settings.rpgBarConfig.push({ key: newKey, name: newKey.toUpperCase(), color: '#a78bfa' });
+        settings.rpgBarConfig.push({ key: newKey, name: newKey.toUpperCase(), color: '#a78bfa', min: 0, max: 100, defaultMax: 100, required: true, desc: '' });
         saveSettings();
         renderBarConfig();
         horaeManager.init(getContext(), settings);
@@ -11844,8 +12190,6 @@ function initSettingsEvents() {
         'rpgBarsUserOnly', 'rpgSkillsUserOnly', 'rpgAttrsUserOnly', 'rpgReputationUserOnly',
         'rpgEquipmentUserOnly', 'rpgLevelUserOnly', 'rpgCurrencyUserOnly', 'rpgUserOnly',
         'rpgBarConfig', 'rpgAttributeConfig', 'rpgAttrViewMode', 'equipmentTemplates',
-        'vectorRecallPresets', 'vectorRecallPresetSelected',
-        ...VECTOR_RECALL_PRESET_FIELDS,
         ..._PRESET_PROMPT_KEYS,
     ];
 
@@ -11888,8 +12232,11 @@ function initSettingsEvents() {
                 for (const k of keys) {
                     settings[k] = JSON.parse(JSON.stringify(imported[k]));
                 }
+                _normalizeAutoSummarySettingsInPlace(imported);
                 _normalizePromptSettingsInPlace();
                 _normalizeVectorRecallPresetsInPlace();
+                _ensureLocalizedRpgDefaults();
+                _normalizeRpgSettingsInPlace();
                 await ensurePromptDefaults(detectEffectiveAiLang(settings));
                 saveSettings();
                 syncSettingsToUI();
@@ -11912,6 +12259,8 @@ function initSettingsEvents() {
         for (const k of _SETTINGS_EXPORT_KEYS) {
             settings[k] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS[k]));
         }
+        _ensureLocalizedRpgDefaults({ force: true });
+        _normalizeRpgSettingsInPlace();
         await ensurePromptDefaults(detectEffectiveAiLang(settings));
         saveSettings();
         syncSettingsToUI();
@@ -11943,6 +12292,9 @@ function initSettingsEvents() {
     $('#horae-items-filter').on('change', updateItemsDisplay);
     $('#horae-items-holder-filter').on('change', updateItemsDisplay);
 
+    $('#horae-btn-items-multiselect').on('click', () => {
+        itemsMultiSelectMode ? exitMultiSelectMode() : enterMultiSelectMode();
+    });
     $('#horae-btn-items-select-all').on('click', selectAllItems);
     $('#horae-btn-items-delete').on('click', deleteSelectedItems);
     $('#horae-btn-items-cancel-select').on('click', exitMultiSelectMode);
@@ -12153,13 +12505,24 @@ function initSettingsEvents() {
         saveSettings();
     });
     $('#horae-setting-auto-summary-mode').on('change', function () {
-        settings.autoSummaryBufferMode = this.value;
+        settings.autoSummaryBufferMode = this.value === 'tokens' ? 'tokens' : 'messages';
+        _syncAutoSummaryLegacyBufferLimit();
+        _syncAutoSummaryTriggerLimitInput();
         saveSettings();
         updateAutoSummaryHint();
     });
+    $('#horae-setting-auto-summary-source').on('change', function () {
+        settings.autoSummarySourceMode = this.value === 'events' ? 'events' : 'fulltext';
+        saveSettings();
+    });
     $('#horae-setting-auto-summary-limit').on('change', function () {
-        settings.autoSummaryBufferLimit = Math.max(5, parseInt(this.value) || 20);
-        this.value = settings.autoSummaryBufferLimit;
+        if (settings.autoSummaryBufferMode === 'tokens') {
+            settings.autoSummaryBufferTokenLimit = Math.max(1000, parseInt(this.value, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+        } else {
+            settings.autoSummaryBufferMsgLimit = Math.max(5, parseInt(this.value, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+        }
+        _syncAutoSummaryLegacyBufferLimit();
+        _syncAutoSummaryTriggerLimitInput();
         saveSettings();
     });
     $('#horae-setting-auto-summary-resummary-threshold').on('change', function () {
@@ -12887,7 +13250,10 @@ function syncSettingsToUI() {
     $('#horae-auto-summary-options').toggle(!!settings.autoSummaryEnabled);
     $('#horae-setting-auto-summary-keep').val(settings.autoSummaryKeepRecent || 10);
     $('#horae-setting-auto-summary-mode').val(settings.autoSummaryBufferMode || 'messages');
-    $('#horae-setting-auto-summary-limit').val(settings.autoSummaryBufferLimit || 20);
+    $('#horae-setting-auto-summary-source').val(_getAutoSummarySourceMode());
+    _syncAutoSummaryLegacyBufferLimit();
+    _syncAutoSummaryTriggerLimitInput();
+    updateAutoSummaryHint();
     {
         const raw = parseInt(settings.autoSummaryResummaryThreshold, 10);
         const thresholdVal = Number.isFinite(raw) ? raw : 10;
@@ -13499,7 +13865,7 @@ function _splitMsgIndicesByLimits(chat, indices, maxMsgs, maxTokens) {
 }
 
 function _splitTextsByLimits(texts, maxMsgs, maxTokens) {
-    const list = (texts || []).filter(t => typeof t === 'string' && t.trim());
+    const list = (texts || []).filter(text => typeof text === 'string' && text.trim());
     if (!list.length) return [];
     const groups = [];
     let current = [];
@@ -14757,8 +15123,8 @@ async function checkAutoSummary() {
         if (!chat?.length) return;
 
         const keepRecent = Math.max(0, parseInt(settings.autoSummaryKeepRecent, 10) || 10);
-        const bufferLimit = Math.max(1, parseInt(settings.autoSummaryBufferLimit, 10) || 20);
         const bufferMode = settings.autoSummaryBufferMode || 'messages';
+        const bufferLimit = _getAutoSummaryActiveBufferLimit();
 
         const keepWindow = _resolveAutoSummaryKeepWindow(chat, keepRecent);
         const cutoff = Math.max(0, Math.min(keepWindow.keepStart, chat.length));
@@ -14914,11 +15280,16 @@ async function checkAutoSummary() {
 
         const eventText = bufferEvents.map(e => `[${e.level}] ${e.date}${e.time ? ' ' + e.time : ''}: ${e.summary}`).join('\n');
         const autoSumTemplate = settings.customAutoSummaryPrompt || getDefaultAutoSummaryPrompt();
-        const prompt = autoSumTemplate
+        const includeFullText = _getAutoSummarySourceMode() === 'fulltext';
+        const hasFullTextPlaceholder = /\{\{fulltext\}\}/i.test(autoSumTemplate);
+        let prompt = autoSumTemplate
             .replace(/\{\{events\}\}/gi, eventText)
-            .replace(/\{\{fulltext\}\}/gi, sourceText)
+            .replace(/\{\{fulltext\}\}/gi, includeFullText ? sourceText : '')
             .replace(/\{\{count\}\}/gi, String(bufferEvents.length))
             .replace(/\{\{user\}\}/gi, userName);
+        if (includeFullText && sourceText && !hasFullTextPlaceholder) {
+            prompt += `\n\n【全文对话记录】：\n${sourceText}`;
+        }
 
         const response = await generateForSummary(prompt);
         if (!response?.trim()) {
@@ -15047,6 +15418,38 @@ function parseCompressPrompt(template, mode) {
         }
     }
     return template;
+}
+
+function _getAutoSummarySourceMode() {
+    return settings.autoSummarySourceMode === 'events' ? 'events' : 'fulltext';
+}
+
+function _getAutoSummaryActiveBufferLimit() {
+    const mode = settings.autoSummaryBufferMode === 'tokens' ? 'tokens' : 'messages';
+    if (mode === 'tokens') {
+        return Math.max(1000, parseInt(settings.autoSummaryBufferTokenLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+    }
+    return Math.max(5, parseInt(settings.autoSummaryBufferMsgLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+}
+
+function _syncAutoSummaryLegacyBufferLimit() {
+    settings.autoSummaryBufferLimit = _getAutoSummaryActiveBufferLimit();
+}
+
+function _syncAutoSummaryTriggerLimitInput() {
+    const input = document.getElementById('horae-setting-auto-summary-limit');
+    if (!input) return;
+    const mode = settings.autoSummaryBufferMode === 'tokens' ? 'tokens' : 'messages';
+    input.value = _getAutoSummaryActiveBufferLimit();
+    if (mode === 'tokens') {
+        input.min = '1000';
+        input.max = '1000000';
+        input.step = '1000';
+    } else {
+        input.min = '5';
+        input.max = '99999';
+        input.step = '1';
+    }
 }
 
 /** 根据缓冲模式动态更新缓冲上限的说明文案 */
@@ -17206,8 +17609,8 @@ function _splitTimelineSection(promptText) {
 
         let end = lines.length;
         for (let j = i + 1; j < lines.length; j++) {
-            const t = lines[j].trim();
-            if (t && sectionHeaderRe.test(t)) {
+            const lineText = lines[j].trim();
+            if (lineText && sectionHeaderRe.test(lineText)) {
                 end = j;
                 break;
             }
@@ -17346,6 +17749,9 @@ async function onPromptReady(eventData) {
                 console.log('[Horae] 检测到swipe/regenerate，跳过末尾消息的旧记忆');
             }
         }
+
+        const eqAutoApplied = _autoApplyEquipmentTemplatesByRace({ persist: false });
+        if (eqAutoApplied && getContext()?.saveChat) await getContext().saveChat();
 
         const rawDataPrompt = horaeManager.generateCompactPrompt(skipLast);
         const timelineMode = settings.timelineInjectionMode === 'separate' ? 'separate' : 'inline';
@@ -17692,24 +18098,28 @@ function onSwipePanel(messageId) {
 
 function _getTutorialSteps() {
     return [
-        { title: t('tutorial.step1Title'), content: t('tutorial.step1Content'), target: null, action: null },
-        { title: t('tutorial.step2Title'), content: t('tutorial.step2Content'), target: '#horae-btn-ai-scan', action: null },
+        { title: t('tutorial.step1Title'), content: t('tutorial.step1Content'), tab: 'status', target: null, action: null },
+        { title: t('tutorial.stepStatusTitle'), content: t('tutorial.stepStatusContent'), tab: 'status', target: '#horae-tab-status .horae-state-section', action: null },
+        { title: t('tutorial.stepTimelineTitle'), content: t('tutorial.stepTimelineContent'), tab: 'timeline', target: '.horae-timeline-header', action: null },
+        { title: t('tutorial.stepCharactersTitle'), content: t('tutorial.stepCharactersContent'), tab: 'characters', target: '#horae-tab-characters .horae-subsection', action: null },
+        { title: t('tutorial.stepItemsTitle'), content: t('tutorial.stepItemsContent'), tab: 'items', target: '#horae-tab-items .horae-items-toolbar', action: null },
+        { title: t('tutorial.step2Title'), content: t('tutorial.step2Content'), tab: 'settings', target: '#horae-btn-ai-scan', action: null },
         {
-            title: t('tutorial.step3Title'), content: t('tutorial.step3Content'), target: '#horae-autosummary-collapse-toggle',
+            title: t('tutorial.step3Title'), content: t('tutorial.step3Content'), tab: 'settings', target: '#horae-autosummary-collapse-toggle',
             action: () => { const b = document.getElementById('horae-autosummary-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-autosummary-collapse-toggle')?.click(); }
         },
         {
-            title: t('tutorial.step4Title'), content: t('tutorial.step4Content'), target: '#horae-vector-collapse-toggle',
+            title: t('tutorial.step4Title'), content: t('tutorial.step4Content'), tab: 'settings', target: '#horae-vector-collapse-toggle',
             action: () => { const b = document.getElementById('horae-vector-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-vector-collapse-toggle')?.click(); }
         },
-        { title: t('tutorial.step5Title'), content: t('tutorial.step5Content'), target: '#horae-setting-context-depth', action: null },
-        { title: t('tutorial.step6Title'), content: t('tutorial.step6Content'), target: '#horae-setting-injection-position', action: null },
+        { title: t('tutorial.step5Title'), content: t('tutorial.step5Content'), tab: 'settings', target: '#horae-setting-context-depth', action: null },
+        { title: t('tutorial.step6Title'), content: t('tutorial.step6Content'), tab: 'settings', target: '#horae-setting-injection-position', action: null },
         {
-            title: t('tutorial.step7Title'), content: t('tutorial.step7Content'), target: '#horae-prompt-collapse-toggle',
+            title: t('tutorial.step7Title'), content: t('tutorial.step7Content'), tab: 'settings', target: '#horae-prompt-collapse-toggle',
             action: () => { const b = document.getElementById('horae-prompt-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-prompt-collapse-toggle')?.click(); }
         },
-        { title: t('tutorial.step8Title'), content: t('tutorial.step8Content'), target: '#horae-custom-tables-list', action: null },
-        { title: t('tutorial.step9Title'), content: t('tutorial.step9Content'), target: '#horae-setting-send-location-memory', action: null },
+        { title: t('tutorial.step8Title'), content: t('tutorial.step8Content'), tab: 'settings', target: '#horae-custom-tables-list', action: null },
+        { title: t('tutorial.step9Title'), content: t('tutorial.step9Content'), tab: 'settings', target: '#horae-setting-send-location-memory', action: null },
         { title: t('tutorial.step10Title'), content: t('tutorial.step10Content'), target: null, action: null }
     ];
 }
@@ -17722,16 +18132,22 @@ async function startTutorial() {
         const step = steps[i];
         const isLast = i === steps.length - 1;
 
-        // 首个需要面板的步骤时打开抽屉并切到设置 tab
-        if (step.target && !drawerOpened) {
+        // 首个需要面板的步骤时打开抽屉；每步按自己的 tab 切换页面。
+        if ((step.target || step.tab) && !drawerOpened) {
             const drawerIcon = $('#horae_drawer_icon');
             if (drawerIcon.hasClass('closedIcon')) {
                 drawerIcon.trigger('click');
                 await new Promise(r => setTimeout(r, 400));
             }
-            $(`.horae-tab[data-tab="settings"]`).trigger('click');
-            await new Promise(r => setTimeout(r, 200));
             drawerOpened = true;
+        }
+
+        if (step.tab) {
+            const tabBtn = $(`.horae-tab[data-tab="${step.tab}"]`);
+            if (tabBtn.length && tabBtn.is(':visible')) {
+                tabBtn.trigger('click');
+                await new Promise(r => setTimeout(r, 200));
+            }
         }
 
         if (step.action) step.action();
@@ -17787,7 +18203,9 @@ function showTutorialStep(step, current, total, isLast) {
         if (insertAfterEl && insertAfterEl.parentNode) {
             insertAfterEl.parentNode.insertBefore(card, insertAfterEl.nextSibling);
         } else {
-            const container = document.getElementById('horae-tab-settings') || document.getElementById('horae_drawer_content');
+            const container = (step.tab && document.getElementById(`horae-tab-${step.tab}`))
+                || document.getElementById('horae-tab-settings')
+                || document.getElementById('horae_drawer_content');
             if (container) {
                 container.insertBefore(card, container.firstChild);
             } else {
@@ -17821,11 +18239,10 @@ jQuery(async () => {
 
     const pluginBasePath = `/scripts/extensions/${EXTENSION_FOLDER}`;
     await initI18n(pluginBasePath, settings);
+    _i18nReady = true;
     await initPromptDefaults(pluginBasePath, detectEffectiveAiLang(settings));
 
-    if (_isFirstTimeUser && !detectEffectiveAiLangIsZh(settings)) {
-        settings.rpgAttributeConfig = _getDefaultRpgAttrConfig();
-        settings.equipmentTemplates = _getDefaultEquipTemplates();
+    if (_ensureLocalizedRpgDefaults({ force: _isFirstTimeUser }) || _normalizeRpgSettingsInPlace()) {
         saveSettings();
     }
 

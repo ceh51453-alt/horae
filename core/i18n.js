@@ -175,6 +175,18 @@ function _pickFallback(lang) {
 }
 
 /**
+ * Translate using a specific loaded locale. Used for data that follows AI output language
+ * rather than the current UI language.
+ */
+export function tForLang(lang, key, vars) {
+    const target = _normalizeLang(lang) || _currentLang || DEFAULT_LANG;
+    let val = _resolve(_localeCache[target], key);
+    if (val === undefined) val = _resolve(_pickFallback(target), key);
+    if (val === undefined) return key;
+    return _interpolate(val, vars);
+}
+
+/**
  * 切换 UI 语言并重新加载翻译
  */
 export async function setLanguage(lang) {
@@ -208,6 +220,7 @@ export async function initI18n(basePath, settings) {
 
     _zhFallback = await _loadLocale('zh-CN') || {};
     _enFallback = await _loadLocale('en') || {};
+    await Promise.all(SUPPORTED_LANGS.map(lang => _loadLocale(lang)));
 
     const detected = _detectLanguage(settings);
 

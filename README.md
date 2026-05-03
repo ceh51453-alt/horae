@@ -1,4 +1,4 @@
-# Horae v1.12.5 - Memory Engine for SillyTavern
+# Horae v1.12.6 - Memory Engine for SillyTavern
 
 **English** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md)
 
@@ -84,7 +84,7 @@ window.Horae?.getEvents(10)      // → last 10 events
 window.Horae?.getSettings()
 
 // Version string
-window.Horae?.version            // → "1.12.5"
+window.Horae?.version            // → "1.12.6"
 ```
 
 Settings change events are broadcast via SillyTavern's `eventSource`:

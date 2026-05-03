@@ -1201,6 +1201,54 @@
     margin-left: auto;
 }
 
+.horae-setting-control-row {
+    width: 100%;
+}
+
+.horae-setting-control-row > span:first-child {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.horae-setting-control-row select {
+    margin-left: auto;
+    min-width: 150px;
+    max-width: 65%;
+}
+
+.horae-setting-input-unit {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.horae-setting-input-unit input[type="number"] {
+    width: 92px;
+    margin-left: 0;
+}
+
+.horae-setting-input-unit span {
+    font-size: 12px;
+    color: var(--horae-text-muted);
+}
+
+@media (max-width: 480px) {
+    .horae-setting-control-row {
+        gap: 6px;
+    }
+
+    .horae-setting-control-row select {
+        min-width: 132px;
+        max-width: 62%;
+    }
+
+    .horae-setting-input-unit input[type="number"] {
+        width: 86px;
+    }
+}
+
 .horae-setting-inline-controls {
     display: flex;
     align-items: center;
@@ -2487,6 +2535,38 @@
 .horae-setting-hint i {
     color: var(--horae-info);
     margin-right: 4px;
+}
+
+.horae-timeline-injection-hint {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.horae-timeline-injection-hint > i {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    margin-right: 0;
+}
+
+.horae-timeline-injection-hint-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.horae-timeline-injection-hint-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: 8px;
+    align-items: baseline;
+}
+
+.horae-timeline-injection-hint-row strong {
+    color: var(--horae-text);
+    font-weight: 600;
+    white-space: nowrap;
 }
 
 /* 空列表提示 */
@@ -4047,6 +4127,13 @@ body .horae-context-menu {
     opacity: 0.7;
 }
 
+#horae-tab-status .horae-state-section .horae-empty-hint {
+    text-align: left;
+    padding: 8px 0;
+    font-size: 13px;
+    opacity: 0.85;
+}
+
 /* 合并预览 */
 .horae-merge-preview {
     margin-top: 8px;
@@ -4359,6 +4446,11 @@ body .horae-context-menu {
     border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 .horae-rpg-eq-item:last-child { border-bottom: none; }
+.horae-rpg-eq-item-inactive {
+    border-left: 3px solid var(--horae-warning, #f59e0b);
+    padding-left: 8px;
+    background: color-mix(in srgb, var(--horae-warning, #f59e0b) 10%, transparent);
+}
 .horae-rpg-eq-item-header {
     display: flex;
     align-items: center;
@@ -4388,6 +4480,13 @@ body .horae-context-menu {
     padding: 1px 0 2px 0;
     line-height: 1.4;
 }
+.horae-rpg-eq-item-slot {
+    font-size: .75em;
+    color: var(--horae-text-muted, #94a3b8);
+    border: 1px solid var(--horae-border, rgba(255,255,255,0.08));
+    border-radius: 999px;
+    padding: 1px 6px;
+}
 .horae-rpg-eq-slot-group {
     padding: 3px 0 5px 0;
 }
@@ -4397,6 +4496,61 @@ body .horae-context-menu {
     opacity: .7;
     margin-bottom: 2px;
     display: block;
+}
+.horae-rpg-eq-slot-desc {
+    display: inline-block;
+    margin-left: 6px;
+    font-weight: 400;
+    color: var(--horae-text-muted, #94a3b8);
+    max-width: min(36em, 80%);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+.horae-rpg-eq-form-select {
+    max-width: 140px;
+    min-height: 24px;
+    font-size: 12px;
+    padding: 2px 6px;
+}
+.horae-rpg-eq-form-badge,
+.horae-rpg-eq-inactive-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: .75em;
+    line-height: 1.5;
+    border: 1px solid var(--horae-border, rgba(255,255,255,0.08));
+}
+.horae-rpg-eq-form-badge {
+    color: var(--horae-text-muted, #94a3b8);
+    background: var(--horae-bg-secondary, rgba(255,255,255,0.05));
+}
+.horae-rpg-eq-inactive-badge,
+.horae-rpg-eq-inactive-title {
+    color: var(--horae-warning, #f59e0b);
+}
+.horae-rpg-eq-inactive-badge {
+    border-color: color-mix(in srgb, var(--horae-warning, #f59e0b) 55%, transparent);
+    background: color-mix(in srgb, var(--horae-warning, #f59e0b) 14%, transparent);
+}
+.horae-rpg-eq-inactive-group {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed color-mix(in srgb, var(--horae-warning, #f59e0b) 45%, transparent);
+}
+.horae-rpg-eq-inactive-title {
+    font-size: .82em;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.horae-rpg-eq-inactive-reason {
+    color: var(--horae-warning, #f59e0b);
+    font-size: .78em;
+    line-height: 1.35;
 }
 /* 物品栏装备按钮 */
 .horae-item-equip-btn {
@@ -4876,6 +5030,11 @@ body .horae-context-menu {
     padding: 3px 0;
     border-bottom: 1px solid rgba(255,255,255,0.05);
 }
+.horae-rpg-card-eq-item-inactive {
+    border-left: 3px solid var(--horae-warning, #f59e0b);
+    padding-left: 7px;
+    background: color-mix(in srgb, var(--horae-warning, #f59e0b) 9%, transparent);
+}
 .horae-rpg-card-eq-slot {
     color: var(--horae-accent, #6366f1);
     font-weight: 600;
@@ -5140,6 +5299,7 @@ body .horae-context-menu {
     background: none;
     border: none;
     color: var(--horae-text-muted);
+    font-family: inherit;
     font-size: 11px;
     cursor: pointer;
     padding: 4px 8px;
@@ -5154,6 +5314,7 @@ body .horae-context-menu {
     background: var(--horae-primary);
     color: #fff;
     border: none;
+    font-family: inherit;
     padding: 5px 14px;
     border-radius: var(--horae-radius-sm);
     font-size: 12px;
@@ -5750,10 +5911,33 @@ body .horae-context-menu {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.horae-rpg-tpl-parts {
+    margin-top: 2px;
+    color: var(--horae-warning, #f59e0b);
+    font-size: 10px;
+}
 .horae-rpg-tpl-actions {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
+}
+
+.horae-rpg-bar-config-row .horae-rpg-config-min,
+.horae-rpg-bar-config-row .horae-rpg-config-max,
+.horae-rpg-bar-config-row .horae-rpg-config-default-max {
+    width: 56px;
+}
+.horae-rpg-bar-config-row .horae-rpg-config-desc {
+    flex: 1 1 180px;
+    min-width: 120px;
+}
+.horae-rpg-config-required {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--horae-text-muted, #94a3b8);
+    white-space: nowrap;
 }
 
 /* ── 移动端 RPG 配置行适配 ── */

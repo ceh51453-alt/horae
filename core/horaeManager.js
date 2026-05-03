@@ -920,7 +920,7 @@ class HoraeManager {
             // 声望（需开关开启）
             const sendRep = !!this.settings?.sendRpgReputation;
             const repConfig = rpg.reputationConfig || { categories: [] };
-            if (sendRep && repConfig.categories.length > 0 && Object.keys(rpg.reputation || {}).length > 0) {
+            if (sendRep && Object.keys(rpg.reputation || {}).length > 0) {
                 const validRepNames = new Set(repConfig.categories.map(c => c.name));
                 const deletedRepNames = new Set(repConfig._deletedCategories || []);
                 let hasRepData = false;
@@ -929,8 +929,14 @@ class HoraeManager {
                     if (filterRpg && !rpgAllowed.has(name)) continue;
                     const parts = [];
                     for (const [catName, data] of Object.entries(cats)) {
-                        if (!validRepNames.has(catName) || deletedRepNames.has(catName)) continue;
-                        parts.push(`${catName}:${data.value}`);
+                        if ((validRepNames.size > 0 && !validRepNames.has(catName)) || deletedRepNames.has(catName)) continue;
+                        const repValue = data && typeof data === 'object' ? data.value : data;
+                        const subItems = data && typeof data === 'object' ? data.subItems : null;
+                        const subText = Object.entries(subItems || {})
+                            .filter(([, v]) => v !== undefined && v !== null && v !== '')
+                            .map(([k, v]) => `${k}:${typeof v === 'number' && v > 0 ? '+' : ''}${v}`)
+                            .join(' / ');
+                        parts.push(`${catName}:${repValue}${subText ? `（${subText}）` : ''}`);
                     }
                     if (parts.length > 0) {
                         if (!hasRepData) { lines.push(`\n[${L('声望','Reputation','名声','명성','Репутация')}]`); hasRepData = true; }
@@ -1544,12 +1550,11 @@ class HoraeManager {
         // 解析 RPG 数据
         if (rpgMatches.length > 0) {
             result.rpg = { bars: {}, status: {}, skills: [], removedSkills: [], attributes: {}, reputation: {}, equipment: [], unequip: [], levels: {}, xp: {}, currency: [], baseChanges: [] };
-            for (const rm of rpgMatches) {
-                const rpgContent = rm[1].trim();
-                for (const rpgLine of rpgContent.split('\n')) {
-                    const trimmed = rpgLine.trim();
-                    if (trimmed) this._parseRpgLine(trimmed, result.rpg);
-                }
+            const rm = [...rpgMatches].reverse().find(m => String(m[1] || '').trim()) || rpgMatches[rpgMatches.length - 1];
+            const rpgContent = rm[1].trim();
+            for (const rpgLine of rpgContent.split('\n')) {
+                const trimmed = rpgLine.trim();
+                if (trimmed) this._parseRpgLine(trimmed, result.rpg);
             }
         }
 
@@ -2015,11 +2020,12 @@ class HoraeManager {
             if (!rpg.equipment) rpg.equipment = {};
             const _getOwnerSlots = (owner) => {
                 const pc = rpg.equipmentConfig.perChar[owner];
-                if (!pc || !Array.isArray(pc.slots)) return { valid: new Set(), deleted: new Set(), maxMap: {} };
+                if (!pc || !Array.isArray(pc.slots)) return { valid: new Set(), deleted: new Set(), maxMap: {}, locked: !!rpg.equipmentConfig.locked };
                 return {
                     valid: new Set(pc.slots.map(s => s.name)),
                     deleted: new Set(pc._deletedSlots || []),
                     maxMap: Object.fromEntries(pc.slots.map(s => [s.name, s.maxCount ?? 1])),
+                    locked: !!rpg.equipmentConfig.locked,
                 };
             };
             const _findAndTakeItem = (name) => {
@@ -2056,7 +2062,8 @@ class HoraeManager {
                 const slotName = eq.slot;
                 const owner = this._resolveRpgOwner(eq.owner);
                 if (this.settings?.rpgEquipmentUserOnly && owner !== _mUN) continue;
-                const { valid, deleted, maxMap } = _getOwnerSlots(owner);
+                const { valid, deleted, maxMap, locked } = _getOwnerSlots(owner);
+                if (locked && (valid.size === 0 || !valid.has(slotName) || deleted.has(slotName))) continue;
                 if (valid.size > 0 && (!valid.has(slotName) || deleted.has(slotName))) continue;
                 if (!rpg.equipment[owner]) rpg.equipment[owner] = {};
                 if (!rpg.equipment[owner][slotName]) rpg.equipment[owner][slotName] = [];
@@ -2189,6 +2196,9 @@ class HoraeManager {
         }
         const userAttrs = rpg.attributes || {};
         const oldReputation = rpg.reputation ? JSON.parse(JSON.stringify(rpg.reputation)) : {};
+        const oldLevels = rpg.levels ? JSON.parse(JSON.stringify(rpg.levels)) : {};
+        const oldXp = rpg.xp ? JSON.parse(JSON.stringify(rpg.xp)) : {};
+        const oldCurrency = rpg.currency ? JSON.parse(JSON.stringify(rpg.currency)) : {};
 
         // ── 只重置可重放的数据字段 ──
         rpg.bars = {};
@@ -2226,6 +2236,20 @@ class HoraeManager {
             if (rpg.skills[del.owner]) {
                 rpg.skills[del.owner] = rpg.skills[del.owner].filter(s => s.name !== del.name);
                 if (!rpg.skills[del.owner].length) delete rpg.skills[del.owner];
+            }
+        }
+
+        // ── 回填手动设置的等级/经验/货币；已有回放值优先，避免覆盖历史变化 ──
+        for (const [owner, val] of Object.entries(oldLevels)) {
+            if (rpg.levels[owner] === undefined) rpg.levels[owner] = val;
+        }
+        for (const [owner, val] of Object.entries(oldXp)) {
+            if (rpg.xp[owner] === undefined) rpg.xp[owner] = val;
+        }
+        for (const [owner, coins] of Object.entries(oldCurrency)) {
+            if (!rpg.currency[owner]) rpg.currency[owner] = {};
+            for (const [name, val] of Object.entries(coins || {})) {
+                if (rpg.currency[owner][name] === undefined) rpg.currency[owner][name] = val;
             }
         }
 
@@ -2302,6 +2326,9 @@ class HoraeManager {
         for (const [owner, vals] of Object.entries(rpgMeta.attributes || {})) {
             userAttrs[owner] = { ...vals };
         }
+        const userLevels = rpgMeta.levels || {};
+        const userXp = rpgMeta.xp || {};
+        const userCurrency = rpgMeta.currency || {};
 
         // 装备格位配置（优先从 _rpgConfigs 读取）
         const _eqCfg = _cfgs.equipmentConfig || rpgMeta.equipmentConfig || { locked: false, perChar: {} };
@@ -2442,6 +2469,19 @@ class HoraeManager {
                 if (!snapshot.skills[del.owner].length) delete snapshot.skills[del.owner];
             }
         }
+        // 回填手动设置的等级/经验/货币；已有回放值优先
+        for (const [owner, val] of Object.entries(userLevels)) {
+            if (snapshot.levels[owner] === undefined) snapshot.levels[owner] = val;
+        }
+        for (const [owner, val] of Object.entries(userXp)) {
+            if (snapshot.xp[owner] === undefined) snapshot.xp[owner] = val;
+        }
+        for (const [owner, coins] of Object.entries(userCurrency)) {
+            if (!snapshot.currency[owner]) snapshot.currency[owner] = {};
+            for (const [name, val] of Object.entries(coins || {})) {
+                if (snapshot.currency[owner][name] === undefined) snapshot.currency[owner][name] = val;
+            }
+        }
         // 声望：合入用户细项，_userEdited 的主数值优先于 AI 回放结果
         const repConfig = rpgMeta.reputationConfig || { categories: [], _deletedCategories: [] };
         const validRepNames = new Set((repConfig.categories || []).map(c => c.name));
@@ -2450,7 +2490,7 @@ class HoraeManager {
         for (const [owner, cats] of Object.entries(userRep)) {
             if (!snapshot.reputation[owner]) snapshot.reputation[owner] = {};
             for (const [catName, data] of Object.entries(cats)) {
-                if (deletedRepNames.has(catName) || !validRepNames.has(catName)) continue;
+                if (deletedRepNames.has(catName) || (validRepNames.size > 0 && !validRepNames.has(catName))) continue;
                 if (!snapshot.reputation[owner][catName]) {
                     snapshot.reputation[owner][catName] = { ...data };
                 } else {
@@ -2465,7 +2505,7 @@ class HoraeManager {
         // 移除快照中已删除的声望分类
         for (const [owner, cats] of Object.entries(snapshot.reputation)) {
             for (const catName of Object.keys(cats)) {
-                if (deletedRepNames.has(catName) || !validRepNames.has(catName)) {
+                if (deletedRepNames.has(catName) || (validRepNames.size > 0 && !validRepNames.has(catName))) {
                     delete cats[catName];
                 }
             }
@@ -3637,6 +3677,31 @@ class HoraeManager {
         const own = L('归属', 'owner', '所有者', '소유자', 'владелец');
         const commaSep = L('、', ', ', '、', ', ', ', ');
         const semiSep = L('；', '; ', '；', '; ', '; ');
+        const attrMeaning = (a) => a.desc ? `${a.key}(${a.name}: ${a.desc})` : `${a.key}(${a.name})`;
+        const barDefinition = (bar) => {
+            const meta = [];
+            if (bar.min !== undefined || bar.max !== undefined) meta.push(`${bar.min ?? 0}~${bar.max ?? 100}`);
+            if (bar.defaultMax !== undefined) meta.push(`${L('默认上限', 'default max', '既定最大値', '기본 최대치', 'макс. по умолчанию')}${bar.defaultMax}`);
+            if (bar.required === false) meta.push(L('可省略', 'optional', '省略可', '생략 가능', 'необязательно'));
+            if (bar.desc) meta.push(bar.desc);
+            return `${bar.key}(${bar.name}${meta.length ? `: ${meta.join(semiSep)}` : ''})`;
+        };
+        const equipSlotText = (slot) => slot.desc
+            ? `${slot.name}(×${slot.maxCount ?? 1}: ${slot.desc})`
+            : `${slot.name}(×${slot.maxCount ?? 1})`;
+        const repDefinition = (cat) => {
+            const meta = [];
+            meta.push(`${cat.min ?? -100}~${cat.max ?? 100}`);
+            if (cat.default !== undefined) meta.push(`${L('默认', 'default', '既定値', '기본값', 'по умолчанию')}${cat.default}`);
+            if (cat.subItems?.length) meta.push(`${L('细项', 'sub-items', 'サブ項目', '하위 항목', 'подэлементы')}:${cat.subItems.join(commaSep)}`);
+            return `  - ${cat.name}（${meta.join(semiSep)}）`;
+        };
+        const currencyRateText = (denoms) => {
+            if (!Array.isArray(denoms) || denoms.length < 2) return '';
+            const sorted = [...denoms].sort((a, b) => (parseInt(a.rate, 10) || 1) - (parseInt(b.rate, 10) || 1));
+            const base = parseInt(sorted[0]?.rate, 10) || 1;
+            return sorted.map(d => `${(parseInt(d.rate, 10) || 1) / base}${d.name}`).join(' = ');
+        };
         let p = L(
             `═══ 【RPG】 ═══\n你的回复末尾必须包含<horaerpg>标签。`,
             `═══ [RPG] ═══\nYour reply MUST include a <horaerpg> tag at the end.`,
@@ -3727,6 +3792,16 @@ class HoraeManager {
                 );
             }
             p += L(`规则：\n`, `Rules:\n`, `ルール：\n`, `규칙:\n`, `Правила:\n`);
+            if (barCfg.length > 0) {
+                const defs = barCfg.map(barDefinition).join(commaSep);
+                p += L(
+                    `  已注册属性条: ${defs}\n`,
+                    `  Registered status bars: ${defs}\n`,
+                    `  登録済みステータスバー: ${defs}\n`,
+                    `  등록된 스테이터스 바: ${defs}\n`,
+                    `  Зарегистрированные шкалы статуса: ${defs}\n`
+                );
+            }
             p += L(
                 `  - 战斗/受伤/施法/消耗 → 合理扣减；恢复/休息 → 合理回增\n`,
                 `  - Combat/injury/casting/consumption → reasonable deduction; recovery/rest → reasonable increase\n`,
@@ -3765,11 +3840,11 @@ class HoraeManager {
                 p += `  attr:${own}|${attrCfg.map(a => `${a.key}=value`).join('|')}\n`;
             }
             p += L(
-                `  数值范围0-100。属性含义：${attrCfg.map(a => `${a.key}(${a.name})`).join('、')}\n`,
-                `  Value range 0-100. Attribute meanings: ${attrCfg.map(a => `${a.key}(${a.name})`).join(', ')}\n`,
-                `  数値範囲0-100。属性の意味：${attrCfg.map(a => `${a.key}(${a.name})`).join('、')}\n`,
-                `  수치 범위 0-100. 속성 의미: ${attrCfg.map(a => `${a.key}(${a.name})`).join(', ')}\n`,
-                `  Диапазон значений 0-100. Значения атрибутов: ${attrCfg.map(a => `${a.key}(${a.name})`).join(', ')}\n`
+                `  数值范围0-100。属性含义：${attrCfg.map(attrMeaning).join('、')}\n`,
+                `  Value range 0-100. Attribute meanings: ${attrCfg.map(attrMeaning).join(', ')}\n`,
+                `  数値範囲0-100。属性の意味：${attrCfg.map(attrMeaning).join('、')}\n`,
+                `  수치 범위 0-100. 속성 의미: ${attrCfg.map(attrMeaning).join(', ')}\n`,
+                `  Диапазон значений 0-100. Значения атрибутов: ${attrCfg.map(attrMeaning).join(', ')}\n`
             );
         }
         if (sendSkills) {
@@ -3821,8 +3896,11 @@ class HoraeManager {
                     );
                     const userCfg = perChar[userName];
                     if (userCfg?.slots?.length) {
-                        const slotNames = userCfg.slots.map(s => `${s.name}(×${s.maxCount ?? 1})`).join(commaSep);
-                        p += L(`  格位: ${slotNames}\n`, `  Slots: ${slotNames}\n`, `  スロット: ${slotNames}\n`, `  슬롯: ${slotNames}\n`, `  Слоты: ${slotNames}\n`);
+                        const slotNames = userCfg.slots.map(equipSlotText).join(commaSep);
+                        const formText = userCfg.currentForm && userCfg.forms?.length
+                            ? ` ${L('当前形态', 'current form', '現在形態', '현재 형태', 'текущая форма')}:${(userCfg.forms.find(f => f.id === userCfg.currentForm)?.name || userCfg.currentForm)}`
+                            : '';
+                        p += L(`  格位${formText}: ${slotNames}\n`, `  Slots${formText}: ${slotNames}\n`, `  スロット${formText}: ${slotNames}\n`, `  슬롯${formText}: ${slotNames}\n`, `  Слоты${formText}: ${slotNames}\n`);
                     }
                 } else {
                     p += L(
@@ -3835,23 +3913,35 @@ class HoraeManager {
                     for (const [o, cfg] of Object.entries(perChar)) {
                         if (!cfg.slots?.length) continue;
                         if (present.size > 0 && !present.has(o)) continue;
-                        const slotNames = cfg.slots.map(s => `${s.name}(×${s.maxCount ?? 1})`).join(commaSep);
-                        p += L(`  ${o} 格位: ${slotNames}\n`, `  ${o} slots: ${slotNames}\n`, `  ${o} スロット: ${slotNames}\n`, `  ${o} 슬롯: ${slotNames}\n`, `  ${o} слоты: ${slotNames}\n`);
+                        const slotNames = cfg.slots.map(equipSlotText).join(commaSep);
+                        const formText = cfg.currentForm && cfg.forms?.length
+                            ? ` ${L('当前形态', 'current form', '現在形態', '현재 형태', 'текущая форма')}:${(cfg.forms.find(f => f.id === cfg.currentForm)?.name || cfg.currentForm)}`
+                            : '';
+                        p += L(`  ${o} 格位${formText}: ${slotNames}\n`, `  ${o} slots${formText}: ${slotNames}\n`, `  ${o} スロット${formText}: ${slotNames}\n`, `  ${o} 슬롯${formText}: ${slotNames}\n`, `  ${o} слоты${formText}: ${slotNames}\n`);
                     }
                 }
                 p += L(
-                    `  ⚠ 每个角色只能使用其已注册的格位。属性值为整数。\n  ⚠ 普通衣物非赋魔或特殊材料不应有高属性值。\n`,
-                    `  ⚠ Each character may only use their registered slots. Stat values must be integers.\n  ⚠ Normal clothing without enchantment or special materials should NOT have high stat values.\n`,
-                    `  ⚠ 各キャラクターは登録済みのスロットのみ使用可能。属性値は整数であること。\n  ⚠ エンチャントや特殊素材のない普通の衣服には高い属性値を付けないこと。\n`,
-                    `  ⚠ 각 캐릭터는 등록된 슬롯만 사용할 수 있습니다. 속성값은 정수여야 합니다.\n  ⚠ 마법 부여나 특수 재료가 없는 일반 의류에는 높은 속성값을 부여하지 마세요.\n`,
-                    `  ⚠ Каждый персонаж может использовать только свои зарегистрированные слоты. Значения характеристик — целые числа.\n  ⚠ Обычная одежда без зачарования или особых материалов НЕ должна иметь высоких значений характеристик.\n`
+                    `  ⚠ 每个角色只能使用其当前形态已注册的格位。属性值为整数。\n  ⚠ 形态切换时，不兼容装备视为未激活，不要自动卸下或写回物品栏。\n  ⚠ 普通衣物非赋魔或特殊材料不应有高属性值。\n`,
+                    `  ⚠ Each character may only use slots registered for the current form. Stat values must be integers.\n  ⚠ When form changes, incompatible equipment is inactive; do not auto-unequip or return it to inventory.\n  ⚠ Normal clothing without enchantment or special materials should NOT have high stat values.\n`,
+                    `  ⚠ 各キャラクターは現在形態の登録済みスロットのみ使用可能。属性値は整数であること。\n  ⚠ 形態変化時、非対応装備は未アクティブ扱い。自動で解除したりインベントリに戻さないこと。\n  ⚠ エンチャントや特殊素材のない普通の衣服には高い属性値を付けないこと。\n`,
+                    `  ⚠ 각 캐릭터는 현재 형태에 등록된 슬롯만 사용할 수 있습니다. 속성값은 정수여야 합니다.\n  ⚠ 형태 변경 시 호환되지 않는 장비는 비활성 상태입니다. 자동으로 해제하거나 인벤토리로 돌려보내지 마세요.\n  ⚠ 마법 부여나 특수 재료가 없는 일반 의류에는 높은 속성값을 부여하지 마세요.\n`,
+                    `  ⚠ Каждый персонаж может использовать только слоты текущей формы. Значения характеристик — целые числа.\n  ⚠ При смене формы несовместимое снаряжение неактивно; не снимайте его автоматически и не возвращайте в инвентарь.\n  ⚠ Обычная одежда без зачарования или особых материалов НЕ должна иметь высоких значений характеристик.\n`
                 );
+                if (eqCfg.locked) {
+                    p += L(
+                        `  ⚠ 装备格位已锁定：禁止创造新格位，未列出的格位会被忽略。\n`,
+                        `  ⚠ Equipment slots are locked: do NOT create new slots; unlisted slots will be ignored.\n`,
+                        `  ⚠ 装備スロットはロック中：新規スロット作成禁止。未記載スロットは無視されます。\n`,
+                        `  ⚠ 장비 슬롯이 잠겨 있습니다: 새 슬롯을 만들지 마세요. 목록에 없는 슬롯은 무시됩니다.\n`,
+                        `  ⚠ Слоты снаряжения заблокированы: не создавайте новые слоты; отсутствующие в списке будут проигнорированы.\n`
+                    );
+                }
             }
         }
         if (sendRep) {
             const repConfig = this._getRpgReputationConfig();
             if (repConfig.categories.length > 0) {
-                const catNames = repConfig.categories.map(c => c.name).join(commaSep);
+                const repDefs = repConfig.categories.map(repDefinition).join('\n');
                 p += L(
                     `\n【声望】仅声望变化时写，无变化可省略\n`,
                     `\n[Reputation] Write only when reputation changes; skip if unchanged\n`,
@@ -3877,11 +3967,11 @@ class HoraeManager {
                     );
                 }
                 p += L(
-                    `  已注册的声望分类: ${catNames}\n`,
-                    `  Registered reputation categories: ${catNames}\n`,
-                    `  登録済みの評判カテゴリ: ${catNames}\n`,
-                    `  등록된 평판 분류: ${catNames}\n`,
-                    `  Зарегистрированные категории репутации: ${catNames}\n`
+                    `  已注册的声望分类：\n${repDefs}\n`,
+                    `  Registered reputation categories:\n${repDefs}\n`,
+                    `  登録済みの評判カテゴリ：\n${repDefs}\n`,
+                    `  등록된 평판 분류:\n${repDefs}\n`,
+                    `  Зарегистрированные категории репутации:\n${repDefs}\n`
                 );
                 p += L(
                     `  ⚠ 禁止创造新的声望分类。只允许使用上述已注册的分类名。\n`,
@@ -3930,6 +4020,7 @@ class HoraeManager {
             const curConfig = this._getRpgCurrencyConfig();
             if (curConfig.denominations.length > 0) {
                 const denomNames = curConfig.denominations.map(d => d.name).join(commaSep);
+                const rateText = currencyRateText(curConfig.denominations);
                 p += L(
                     `\n【货币——发生交易/拾取/消费时必写！】\n`,
                     `\n[Currency — MUST write on any trade/pickup/spending!]\n`,
@@ -3963,6 +4054,9 @@ class HoraeManager {
                     );
                 }
                 p += L(`已注册币种: ${denomNames}\n`, `Registered denominations: ${denomNames}\n`, `登録済み通貨: ${denomNames}\n`, `등록된 화폐: ${denomNames}\n`, `Зарегистрированные валюты: ${denomNames}\n`);
+                if (rateText) {
+                    p += L(`兑换率: ${rateText}\n`, `Exchange rates: ${rateText}\n`, `為替レート: ${rateText}\n`, `환율: ${rateText}\n`, `Курсы обмена: ${rateText}\n`);
+                }
                 p += L(
                     `⚠ 禁止使用未注册的币种名。任何涉及金钱的行为（买卖/拾取/奖赏/偷窃）都必须写 currency 行。\n`,
                     `⚠ Do NOT use unregistered denomination names. Any money-related action (buy/sell/pickup/reward/theft) MUST include a currency line.\n`,
@@ -4012,8 +4106,8 @@ class HoraeManager {
 
     /** 获取当前对话的装备配置 */
     _getRpgEquipmentConfig() {
-        const rpg = this.getChat()?.[0]?.horae_meta?.rpg;
-        return rpg?.equipmentConfig || { locked: false, perChar: {} };
+        const meta = this.getChat()?.[0]?.horae_meta;
+        return meta?._rpgConfigs?.equipmentConfig || meta?.rpg?.equipmentConfig || { locked: false, perChar: {} };
     }
 
     /** 获取当前对话的声望配置 */

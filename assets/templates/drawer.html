@@ -10,7 +10,7 @@
                 <i class="fa-regular fa-clock"></i>
                 Horae 时光记忆
             </div>
-            <span class="horae-version">1.12.5</span>
+            <span class="horae-version">1.12.6</span>
         </div>
         
         <!-- 标签页导航 -->
@@ -268,6 +268,9 @@
                             <button id="horae-btn-items-refresh" class="horae-icon-btn" data-i18n-title="tooltip.refreshItems" title="">
                                 <i class="fa-solid fa-rotate"></i>
                             </button>
+                            <button id="horae-btn-items-multiselect" class="horae-icon-btn" data-i18n-title="tooltip.multiSelectMode" title="">
+                                <i class="fa-solid fa-check-double"></i>
+                            </button>
                         </div>
                     </div>
                     <div class="horae-items-search-row">
@@ -293,7 +296,7 @@
                     </div>
                 </div>
                 <div class="horae-items-hint" data-i18n="items.longPressHint">
-                    <i class="fa-solid fa-hand-pointer"></i> 长按物品进入多选模式
+                    <i class="fa-solid fa-check-double"></i> 点击顶部多选按钮进入多选模式
                 </div>
                 <div id="horae-items-full-list" class="horae-items-full-list">
                     <div class="horae-empty-state">
@@ -656,10 +659,19 @@
                                 <option value="separate" data-i18n="settings.timelineInjectionSeparate">独立前置注入</option>
                             </select>
                         </div>
-                        <span class="horae-setting-hint" data-i18n="settings.timelineInjectionModeHint">
+                        <div class="horae-setting-hint horae-timeline-injection-hint">
                             <i class="fa-solid fa-circle-info"></i>
-                            原版合并注入会把剧情轨迹和状态信息放在同一注入块；独立前置注入会把剧情轨迹单独放到聊天记录更靠前的位置。
-                        </span>
+                            <div class="horae-timeline-injection-hint-body">
+                                <div class="horae-timeline-injection-hint-row">
+                                    <strong data-i18n="settings.timelineInjectionInline">原版合并注入</strong>
+                                    <span data-i18n="settings.timelineInjectionInlineHint">会把剧情轨迹和状态信息放在同一注入块。</span>
+                                </div>
+                                <div class="horae-timeline-injection-hint-row">
+                                    <strong data-i18n="settings.timelineInjectionSeparate">独立前置注入</strong>
+                                    <span data-i18n="settings.timelineInjectionSeparateHint">会把剧情轨迹单独放到聊天记录更靠前的位置。</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 
@@ -864,7 +876,7 @@
                     <div id="horae-autosummary-collapse-body" style="display: none;">
                         <span class="horae-setting-hint" data-i18n="settings.autoSummaryHint" style="margin-bottom: 12px;">
                             <i class="fa-solid fa-circle-info"></i>
-                            当时间线数量 >= 保留数 + 每次总结的事件数 时，会自动将旧事件交给AI压缩为总结，节省Token。<br>
+                            未总结内容达到触发阈值时，会自动将旧事件交给AI压缩为总结，节省Token。<br>
                             压缩后的总结可在时间线中切换回原始事件查看。
                         </span>
                         <div class="horae-setting-item">
@@ -882,8 +894,8 @@
                                 <span class="horae-setting-sub-hint" data-i18n="settings.keepRecentHint">最近N条AI消息<b>绝对不会</b>被总结；中间夹着的用户消息会随全文一起发送。</span>
                             </div>
                             <div class="horae-setting-item">
-                                <label data-i18n="settings.bufferMode">
-                                    缓冲模式
+                                <label class="horae-setting-control-row" for="horae-setting-auto-summary-mode">
+                                    <span data-i18n="settings.bufferMode">缓冲模式</span>
                                     <select id="horae-setting-auto-summary-mode">
                                         <option value="messages" data-i18n="settings.bufferModeMessages">按AI条数</option>
                                         <option value="tokens" data-i18n="settings.bufferModeTokens">按Token数</option>
@@ -891,25 +903,37 @@
                                 </label>
                             </div>
                             <div class="horae-setting-item">
-                                <label data-i18n="settings.bufferLimit">
-                                    每次总结的事件数
-                                    <input type="number" id="horae-setting-auto-summary-limit" min="5" max="99999" value="20">
+                                <label class="horae-setting-control-row" for="horae-setting-auto-summary-source">
+                                    <span data-i18n="settings.autoSummarySource">摘要来源</span>
+                                    <select id="horae-setting-auto-summary-source">
+                                        <option value="fulltext" data-i18n="settings.autoSummarySourceFulltext">全文 + 时间线事件</option>
+                                        <option value="events" data-i18n="settings.autoSummarySourceEvents">仅时间线事件</option>
+                                    </select>
                                 </label>
-                                <span class="horae-setting-sub-hint" id="horae-auto-summary-limit-hint" data-i18n="settings.bufferLimitHint">触发条件：时间线数量 >= 保留数 + 每次总结的事件数</span>
+                                <span class="horae-setting-sub-hint" data-i18n="settings.autoSummarySourceHint">全文 + 时间线事件细节更完整，但消耗更多 Token 且较易截断；仅时间线事件更省 Token。</span>
+                            </div>
+                            <div class="horae-setting-item">
+                                <label class="horae-setting-control-row" for="horae-setting-auto-summary-limit">
+                                    <span data-i18n="settings.triggerThreshold">触发阈值</span>
+                                    <span class="horae-setting-input-unit">
+                                        <input type="number" id="horae-setting-auto-summary-limit" min="5" max="99999" value="10">
+                                    </span>
+                                </label>
+                                <span class="horae-setting-sub-hint" id="horae-auto-summary-limit-hint" data-i18n="settings.bufferLimitHint">触发条件：未总结内容达到当前阈值后自动压缩</span>
                             </div>
                             <div class="horae-setting-hint" data-i18n="settings.autoSummaryExample" style="margin:8px 0; padding:8px; border-radius:6px; background:var(--horae-bg-secondary); font-size:11px; line-height:1.6;">
                                 <i class="fa-solid fa-lightbulb" style="color:var(--horae-accent);"></i>
-                                <b>举例</b>：假设保留=5，每次总结的事件数=5（按AI条数）<br>
-                                → 触发条件是：<b>时间线数量 >= 10</b><br>
-                                → 触发后优先总结保留区之前的连续未总结部分<br>
-                                → 中间夹着的用户消息会一起带上，但不参与计数
+                                <b>举例</b>：假设保留=5，触发阈值=10条AI<br>
+                                → 旧的连续未总结AI达到10条时触发总结<br>
+                                → 切到Token模式时会自动套用Token阈值<br>
+                                → 全文来源细节更多，事件来源更省Token
                             </div>
                             <div class="horae-setting-item">
                                 <label data-i18n="settings.resummaryThreshold">
-                                    总结数量达到多少时进行二次总结
+                                    二次总结
                                     <input type="number" id="horae-setting-auto-summary-resummary-threshold" min="0" max="999" value="10">
                                 </label>
-                                <span class="horae-setting-sub-hint" data-i18n="settings.resummaryThresholdHint">二次总结也达到数量时会进行三次总结（以此类推）</span>
+                                <span class="horae-setting-sub-hint" data-i18n="settings.resummaryThresholdHint">同层总结达到该数量后会合并为更高层总结；二次总结达到数量后继续三次总结，以此类推。</span>
                             </div>                        
                             <div class="horae-setting-item" style="border-top: 1px solid var(--horae-border); padding-top: 8px; margin-top: 4px;">
                                 <label data-i18n="settings.batchMaxMessages">
@@ -1459,7 +1483,7 @@
                 </div>
                 
                 <div class="horae-about">
-                    <p>Horae v1.12.5 | 作者: SenriYuki</p>
+                    <p>Horae v1.12.6 | 作者: SenriYuki</p>
                     <p>基于时间锚点的AI记忆增强系统</p>
                 </div>
             </div>
