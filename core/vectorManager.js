@@ -427,8 +427,10 @@ export class VectorManager {
      */
     buildMergedRecallQuery(stateQuery, userQuery) {
         const sections = [];
-        if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
-        if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
+        // if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
+        // if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
+        if (stateQuery) sections.push(`在"${stateQuery}"的背景下`);
+        if (userQuery) sections.push(`玩家试图 ${userQuery}`);
         return sections.join('\n').trim();
     }
 
@@ -696,7 +698,7 @@ export class VectorManager {
                     const useFullText = !!settings.vectorRerankFullText;
                     const _stripTags = settings.vectorStripTags || '';
                     const currentDateForRerank = state.timestamp?.story_date;
-                    // Rerank 文档 = 时间头 + 结构化 metadata + 可选全文片段（≤1200 字）
+                    // Rerank 文档 = 时间头 + 结构化 metadata + 可选全文片段（全文模式）
                     const rerankDocs = rerankCandidates.map(r => {
                         const meta = chat[r.messageIndex]?.horae_meta;
                         const timeTag = this._buildTimeTag(meta?.timestamp, currentDateForRerank);
@@ -704,7 +706,7 @@ export class VectorManager {
                         const baseDoc = r.document || '';
                         if (useFullText) {
                             const fullText = this._extractCleanText(chat[r.messageIndex]?.mes, _stripTags);
-                            const snippet = fullText ? fullText.substring(0, 1200) : '';
+                            const snippet = fullText || '';
                             if (snippet) return `${head}${baseDoc}\n---\n${snippet}`;
                             return `${head}${baseDoc}`;
                         }
@@ -712,12 +714,52 @@ export class VectorManager {
                     });
                     console.log(`[Horae Vector] Rerank 输入: ${rerankCandidates.length} 条候选 / 模式=${useFullText ? '全文精排' : '摘要排序'}`);
 
-                    const reranked = await this._rerank(
-                        rerankQuery,
-                        rerankDocs,
-                        rerankCandidates.length,
-                        settings
-                    );
+                    let rerankPlan = null;
+                    let rerankDocsForDebug = rerankDocs;
+                    let reranked = [];
+                    if (useFullText) {
+                        rerankPlan = this._buildRerankBatchPlan(rerankQuery, rerankDocs, 32768);
+                        rerankDocsForDebug = rerankPlan.documents;
+                        if (rerankPlan.batches.length > 1 || rerankPlan.truncatedCount > 0) {
+                            console.log(`[Horae Vector] Rerank 分批: batches=${rerankPlan.batches.length} / budget=${rerankPlan.docBudget} tokens / query=${rerankPlan.queryTokens} tokens / truncated=${rerankPlan.truncatedCount}`);
+                        }
+
+                        const merged = [];
+                        for (let bi = 0; bi < rerankPlan.batches.length; bi++) {
+                            const batch = rerankPlan.batches[bi];
+                            console.log(`[Horae Vector] Rerank batch ${bi + 1}/${rerankPlan.batches.length}: docs=${batch.documents.length}, estTokens=${batch.estimatedTokens}`);
+                            const batchReranked = await this._rerank(
+                                rerankQuery,
+                                batch.documents,
+                                batch.documents.length,
+                                settings
+                            );
+                            for (const rr of batchReranked) {
+                                const globalIndex = batch.indices[rr.index];
+                                if (globalIndex === undefined) continue;
+                                merged.push({
+                                    index: globalIndex,
+                                    relevance_score: rr.relevance_score,
+                                });
+                            }
+                        }
+
+                        const bestByIndex = new Map();
+                        for (const rr of merged) {
+                            const prev = bestByIndex.get(rr.index);
+                            if (!prev || (rr.relevance_score ?? 0) > (prev.relevance_score ?? 0)) {
+                                bestByIndex.set(rr.index, rr);
+                            }
+                        }
+                        reranked = [...bestByIndex.values()].sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+                    } else {
+                        reranked = await this._rerank(
+                            rerankQuery,
+                            rerankDocs,
+                            rerankCandidates.length,
+                            settings
+                        );
+                    }
                     if (reranked && reranked.length > 0) {
                         const minScore = this._effectiveRerankMinScore(settings);
                         const passed = reranked.filter(rr => (rr.relevance_score ?? 0) >= minScore);
@@ -743,7 +785,7 @@ export class VectorManager {
                             useFullText,
                             candidates: rerankCandidates.map((r, i) => ({
                                 messageIndex: r.messageIndex,
-                                docPreview: (rerankDocs[i] || '').substring(0, 120),
+                                docPreview: (rerankDocsForDebug[i] || '').substring(0, 120),
                                 priorScore: r.similarity,
                                 source: r.source,
                             })),
@@ -756,6 +798,18 @@ export class VectorManager {
                             passedCount: passed.length,
                             droppedCount: dropped,
                             retainedTop1: passed.length === 0 && finalReranked.length > 0,
+                            batching: rerankPlan ? {
+                                contextLimit: rerankPlan.contextLimit,
+                                budgetTokens: rerankPlan.docBudget,
+                                queryTokens: rerankPlan.queryTokens,
+                                batchCount: rerankPlan.batches.length,
+                                truncatedCount: rerankPlan.truncatedCount,
+                                batches: rerankPlan.batches.map((b, idx) => ({
+                                    batch: idx + 1,
+                                    docs: b.documents.length,
+                                    estimatedTokens: b.estimatedTokens,
+                                })),
+                            } : null,
                         };
                     }
                 } catch (err) {
@@ -1763,6 +1817,120 @@ export class VectorManager {
             console.error('[Horae Vector] API embedding 响应解析失败:', err);
             throw wrapped;
         }
+    }
+
+    _estimateRerankTokens(text) {
+        if (!text) return 0;
+        const str = String(text);
+        let cjkCount = 0;
+        for (const ch of str) {
+            const cp = ch.codePointAt(0);
+            if (
+                (cp >= 0x3400 && cp <= 0x4DBF) ||
+                (cp >= 0x4E00 && cp <= 0x9FFF) ||
+                (cp >= 0xF900 && cp <= 0xFAFF) ||
+                (cp >= 0x3040 && cp <= 0x30FF) ||
+                (cp >= 0xAC00 && cp <= 0xD7AF)
+            ) {
+                cjkCount++;
+            }
+        }
+        const otherCount = Math.max(0, str.length - cjkCount);
+        // Conservative estimate: CJK ~= 1 token, others ~= 0.3~0.4 token/char, then add safety margin.
+        const rough = (cjkCount * 1.35) + (otherCount * 0.45);
+        return Math.ceil((rough + 8) * 1.18);
+    }
+
+    _truncateTextByEstimatedTokens(text, tokenLimit) {
+        if (!text || tokenLimit <= 0) return '';
+        const source = String(text);
+        if (this._estimateRerankTokens(source) <= tokenLimit) return source;
+
+        let low = 0;
+        let high = source.length;
+        let best = 0;
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const candidate = source.substring(0, mid);
+            if (this._estimateRerankTokens(candidate) <= tokenLimit) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return source.substring(0, best).trimEnd();
+    }
+
+    _buildRerankBatchPlan(query, documents, contextLimit = 32768) {
+        const safeUsageRatio = 0.68;
+        const staticReserve = 1800;
+        const perDocOverhead = 24;
+
+        const queryTokens = this._estimateRerankTokens(query);
+        const docBudget = Math.max(
+            1024,
+            Math.floor(contextLimit * safeUsageRatio) - staticReserve - queryTokens
+        );
+        const maxSingleDocTokens = Math.max(768, docBudget - 256);
+
+        const normalizedDocs = [];
+        const docTokenEstimates = [];
+        let truncatedCount = 0;
+
+        for (const doc of documents || []) {
+            let text = typeof doc === 'string' ? doc : String(doc ?? '');
+            let estimated = this._estimateRerankTokens(text) + perDocOverhead;
+            if (estimated > maxSingleDocTokens) {
+                const allowedTokens = Math.max(512, maxSingleDocTokens - perDocOverhead);
+                const trimmed = this._truncateTextByEstimatedTokens(text, allowedTokens);
+                if (trimmed && trimmed.length < text.length) {
+                    text = trimmed;
+                    truncatedCount++;
+                }
+                estimated = this._estimateRerankTokens(text) + perDocOverhead;
+            }
+            normalizedDocs.push(text);
+            docTokenEstimates.push(Math.max(perDocOverhead, estimated));
+        }
+
+        const batches = [];
+        let currentIndices = [];
+        let currentDocs = [];
+        let currentTokens = 0;
+        const flush = () => {
+            if (currentIndices.length === 0) return;
+            batches.push({
+                indices: currentIndices,
+                documents: currentDocs,
+                estimatedTokens: currentTokens,
+            });
+            currentIndices = [];
+            currentDocs = [];
+            currentTokens = 0;
+        };
+
+        for (let i = 0; i < normalizedDocs.length; i++) {
+            const nextTokens = docTokenEstimates[i];
+            if (currentIndices.length > 0 && (currentTokens + nextTokens) > docBudget) {
+                flush();
+            }
+            currentIndices.push(i);
+            currentDocs.push(normalizedDocs[i]);
+            currentTokens += nextTokens;
+        }
+        flush();
+
+        return {
+            documents: normalizedDocs,
+            batches,
+            truncatedCount,
+            queryTokens,
+            docBudget,
+            contextLimit,
+            safeUsageRatio,
+            staticReserve,
+        };
     }
 
     /**

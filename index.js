@@ -116,20 +116,20 @@ const DEFAULT_SETTINGS = {
     aiOutputLanguage: 'auto',
     enabled: true,
     autoParse: true,
-    autoFillPrevTimelineOnSend: false, // 发送前自动补全上一条AI消息的时间线（默认关闭，避免静默误写历史）
+    autoFillPrevTimelineOnSend: true, // 发送前自动补全上一条AI消息的时间线（默认关闭，避免静默误写历史）
     injectContext: true,
     useMainPresetForAiTasks: false, // AI分析/批量扫描/手动压缩是否使用酒馆主预设（generate）
     showMessagePanel: true,
     injectionDepthSource: 'system', // 注入深度来源: system(原逻辑) / preset(按完整提示词末尾偏移)
     injectionPosition: 0,
-    timelineInjectionMode: 'inline', // inline(原逻辑合并注入) / separate(剧情轨迹独立前置)
+    timelineInjectionMode: 'separate', // inline(原逻辑合并注入) / separate(剧情轨迹独立前置)
     lastStoryDate: '',
     lastStoryTime: '',
     favoriteNpcs: [],  // 用户标记的星标NPC列表
     pinnedNpcs: [],    // 用户手动标记的重要角色列表（特殊边框）
     // 发送给AI的内容控制
     sendTimeline: true,    // 发送剧情轨迹（关闭则无法计算相对时间）
-    contextDepth: 15,      // 一般级别剧情轨迹数量
+    contextDepth: 9999,      // 一般级别剧情轨迹数量,默认无限
     sendCharacters: true,  // 发送角色信息（服装、好感度）
     sendItems: true,       // 发送物品栏
     customTables: [],      // 自定义表格 [{id, name, rows, cols, data, prompt}]
@@ -158,9 +158,9 @@ const DEFAULT_SETTINGS = {
     customRelationshipPrompt: '',  // 自定义关系网络提示词（空=使用默认）
     customMoodPrompt: '',          // 自定义情绪追踪提示词（空=使用默认）
     // 自动摘要
-    autoSummaryEnabled: false,     // 自动摘要开关
+    autoSummaryEnabled: true,     // 自动摘要开关
     autoSummaryKeepRecent: 5,      // 保留最近N条AI消息不压缩（中间用户消息会随全文一起发送）
-    autoSummarySourceMode: 'fulltext', // 'fulltext'(全文+时间线) | 'events'(仅时间线事件)
+    autoSummarySourceMode: 'events', // 'fulltext'(全文+时间线) | 'events'(仅时间线事件)
     autoSummaryBufferMode: 'messages', // 'messages'(按AI条数) | 'tokens'
     autoSummaryBufferLimit: 10,     // 旧版缓冲阈值（迁移用）
     autoSummaryBufferMsgLimit: 10,  // 按AI条数触发的阈值
