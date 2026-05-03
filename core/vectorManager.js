@@ -230,8 +230,7 @@ export class VectorManager {
 
     /**
      * 将 horae_meta 序列化为检索文本
-     * 事件摘要为核心（占主要权重），场景/角色/NPC 为辅
-     * 去掉物品、服装、心情等噪音，让 embedding 集中在语义关键内容
+     * 仅保留事件摘要与 RPG 变更，避免时间/地点/人物等上下文噪音
      */
     buildVectorDocument(meta) {
         if (!meta) return '';
@@ -245,36 +244,10 @@ export class VectorManager {
             }
         }
 
-        const npcTexts = [];
-        if (meta.npcs) {
-            for (const [name, info] of Object.entries(meta.npcs)) {
-                let s = name;
-                if (info.appearance) s += ` ${info.appearance}`;
-                if (info.relationship) s += ` ${info.relationship}`;
-                npcTexts.push(s);
-            }
-        }
-
-        if (eventTexts.length === 0 && npcTexts.length === 0) return '';
-
         // 单事件一行、段落空行分隔；保留语义边界
         const eventBlock = eventTexts.length > 0
-            ? eventTexts.map((evt, i) => `[Event ${i + 1}] ${evt}`).join('\n')
+            ? eventTexts.join('\n')
             : '';
-
-        const contextLines = [];
-        if (npcTexts.length > 0) {
-            for (const t of npcTexts) contextLines.push(`[NPC] ${t}`);
-        }
-        if (meta.scene?.location) contextLines.push(`[Location] ${meta.scene.location}`);
-        const chars = meta.scene?.characters_present || [];
-        if (chars.length > 0) contextLines.push(`[Characters] ${chars.join(', ')}`);
-        if (meta.timestamp?.story_date) {
-            const time = meta.timestamp.story_time
-                ? `${meta.timestamp.story_date} ${meta.timestamp.story_time}`
-                : meta.timestamp.story_date;
-            contextLines.push(`[Time] ${time}`);
-        }
 
         const rpgLines = [];
         const rpg = meta._rpgChanges;
@@ -295,9 +268,10 @@ export class VectorManager {
             }
         }
 
+        if (!eventBlock && rpgLines.length === 0) return '';
+
         const blocks = [];
         if (eventBlock) blocks.push(eventBlock);
-        if (contextLines.length > 0) blocks.push(contextLines.join('\n'));
         if (rpgLines.length > 0) blocks.push(rpgLines.join('\n'));
 
         return blocks.join('\n\n');
