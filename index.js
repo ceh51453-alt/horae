@@ -168,10 +168,13 @@ const DEFAULT_SETTINGS = {
     autoSummaryResummaryThreshold: 7, // <=0 关闭二次总结；>0 时同层摘要达到此值触发更高层摘要（2->3->4...）
     autoSummaryBatchMaxMsgs: 50,    // 单次摘要最大消息条数
     autoSummaryBatchMaxTokens: 80000, // 单次摘要最大Token数
-    autoSummaryUseCustomApi: false, // 是否使用独立API端点
+    autoSummaryUseCustomApi: false, // 旧字段（兼容保留，不再作为开关）
     autoSummaryApiUrl: '',          // 独立API端点地址（OpenAI兼容）
     autoSummaryApiKey: '',          // 独立API密钥
     autoSummaryModel: '',           // 独立API模型名称
+    subApiScopeAutoSummary: true,   // 副API应用范围：自动总结
+    subApiScopeManualSummary: true, // 副API应用范围：手动总结（时间线压缩）
+    subApiScopeBrief: false,        // 副API应用范围：摘要（预留）
     antiParaphraseMode: false,      // 反转述模式：AI回复时结算上一条USER的内容
     sideplayMode: false,            // 番外/小剧场模式：启用后可标记消息跳过Horae
     // RPG 模式
@@ -579,12 +582,12 @@ const BUILTIN_VECTOR_RECALL_PRESETS = [
             vectorPureMode: true,
             vectorRerankEnabled: true,
             vectorRerankFullText: false,
-            vectorRerankCandidates: 25,
+            vectorRerankCandidates: 20,
             vectorRerankRecallThreshold: 0.3,
             vectorRerankMinScore: 0.85,
             vectorTopK: 5,
             vectorThreshold: 0.85,
-            vectorFullTextCount: 3,
+            vectorFullTextCount: 2,
             vectorFullTextThreshold: 0.9,
         },
     },
@@ -837,6 +840,10 @@ function loadSettings() {
     if (!settings._autoFillPrevTimelineDefaultOffMigrated) {
         settings.autoFillPrevTimelineOnSend = false;
         settings._autoFillPrevTimelineDefaultOffMigrated = true;
+        changed = true;
+    }
+    if (settings.subApiScopeBrief && !settings.autoFillPrevTimelineOnSend) {
+        settings.autoFillPrevTimelineOnSend = true;
         changed = true;
     }
     if (_normalizeAutoSummarySettingsInPlace(saved || {}) || _normalizePromptSettingsInPlace() || _normalizeVectorRecallPresetsInPlace() || _normalizeRpgSettingsInPlace()) changed = true;
@@ -2703,7 +2710,7 @@ async function compressSelectedTimelineEvents() {
         _isSummaryGeneration = true;
         let response;
         try {
-            const genPromise = _generateForAiTasks(prompt);
+            const genPromise = generateForSummary(prompt, { taskType: 'manualSummary' });
             response = await Promise.race([genPromise, cancelPromise]);
         } finally {
             _isSummaryGeneration = false;
@@ -9197,8 +9204,10 @@ function updateTokenCounter() {
     if (!el) return;
     try {
         const dataPrompt = horaeManager.generateCompactPrompt();
-        const rulesPrompt = horaeManager.generateSystemPromptAddition();
-        const combined = `${dataPrompt}\n${rulesPrompt}`;
+        const rulesPrompt = _shouldSkipSystemPromptInjectionOnSend()
+            ? ''
+            : horaeManager.generateSystemPromptAddition();
+        const combined = rulesPrompt ? `${dataPrompt}\n${rulesPrompt}` : dataPrompt;
         const tokens = estimateTokens(combined);
         el.textContent = `≈ ${tokens.toLocaleString()}`;
     } catch (err) {
@@ -12581,11 +12590,6 @@ function initSettingsEvents() {
         this.value = settings.autoSummaryBatchMaxTokens;
         saveSettings();
     });
-    $('#horae-setting-auto-summary-custom-api').on('change', function () {
-        settings.autoSummaryUseCustomApi = this.checked;
-        saveSettings();
-        $('#horae-auto-summary-api-options').toggle(this.checked);
-    });
     $('#horae-setting-auto-summary-api-url').on('input change', function () {
         settings.autoSummaryApiUrl = this.value;
         saveSettings();
@@ -12598,9 +12602,23 @@ function initSettingsEvents() {
         settings.autoSummaryModel = this.value;
         saveSettings();
     });
+    $('#horae-setting-sub-api-scope-auto-summary').on('change', function () {
+        settings.subApiScopeAutoSummary = this.checked;
+        saveSettings();
+    });
+    $('#horae-setting-sub-api-scope-manual-summary').on('change', function () {
+        settings.subApiScopeManualSummary = this.checked;
+        saveSettings();
+    });
+    $('#horae-setting-sub-api-scope-brief').on('change', function () {
+        settings.subApiScopeBrief = this.checked;
+        if (this.checked) {
+            _ensureAutoFillPrevTimelineForSubApiBriefScope();
+        }
+        saveSettings();
+    });
 
     $('#horae-btn-fetch-models').on('click', fetchAndPopulateModels);
-    $('#horae-btn-test-sub-api').on('click', testSubApiConnection);
 
     $('#horae-setting-panel-width').on('change', function () {
         let val = parseInt(this.value) || 100;
@@ -12899,6 +12917,14 @@ function initSettingsEvents() {
     // 高级设置折叠切换
     $('#horae-advanced-collapse-toggle').on('click', function () {
         const body = $('#horae-advanced-collapse-body');
+        const icon = $(this).find('.horae-collapse-icon');
+        body.slideToggle(200);
+        icon.toggleClass('collapsed');
+    });
+
+    // 副API折叠切换
+    $('#horae-sub-api-collapse-toggle').on('click', function () {
+        const body = $('#horae-sub-api-collapse-body');
         const icon = $(this).find('.horae-collapse-icon');
         body.slideToggle(200);
         icon.toggleClass('collapsed');
@@ -13423,10 +13449,11 @@ function syncSettingsToUI() {
     }
     $('#horae-setting-auto-summary-batch-msgs').val(settings.autoSummaryBatchMaxMsgs || 50);
     $('#horae-setting-auto-summary-batch-tokens').val(settings.autoSummaryBatchMaxTokens || 80000);
-    $('#horae-setting-auto-summary-custom-api').prop('checked', !!settings.autoSummaryUseCustomApi);
-    $('#horae-auto-summary-api-options').toggle(!!settings.autoSummaryUseCustomApi);
     $('#horae-setting-auto-summary-api-url').val(settings.autoSummaryApiUrl || '');
     $('#horae-setting-auto-summary-api-key').val(settings.autoSummaryApiKey || '');
+    $('#horae-setting-sub-api-scope-auto-summary').prop('checked', settings.subApiScopeAutoSummary !== false);
+    $('#horae-setting-sub-api-scope-manual-summary').prop('checked', settings.subApiScopeManualSummary !== false);
+    $('#horae-setting-sub-api-scope-brief').prop('checked', !!settings.subApiScopeBrief);
     // 如果已有保存的模型名，初始化 select 选项
     const _savedModel = settings.autoSummaryModel || '';
     const _modelSel = document.getElementById('horae-setting-auto-summary-model');
@@ -13888,39 +13915,64 @@ function getDefaultAnalysisPrompt() {
     return _getPromptDefaultFromResource('customAnalysisPrompt') || '';
 }
 
+function _isSubApiScopeEnabled(taskType = '') {
+    switch (taskType) {
+        case 'autoSummary':
+            return settings.subApiScopeAutoSummary !== false;
+        case 'manualSummary':
+            return settings.subApiScopeManualSummary !== false;
+        case 'brief':
+            return !!settings.subApiScopeBrief;
+        default:
+            return true;
+    }
+}
+
+function _shouldSkipSystemPromptInjectionOnSend() {
+    // 副API「摘要」开启后，发送新消息时不再把系统注入提示词送给主回复模型。
+    return !!settings.subApiScopeBrief;
+}
+
 /**
- * 自动摘要生成入口
- * useProfile=true 时允许切换连接配置（仅在AI回复后的顺序模式使用）
- * useProfile=false 时直接调用 generateRaw（并行安全）
+ * 副API/主API统一生成入口（总结相关任务）
+ * taskType:
+ * - autoSummary: 自动总结/二次总结
+ * - manualSummary: 手动时间线压缩总结
+ * - brief: 摘要（预留）
  */
-async function generateForSummary(prompt) {
+async function generateForSummary(prompt, options = {}) {
+    const taskType = options?.taskType || '';
     // 从 DOM 补读一次副API设置，防止浏览器自动填充未触发 input 事件导致设置为空
     _syncSubApiSettingsFromDom();
-    const useCustom = settings.autoSummaryUseCustomApi;
+    const scopeEnabled = _isSubApiScopeEnabled(taskType);
+    const useCustom = scopeEnabled;
     const hasUrl = !!(settings.autoSummaryApiUrl && settings.autoSummaryApiUrl.trim());
     const hasKey = !!(settings.autoSummaryApiKey && settings.autoSummaryApiKey.trim());
     const hasModel = !!(settings.autoSummaryModel && settings.autoSummaryModel.trim());
-    console.log(`[Horae] generateForSummary: useCustom=${useCustom}, hasUrl=${hasUrl}, hasKey=${hasKey}, hasModel=${hasModel}`);
+    console.log(`[Horae] generateForSummary: task=${taskType || 'default'}, useCustom=${useCustom}, hasUrl=${hasUrl}, hasKey=${hasKey}, hasModel=${hasModel}`);
     if (useCustom && hasUrl && hasKey && hasModel) {
+        console.log(`[Horae] 使用副API生成`);
         return await generateWithDirectApi(prompt);
     }
     if (useCustom && (!hasUrl || !hasKey || !hasModel)) {
         const missing = [!hasUrl && 'API地址', !hasKey && 'API密钥', !hasModel && '模型名称'].filter(Boolean).join('、');
         console.warn(`[Horae] 副API已勾选但缺少: ${missing}，回退主API`);
         showToast(t('toast.subApiMissing', { missing }), 'warning');
-    } else if (!useCustom) {
-        console.log('[Horae] 副API未启用，使用主API');
+    } else if (!scopeEnabled) {
+        console.log(`[Horae] 副API未命中应用范围(task=${taskType || 'default'})，使用主API`);
     }
     const context = getContext();
-    const shouldMarkNoRecall = !!(
+    const defaultNoRecallMarker = !!(
         context?.mainApi === 'openai' &&
         settings.injectContext &&
         settings.vectorEnabled
     );
-    const shouldSkipContextInject = !!(
+    const defaultNoContextInjectionMarker = !!(
         context?.mainApi === 'openai' &&
         settings.injectContext
     );
+    const shouldMarkNoRecall = options?.noVectorRecallMarker ?? defaultNoRecallMarker;
+    const shouldSkipContextInject = options?.noContextInjectionMarker ?? defaultNoContextInjectionMarker;
     return await _generateForAiTasks(prompt, {
         noVectorRecallMarker: shouldMarkNoRecall,
         noContextInjectionMarker: shouldSkipContextInject,
@@ -14336,7 +14388,7 @@ async function _generateSummaryFromResummaryPayload(chat, payload, userName) {
         const eventText = chunk.map(e => `[${e.level}] ${e.date}${e.time ? ' ' + e.time : ''}: ${e.summary}`).join('\n');
 
         const prompt = _buildAutoResummaryPrompt(userName, eventText, chunk.length);
-        const response = await generateForSummary(prompt);
+        const response = await generateForSummary(prompt, { taskType: 'autoSummary' });
         const extracted = _extractHoraeSummaryText(response);
         if (!extracted.ok) {
             _showHoraeSummaryFormatWarning('二次总结', extracted.reason);
@@ -14362,7 +14414,7 @@ async function _generateSummaryFromResummaryPayload(chat, payload, userName) {
         for (const group of groups) {
             const eventText = group.map((text, i) => `[段${i + 1}] ${text}`).join('\n');
             const prompt = _buildAutoResummaryPrompt(userName, eventText, group.length);
-            const response = await generateForSummary(prompt);
+            const response = await generateForSummary(prompt, { taskType: 'autoSummary' });
             const extracted = _extractHoraeSummaryText(response);
             if (!extracted.ok) {
                 _showHoraeSummaryFormatWarning('二次总结', extracted.reason);
@@ -14478,15 +14530,40 @@ async function _runAutoResummaryIfNeeded(chat, cutoff) {
     return rounds;
 }
 
+function _ensureAutoFillPrevTimelineForSubApiBriefScope() {
+    if (!settings.subApiScopeBrief) return false;
+    let changed = false;
+    if (!settings.autoFillPrevTimelineOnSend) {
+        settings.autoFillPrevTimelineOnSend = true;
+        changed = true;
+    }
+    const autoFillEl = document.getElementById('horae-setting-auto-fill-prev-timeline');
+    if (autoFillEl) autoFillEl.checked = true;
+    return changed;
+}
+
 function _syncSubApiSettingsFromDom() {
     try {
         const urlEl = document.getElementById('horae-setting-auto-summary-api-url');
         const keyEl = document.getElementById('horae-setting-auto-summary-api-key');
         const modelEl = document.getElementById('horae-setting-auto-summary-model');
-        const checkEl = document.getElementById('horae-setting-auto-summary-custom-api');
+        const autoSummaryScopeEl = document.getElementById('horae-setting-sub-api-scope-auto-summary');
+        const manualSummaryScopeEl = document.getElementById('horae-setting-sub-api-scope-manual-summary');
+        const briefScopeEl = document.getElementById('horae-setting-sub-api-scope-brief');
         let changed = false;
-        if (checkEl && checkEl.checked !== settings.autoSummaryUseCustomApi) {
-            settings.autoSummaryUseCustomApi = checkEl.checked;
+        if (autoSummaryScopeEl && autoSummaryScopeEl.checked !== (settings.subApiScopeAutoSummary !== false)) {
+            settings.subApiScopeAutoSummary = autoSummaryScopeEl.checked;
+            changed = true;
+        }
+        if (manualSummaryScopeEl && manualSummaryScopeEl.checked !== (settings.subApiScopeManualSummary !== false)) {
+            settings.subApiScopeManualSummary = manualSummaryScopeEl.checked;
+            changed = true;
+        }
+        if (briefScopeEl && briefScopeEl.checked !== !!settings.subApiScopeBrief) {
+            settings.subApiScopeBrief = briefScopeEl.checked;
+            changed = true;
+        }
+        if (_ensureAutoFillPrevTimelineForSubApiBriefScope()) {
             changed = true;
         }
         if (urlEl && urlEl.value && urlEl.value !== settings.autoSummaryApiUrl) {
@@ -14922,13 +14999,14 @@ async function generateWithDirectApi(prompt) {
     let url = settings.autoSummaryApiUrl.trim();
     if (!url.endsWith('/chat/completions')) {
         url = url.replace(/\/+$/, '') + '/chat/completions';
+        // url = url.replace(/\/+$/, '');
     }
     const messages = await _buildSummaryMessages(prompt);
     const body = {
         model: settings.autoSummaryModel.trim(),
         messages,
         temperature: 0.7,
-        max_tokens: 4096,
+        max_tokens: 8192,
         stream: false
     };
     // 仅当端点疑似 Gemini 系渠道时才注入 safetySettings（纯 OpenAI 端点会拒绝未知字段返回 400）
@@ -14944,6 +15022,38 @@ async function generateWithDirectApi(prompt) {
         body.safetySettings = blockNone;
     }
     console.log(`[Horae] 独立API请求: ${url}, 模型: ${body.model}`);
+
+    // 酒馆助手部分  
+    // const guardedUserInput = `${_createNoContextInjectionMarker()}\n${String(prompt ?? '')}`;
+    // try {
+    //     const resp = await TavernHelper.generate({
+    //         user_input: guardedUserInput,
+
+    //         custom_api: {
+    //             apiurl: url,        // 你的接口地址 仅v1结尾,不能带后缀
+    //             key: _apiKey,       // 你的 API Key
+    //             model: _model,      // 模型名
+    //             source: "openai",   // 根据你的接口类型选择
+    //         },
+    //         overrides: {
+    //             chat_history: {
+    //                 prompts: [],    // 去除历史聊天
+    //             }
+    //         }
+    //     });
+
+    //     console.log(resp, '[Horae] 副API生成结果');
+
+    //     return resp?.choices?.[0]?.message?.content || '';
+
+    // } catch (error) {
+    //     console.error(`出现了异常:${error}`);
+    //     return "";
+    // }
+
+
+    // 下面是原生gemini的东西
+
     const resp = await _corsAwareFetch(url, {
         method: 'POST',
         headers: {
@@ -14952,6 +15062,7 @@ async function generateWithDirectApi(prompt) {
         },
         body: JSON.stringify(body)
     });
+
     if (!resp.ok) {
         const errText = await resp.text().catch(() => '');
         const hint = _httpStatusHint(resp.status);
@@ -15453,7 +15564,7 @@ async function checkAutoSummary() {
             prompt += `\n\n【全文对话记录】：\n${sourceText}`;
         }
 
-        const response = await generateForSummary(prompt);
+        const response = await generateForSummary(prompt, { taskType: 'autoSummary' });
         if (!response?.trim()) {
             showToast(t('toast.autoSummaryEmpty'), 'warning');
             return;
@@ -17217,7 +17328,9 @@ async function analyzeMessageWithAI(messageContent, opts = {}) {
             settings.injectContext &&
             settings.vectorEnabled
         );
-        const response = await _generateForAiTasks(analysisPrompt, {
+        console.log(`[Horae] 使用generateForSummary`)
+        const response = await generateForSummary(analysisPrompt, {
+            taskType: 'brief',
             noVectorRecallMarker: shouldMarkNoRecall,
             noContextInjectionMarker: !!noContextInjectionMarker,
         });
@@ -17947,7 +18060,11 @@ async function onPromptReady(eventData) {
             }
         }
 
-        const rulesPrompt = horaeManager.generateSystemPromptAddition();
+        const skipSystemPromptOnSend = _shouldSkipSystemPromptInjectionOnSend();
+        const rulesPrompt = skipSystemPromptOnSend ? '' : horaeManager.generateSystemPromptAddition();
+        if (skipSystemPromptOnSend) {
+            console.log('[Horae] Sub-API brief scope enabled, skipped system injection prompt on send');
+        }
 
         let antiParaRef = '';
         if (settings.antiParaphraseMode && chat?.length) {
@@ -17964,8 +18081,8 @@ async function onPromptReady(eventData) {
         }
 
         const combinedPrompt = recallPrompt
-            ? `${dataPrompt}\n${recallPrompt}${antiParaRef}\n${rulesPrompt}`
-            : `${dataPrompt}${antiParaRef}\n${rulesPrompt}`;
+            ? `${dataPrompt}\n${recallPrompt}${antiParaRef}${rulesPrompt ? `\n${rulesPrompt}` : ''}`
+            : `${dataPrompt}${antiParaRef}${rulesPrompt ? `\n${rulesPrompt}` : ''}`;
         const positionRaw = parseInt(settings.injectionPosition, 10);
         const position = Number.isNaN(positionRaw) ? 1 : Math.max(0, positionRaw);
         const depthSource = settings.injectionDepthSource === 'preset' ? 'preset' : 'system';
