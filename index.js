@@ -1505,6 +1505,10 @@ function updateTimelineDisplay() {
     const chat = horaeManager.getChat();
     const summaries = chat?.[0]?.horae_meta?.autoSummaries || [];
     const activeSummaryIds = new Set(summaries.filter(s => s.active).map(s => s.id));
+    const renderSummaryLevelBadge = (summaryEntry) => {
+        const depth = _normalizeSummaryDepth(summaryEntry?.depth);
+        return `<span class="horae-level-badge summary">${t('timeline.summaryBadge')} L${depth}</span>`;
+    };
 
     listEl.innerHTML = events.reverse().map(e => {
         const isSummary = e.event?.isSummary || e.event?.level === '摘要';
@@ -1515,15 +1519,17 @@ function updateTimelineDisplay() {
         if (compressedBy && activeSummaryIds.has(compressedBy)) {
             return '';
         }
+
         // 摘要事件：inactive 时渲染为折叠指示条（保留切换按钮）
         if (summaryId && !activeSummaryIds.has(summaryId)) {
             const summaryEntry = summaries.find(s => s.id === summaryId);
             const rangeStr = summaryEntry ? `#${summaryEntry.range[0]}-#${summaryEntry.range[1]}` : '';
+            const summaryBadge = renderSummaryLevelBadge(summaryEntry);
             return `
             <div class="horae-timeline-item summary horae-summary-collapsed" data-message-id="${e.messageIndex}" data-summary-id="${summaryId}">
                 <div class="horae-timeline-summary-icon"><i class="fa-solid fa-file-lines"></i></div>
                 <div class="horae-timeline-content">
-                    <div class="horae-timeline-summary"><span class="horae-level-badge summary">${t('timeline.summaryBadge')}</span>${t('timeline.summaryExpanded')}</div>
+                    <div class="horae-timeline-summary">${summaryBadge}${t('timeline.summaryExpanded')}</div>
                     <div class="horae-timeline-meta">${rangeStr} · ${summaryEntry?.auto ? t('timeline.autoSummary') : t('timeline.manualSummary')}</div>
                 </div>
                 <div class="horae-summary-actions">
@@ -1566,6 +1572,7 @@ function updateTimelineDisplay() {
             const summaryEntry = summaryId ? summaries.find(s => s.id === summaryId) : null;
             const isActive = summaryEntry?.active;
             const rangeStr = summaryEntry ? `#${summaryEntry.range[0]}-#${summaryEntry.range[1]}` : '';
+            const summaryBadge = renderSummaryLevelBadge(summaryEntry);
             // 有 summaryId 的摘要事件带切换/删除/编辑按钮
             const toggleBtns = summaryId ? `
                 <div class="horae-summary-actions">
@@ -1588,7 +1595,7 @@ function updateTimelineDisplay() {
                     <i class="fa-solid fa-file-lines"></i>
                 </div>
                 <div class="horae-timeline-content">
-                    <div class="horae-timeline-summary">${levelBadge}${summaryDisplay}</div>
+                    <div class="horae-timeline-summary">${summaryBadge}${summaryDisplay}</div>
                     <div class="horae-timeline-meta">${rangeStr ? rangeStr + ' · ' : ''}${summaryEntry?.auto ? t('timeline.autoSummary') : ''} ${t('timeline.summaryBadge')} · #${e.messageIndex}</div>
                 </div>
                 ${toggleBtns}
@@ -11588,6 +11595,23 @@ function initSettingsEvents() {
             showToast(t('toast.fixedSummaryStates', { n: result }), 'success');
         } else {
             showToast(t('toast.fixedSummaryStates', { n: 0 }), 'info');
+        }
+    });
+    $('#horae-btn-auto-summary-now').on('click', async () => {
+        if (_summaryInProgress) {
+            showToast('自动总结正在执行中', 'info');
+            return;
+        }
+        if (!settings.enabled || !settings.autoSummaryEnabled || !settings.sendTimeline) {
+            showToast('自动总结未启用（请检查总开关、自动总结、时间线发送）', 'warning');
+            return;
+        }
+        showToast('已手动触发自动总结检查', 'info');
+        try {
+            await checkAutoSummary();
+        } catch (err) {
+            console.error('[Horae] manual auto-summary trigger failed:', err);
+            showToast(t('toast.autoSummaryFailed', { error: err?.message || err }), 'error');
         }
     });
 
