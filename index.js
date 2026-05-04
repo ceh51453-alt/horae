@@ -12896,6 +12896,30 @@ function initSettingsEvents() {
         icon.toggleClass('collapsed');
     });
 
+    // 高级设置折叠切换
+    $('#horae-advanced-collapse-toggle').on('click', function () {
+        const body = $('#horae-advanced-collapse-body');
+        const icon = $(this).find('.horae-collapse-icon');
+        body.slideToggle(200);
+        icon.toggleClass('collapsed');
+    });
+
+    // 自定义表格折叠切换
+    $('#horae-custom-tables-collapse-toggle').on('click', function () {
+        const body = $('#horae-custom-tables-collapse-body');
+        const icon = $(this).find('.horae-collapse-icon');
+        body.slideToggle(200);
+        icon.toggleClass('collapsed');
+    });
+
+    // 发送给AI的内容折叠切换
+    $('#horae-send-to-ai-collapse-toggle').on('click', function () {
+        const body = $('#horae-send-to-ai-collapse-body');
+        const icon = $(this).find('.horae-collapse-icon');
+        body.slideToggle(200);
+        icon.toggleClass('collapsed');
+    });
+
     // 自定义CSS区域折叠切换
     $('#horae-css-collapse-toggle').on('click', function () {
         const body = $('#horae-css-collapse-body');
