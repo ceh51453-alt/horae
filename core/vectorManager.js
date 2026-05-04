@@ -452,9 +452,10 @@ export class VectorManager {
      * @param {number} topK
      * @param {number} threshold
      * @param {Set<number>} excludeIndices - 排除的消息索引（已在上下文中）
+     * @param {Map<number, Set<string>>} excludeReasonMap - 排除原因映射（可选）
      * @returns {Promise<Array<{messageIndex: number, similarity: number, document: string}>>}
      */
-    async search(queryText, topK = 5, threshold = 0.72, excludeIndices = new Set(), pureMode = false) {
+    async search(queryText, topK = 5, threshold = 0.72, excludeIndices = new Set(), pureMode = false, excludeReasonMap = null) {
         if (!this.isReady || !queryText || this.vectors.size === 0) return [];
 
         const prepared = this._prepareText(queryText, true);
@@ -471,21 +472,52 @@ export class VectorManager {
 
         const scored = [];
         const allScored = [];
+        const excludedByIndex = [];
+        const belowThreshold = [];
         let searchedCount = 0;
 
+        const resolveExcludeReasons = (msgIdx) => {
+            if (!(excludeReasonMap instanceof Map)) return ['unknown'];
+            const reasons = excludeReasonMap.get(msgIdx);
+            if (!reasons) return ['unknown'];
+            if (Array.isArray(reasons)) return reasons.length > 0 ? reasons : ['unknown'];
+            if (reasons instanceof Set) return reasons.size > 0 ? [...reasons] : ['unknown'];
+            return [String(reasons)];
+        };
+
         for (const [msgIdx, entry] of this.vectors) {
-            if (excludeIndices.has(msgIdx)) continue;
+            if (excludeIndices.has(msgIdx)) {
+                excludedByIndex.push({ messageIndex: msgIdx, reasons: resolveExcludeReasons(msgIdx) });
+                continue;
+            }
             searchedCount++;
             const sim = this._dotProduct(queryVec, entry.vector);
             allScored.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
             if (sim >= threshold) {
                 scored.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
+            } else {
+                belowThreshold.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
+            }
+        }
+
+        if (excludedByIndex.length > 0) {
+            excludedByIndex.sort((a, b) => a.messageIndex - b.messageIndex);
+            console.log(`[Horae Vector] 排除索引过滤: ${excludedByIndex.length} 条未参与相似度计算`);
+            for (const x of excludedByIndex) {
+                console.log(`  #${x.messageIndex} | reason=${x.reasons.join('+')}`);
             }
         }
 
         allScored.sort((a, b) => b.similarity - a.similarity);
         const bestSim = allScored.length > 0 ? allScored[0].similarity : 0;
         console.log(`[Horae Vector] 搜索了 ${searchedCount} 条 | 最高相似度=${bestSim.toFixed(4)} | 超过阈值(${threshold}): ${scored.length} 条`);
+        if (belowThreshold.length > 0) {
+            belowThreshold.sort((a, b) => b.similarity - a.similarity);
+            console.log(`[Horae Vector] 阈值过滤: ${belowThreshold.length} 条低于阈值(${threshold})`);
+            for (const x of belowThreshold) {
+                console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=below-threshold`);
+            }
+        }
         if (scored.length === 0 && allScored.length > 0) {
             console.log(`[Horae Vector] 阈值下 Top-5 候选:`);
             for (const c of allScored.slice(0, 5)) {
@@ -496,10 +528,22 @@ export class VectorManager {
         scored.sort((a, b) => b.similarity - a.similarity);
 
         const adjusted = pureMode ? scored : this._adjustThresholdByFrequency(scored, threshold);
-        if (!pureMode) console.log(`[Horae Vector] 频率过滤后: ${adjusted.length} 条`);
+        if (!pureMode) {
+            const adjustedIds = new Set(adjusted.map(x => x.messageIndex));
+            const removedByFrequency = scored.filter(x => !adjustedIds.has(x.messageIndex));
+            console.log(`[Horae Vector] 频率过滤后: ${adjusted.length} 条 | 过滤 ${removedByFrequency.length} 条`);
+            for (const x of removedByFrequency) {
+                console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=frequency-adjusted-threshold`);
+            }
+        }
 
         const deduped = this._deduplicateResults(adjusted);
-        console.log(`[Horae Vector] 去重后: ${deduped.length} 条`);
+        const dedupedIds = new Set(deduped.map(x => x.messageIndex));
+        const removedByDedup = adjusted.filter(x => !dedupedIds.has(x.messageIndex));
+        console.log(`[Horae Vector] 去重后: ${deduped.length} 条 | 过滤 ${removedByDedup.length} 条`);
+        for (const x of removedByDedup) {
+            console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=deduplicated`);
+        }
 
         return deduped.slice(0, topK);
     }
@@ -603,18 +647,33 @@ export class VectorManager {
 
         const EXCLUDE_RECENT = 5;
         const excludeIndices = new Set();
+        const excludeReasonMap = new Map();
+        const addExcludeReason = (idx, reason) => {
+            if (!excludeReasonMap.has(idx)) excludeReasonMap.set(idx, new Set());
+            excludeReasonMap.get(idx).add(reason);
+        };
         for (let i = Math.max(0, chat.length - EXCLUDE_RECENT); i < chat.length; i++) {
             excludeIndices.add(i);
+            addExcludeReason(i, 'recent-window');
         }
         if (extraExcludeIndices && typeof extraExcludeIndices[Symbol.iterator] === 'function') {
             for (const idx of extraExcludeIndices) {
                 if (Number.isInteger(idx) && idx >= 0 && idx < chat.length) {
                     excludeIndices.add(idx);
+                    addExcludeReason(idx, 'already-in-prompt');
                 }
             }
         }
         if (excludeIndices.size > EXCLUDE_RECENT) {
             console.log(`[Horae Vector] 额外排除已在Prompt中的楼层: +${excludeIndices.size - EXCLUDE_RECENT}`);
+        }
+        if (excludeIndices.size > 0) {
+            const sortedExcluded = [...excludeIndices].sort((a, b) => a - b);
+            console.log(`[Horae Vector] 本次检索排除楼层明细: ${sortedExcluded.length} 条`);
+            for (const idx of sortedExcluded) {
+                const reasons = [...(excludeReasonMap.get(idx) || ['unknown'])];
+                console.log(`  #${idx} | reason=${reasons.join('+')}`);
+            }
         }
 
         const merged = new Map();
@@ -629,7 +688,18 @@ export class VectorManager {
             merged.set(r.messageIndex, r);
         }
 
-        const hybridResults = await this._hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, recallTopK, recallThreshold, pureMode);
+        const hybridResults = await this._hybridSearch(
+            userQuery,
+            state,
+            horaeManager,
+            skipLast,
+            settings,
+            excludeIndices,
+            excludeReasonMap,
+            recallTopK,
+            recallThreshold,
+            pureMode
+        );
         console.log(`[Horae Vector] 向量混合搜索: ${hybridResults.length} 条命中`);
         for (const r of hybridResults) {
             if (!merged.has(r.messageIndex)) {
@@ -1506,7 +1576,7 @@ export class VectorManager {
     // 向量+关键词混合搜索（兜底）
     // ========================================
 
-    async _hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, topK, threshold, pureMode = false) {
+    async _hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, excludeReasonMap, topK, threshold, pureMode = false) {
         if (!this.isReady || this.vectors.size === 0) return [];
 
         // 跳过 user 消息，取最近一条 AI 消息的完整 meta（含 events）
@@ -1526,7 +1596,7 @@ export class VectorManager {
         // 严格使用用户设置阈值
         const mergedThreshold = threshold;
 
-        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode);
+        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode, excludeReasonMap);
         results = results.map(r => ({ ...r, source: 'merged' }));
         console.log(`[Horae Vector] 合并查询搜索: ${results.length} 条 | threshold=${mergedThreshold.toFixed(2)}`);
 
