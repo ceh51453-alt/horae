@@ -15036,6 +15036,15 @@ async function generateWithDirectApi(prompt) {
     //             source: "openai",   // 根据你的接口类型选择
     //         },
     //         overrides: {
+
+    //             world_info_before: '',
+    //             persona_description: '',
+    //             char_description: '',
+    //             char_personality: '',
+    //             scenario: '',
+    //             world_info_after: '',
+    //             dialogue_examples: '',
+
     //             chat_history: {
     //                 prompts: [],    // 去除历史聊天
     //             }
