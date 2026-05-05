@@ -15011,12 +15011,12 @@ async function generateWithDirectApi(prompt) {
     const _model = settings.autoSummaryModel.trim();
     const _apiKey = settings.autoSummaryApiKey.trim();
     if (/gemini/i.test(_model)) {
-        return await _geminiNativeRequest(prompt, settings.autoSummaryApiUrl.trim(), _model, _apiKey);
+        // return await _geminiNativeRequest(prompt, settings.autoSummaryApiUrl.trim(), _model, _apiKey);
     }
     let url = settings.autoSummaryApiUrl.trim();
     if (!url.endsWith('/chat/completions')) {
-        url = url.replace(/\/+$/, '') + '/chat/completions';
-        // url = url.replace(/\/+$/, '');
+        // url = url.replace(/\/+$/, '') + '/chat/completions';
+        url = url.replace(/\/+$/, '');
     }
     const messages = await _buildSummaryMessages(prompt);
     const body = {
@@ -15040,66 +15040,85 @@ async function generateWithDirectApi(prompt) {
     }
     console.log(`[Horae] 独立API请求: ${url}, 模型: ${body.model}`);
 
-    // 酒馆助手部分  
-    // const guardedUserInput = `${_createNoContextInjectionMarker()}\n${String(prompt ?? '')}`;
-    // try {
-    //     const resp = await TavernHelper.generate({
-    //         user_input: guardedUserInput,
+    // 酒馆助手部分
+    const rawDataPrompt = horaeManager.generateCompactPrompt(0, { includeTimeline: true });
+    const { mainPrompt: snapshotPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
+    const orderedPrompts = [];
+    orderedPrompts.push('user_input');
+    if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
+    if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
 
-    //         custom_api: {
-    //             apiurl: url,        // 你的接口地址 仅v1结尾,不能带后缀
-    //             key: _apiKey,       // 你的 API Key
-    //             model: _model,      // 模型名
-    //             source: "openai",   // 根据你的接口类型选择
-    //         },
-    //         overrides: {
+    const guardedUserInput = `${_createNoContextInjectionMarker()}\n${String(prompt ?? '')}`;
+    try {
+        // const resp = await TavernHelper.generate({
+        //     user_input: guardedUserInput,
 
-    //             world_info_before: '',
-    //             persona_description: '',
-    //             char_description: '',
-    //             char_personality: '',
-    //             scenario: '',
-    //             world_info_after: '',
-    //             dialogue_examples: '',
+        //     custom_api: {
+        //         apiurl: url,        // 你的接口地址 仅v1结尾,不能带后缀
+        //         key: _apiKey,       // 你的 API Key
+        //         model: _model,      // 模型名
+        //         source: "openai",   // 根据你的接口类型选择
+        //     },
+        //     overrides: {
 
-    //             chat_history: {
-    //                 prompts: [],    // 去除历史聊天
-    //             }
-    //         }
-    //     });
+        //         world_info_before: '',
+        //         persona_description: '',
+        //         char_description: '',
+        //         char_personality: '',
+        //         scenario: '',
+        //         world_info_after: '',
+        //         dialogue_examples: '',
 
-    //     console.log(resp, '[Horae] 副API生成结果');
+        //         chat_history: {
+        //             prompts: [],    // 去除历史聊天
+        //         }
+        //     }
+        // });
 
-    //     return resp?.choices?.[0]?.message?.content || '';
+        const resp = await TavernHelper.generateRaw({
+            user_input: guardedUserInput,
+            custom_api: {
+                apiurl: url,        // 你的接口地址 仅v1结尾,不能带后缀
+                key: _apiKey,       // 你的 API Key
+                model: _model,      // 模型名
+                source: "openai",   // 根据你的接口类型选择
+            },
+            ordered_prompts: orderedPrompts
+        })
 
-    // } catch (error) {
-    //     console.error(`出现了异常:${error}`);
-    //     return "";
-    // }
+        console.log(resp, '[Horae] 副API生成结果');
+
+        // return resp?.choices?.[0]?.message?.content || '';
+        return resp || '';
+
+    } catch (error) {
+        console.error(`出现了异常:${error}`);
+        return "";
+    }
 
 
     // 下面是原生gemini的东西
 
-    const resp = await _corsAwareFetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${settings.autoSummaryApiKey.trim()}`
-        },
-        body: JSON.stringify(body)
-    });
+    // const resp = await _corsAwareFetch(url, {
+    //     method: 'POST',
+    //     headers: {
+    //         'Content-Type': 'application/json',
+    //         'Authorization': `Bearer ${settings.autoSummaryApiKey.trim()}`
+    //     },
+    //     body: JSON.stringify(body)
+    // });
 
-    if (!resp.ok) {
-        const errText = await resp.text().catch(() => '');
-        const hint = _httpStatusHint(resp.status);
-        throw new Error(`独立API ${resp.status}: ${errText.slice(0, 200)}${hint ? `\n💡 ${hint}` : ''}`);
-    }
-    const data = await resp.json();
-    const finishReason = data?.choices?.[0]?.finish_reason || '';
-    if (finishReason === 'content_filter' || finishReason === 'SAFETY') {
-        throw new Error('副API安全过滤拦截，建议：降低批次token上限 或 换用限制更宽松的模型');
-    }
-    return data?.choices?.[0]?.message?.content || '';
+    // if (!resp.ok) {
+    //     const errText = await resp.text().catch(() => '');
+    //     const hint = _httpStatusHint(resp.status);
+    //     throw new Error(`独立API ${resp.status}: ${errText.slice(0, 200)}${hint ? `\n💡 ${hint}` : ''}`);
+    // }
+    // const data = await resp.json();
+    // const finishReason = data?.choices?.[0]?.finish_reason || '';
+    // if (finishReason === 'content_filter' || finishReason === 'SAFETY') {
+    //     throw new Error('副API安全过滤拦截，建议：降低批次token上限 或 换用限制更宽松的模型');
+    // }
+    // return data?.choices?.[0]?.message?.content || '';
 }
 
 /**
