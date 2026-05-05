@@ -557,7 +557,7 @@ class HoraeManager {
     }
 
     /** 生成紧凑的上下文注入内容（skipLast: swipe时跳过末尾N条消息） */
-    generateCompactPrompt(skipLast = 0) {
+    generateCompactPrompt(skipLast = 0, options = {}) {
         const state = this.getLatestState(skipLast);
         const lines = [];
 
@@ -579,7 +579,8 @@ class HoraeManager {
             '[Снимок текущего состояния — сравните с сюжетом этого раунда, выводите в <horae> только существенно изменившиеся поля]',
         ));
         
-        const sendTimeline = this.settings?.sendTimeline !== false;
+        const includeTimeline = options?.includeTimeline !== false;
+        const sendTimeline = includeTimeline && this.settings?.sendTimeline !== false;
         const sendCharacters = this.settings?.sendCharacters !== false;
         const sendItems = this.settings?.sendItems !== false;
         

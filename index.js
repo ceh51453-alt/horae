@@ -13973,9 +13973,13 @@ async function generateForSummary(prompt, options = {}) {
     );
     const shouldMarkNoRecall = options?.noVectorRecallMarker ?? defaultNoRecallMarker;
     const shouldSkipContextInject = options?.noContextInjectionMarker ?? defaultNoContextInjectionMarker;
+    const shouldSkipTimelineInject = !!options?.noTimelineInjectionMarker;
+    const shouldSkipSystemInject = !!options?.noSystemPromptInjectionMarker;
     return await _generateForAiTasks(prompt, {
         noVectorRecallMarker: shouldMarkNoRecall,
         noContextInjectionMarker: shouldSkipContextInject,
+        noTimelineInjectionMarker: shouldSkipTimelineInject,
+        noSystemPromptInjectionMarker: shouldSkipSystemInject,
     });
 }
 
@@ -17262,14 +17266,21 @@ async function clearAllData() {
 /**
  * AI任务生成入口（可按设置切换 generateRaw / generate）
  * @param {string} prompt
- * @param {{ noVectorRecallMarker?: boolean, noContextInjectionMarker?: boolean }} opts
+ * @param {{ noVectorRecallMarker?: boolean, noContextInjectionMarker?: boolean, noTimelineInjectionMarker?: boolean, noSystemPromptInjectionMarker?: boolean }} opts
  */
 async function _generateForAiTasks(prompt, opts = {}) {
-    const { noVectorRecallMarker = false, noContextInjectionMarker = false } = opts;
+    const {
+        noVectorRecallMarker = false,
+        noContextInjectionMarker = false,
+        noTimelineInjectionMarker = false,
+        noSystemPromptInjectionMarker = false,
+    } = opts;
     const context = getContext();
     const markerLines = [];
     if (noVectorRecallMarker) markerLines.push(_createNoVectorRecallMarker());
     if (noContextInjectionMarker) markerLines.push(_createNoContextInjectionMarker());
+    if (noTimelineInjectionMarker) markerLines.push(_createNoTimelineInjectionMarker());
+    if (noSystemPromptInjectionMarker) markerLines.push(_createNoSystemPromptInjectionMarker());
     const markerText = markerLines.join('\n');
 
     if (settings.useMainPresetForAiTasks && typeof context?.generate === 'function') {
@@ -17297,7 +17308,13 @@ async function _generateForAiTasks(prompt, opts = {}) {
 
 /** 使用AI分析消息内容（支持轻量上下文 + 上一条 USER 行动 + 角色身份） */
 async function analyzeMessageWithAI(messageContent, opts = {}) {
-    const { messageIndex, noContextInjectionMarker = false } = opts;
+    const {
+        messageIndex,
+        noContextInjectionMarker = false,
+        noVectorRecallMarker = true,
+        noTimelineInjectionMarker = true,
+        noSystemPromptInjectionMarker = true,
+    } = opts;
     const context = getContext();
     const userName = context?.name1 || t('ui.protagonist');
 
@@ -17325,26 +17342,37 @@ async function analyzeMessageWithAI(messageContent, opts = {}) {
     }
 
     const template = settings.customAnalysisPrompt || getDefaultAnalysisPrompt();
-    const analysisPrompt = template
+    let analysisPrompt = template
         .replace(/\{\{user\}\}/gi, userName)
         .replace(/\{\{context\}\}/gi, contextText)
         .replace(/\{\{previousUserMessage\}\}/gi, previousUserMessage)
         .replace(/\{\{content\}\}/gi, messageContent);
 
+    // 去除无用内容
+    analysisPrompt = analysisPrompt
+        .replace(/<think(?:ing)?[\s>][\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/<!--horae[\s\S]*?-->/gi, '');
+
     try {
-        const shouldMarkNoRecall = !!(
-            context?.mainApi === 'openai' &&
-            settings.injectContext &&
-            settings.vectorEnabled
-        );
+        const shouldMarkNoRecall = typeof noVectorRecallMarker === 'boolean'
+            ? noVectorRecallMarker
+            : !!(
+                context?.mainApi === 'openai' &&
+                settings.injectContext &&
+                settings.vectorEnabled
+            );
         console.log(`[Horae] 使用generateForSummary`)
         const response = await generateForSummary(analysisPrompt, {
             taskType: 'brief',
             noVectorRecallMarker: shouldMarkNoRecall,
             noContextInjectionMarker: !!noContextInjectionMarker,
+            // noTimelineInjectionMarker: !!noTimelineInjectionMarker,
+            noTimelineInjectionMarker: false,
+            noSystemPromptInjectionMarker: !!noSystemPromptInjectionMarker,
         });
 
         if (response) {
+            console.log(`AI分析结果:\n${response}`);
             const parsed = horaeManager.parseHoraeTag(response);
             return parsed;
         }
@@ -17459,7 +17487,9 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
         try {
             parsed = await analyzeMessageWithAI(targetTextForAnalysis, {
                 messageIndex: targetIndex,
-                noContextInjectionMarker: true,
+                noVectorRecallMarker: true,
+                noTimelineInjectionMarker: true,
+                noSystemPromptInjectionMarker: true,
             });
         } catch (err) {
             console.warn(`[Horae] 前置补全失败 #${targetIndex}:`, err);
@@ -17956,6 +17986,10 @@ const HORAE_INTERNAL_NO_VECTOR_RECALL_PREFIX = '[HORAE_INTERNAL:NO_VECTOR_RECALL
 const HORAE_INTERNAL_NO_VECTOR_RECALL_RE = /\[HORAE_INTERNAL:NO_VECTOR_RECALL:[^\]]+\]/g;
 const HORAE_INTERNAL_NO_CONTEXT_INJECTION_PREFIX = '[HORAE_INTERNAL:NO_CONTEXT_INJECTION:';
 const HORAE_INTERNAL_NO_CONTEXT_INJECTION_RE = /\[HORAE_INTERNAL:NO_CONTEXT_INJECTION:[^\]]+\]/g;
+const HORAE_INTERNAL_NO_TIMELINE_INJECTION_PREFIX = '[HORAE_INTERNAL:NO_TIMELINE_INJECTION:';
+const HORAE_INTERNAL_NO_TIMELINE_INJECTION_RE = /\[HORAE_INTERNAL:NO_TIMELINE_INJECTION:[^\]]+\]/g;
+const HORAE_INTERNAL_NO_SYSTEM_PROMPT_INJECTION_PREFIX = '[HORAE_INTERNAL:NO_SYSTEM_PROMPT_INJECTION:';
+const HORAE_INTERNAL_NO_SYSTEM_PROMPT_INJECTION_RE = /\[HORAE_INTERNAL:NO_SYSTEM_PROMPT_INJECTION:[^\]]+\]/g;
 
 function _createNoVectorRecallMarker() {
     return `${HORAE_INTERNAL_NO_VECTOR_RECALL_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}]`;
@@ -17963,6 +17997,14 @@ function _createNoVectorRecallMarker() {
 
 function _createNoContextInjectionMarker() {
     return `${HORAE_INTERNAL_NO_CONTEXT_INJECTION_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}]`;
+}
+
+function _createNoTimelineInjectionMarker() {
+    return `${HORAE_INTERNAL_NO_TIMELINE_INJECTION_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}]`;
+}
+
+function _createNoSystemPromptInjectionMarker() {
+    return `${HORAE_INTERNAL_NO_SYSTEM_PROMPT_INJECTION_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}]`;
 }
 
 function _stripNoVectorRecallMarkers(chatMessages) {
@@ -18001,9 +18043,47 @@ function _stripNoContextInjectionMarkers(chatMessages) {
     return found;
 }
 
+function _stripNoTimelineInjectionMarkers(chatMessages) {
+    if (!Array.isArray(chatMessages) || chatMessages.length === 0) return false;
+    let found = false;
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+        const msg = chatMessages[i];
+        if (!msg || typeof msg.content !== 'string') continue;
+        if (!msg.content.includes(HORAE_INTERNAL_NO_TIMELINE_INJECTION_PREFIX)) continue;
+        found = true;
+        const cleaned = msg.content.replace(HORAE_INTERNAL_NO_TIMELINE_INJECTION_RE, '').trim();
+        if (cleaned) {
+            msg.content = cleaned;
+        } else {
+            chatMessages.splice(i, 1);
+        }
+    }
+    return found;
+}
+
+function _stripNoSystemPromptInjectionMarkers(chatMessages) {
+    if (!Array.isArray(chatMessages) || chatMessages.length === 0) return false;
+    let found = false;
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+        const msg = chatMessages[i];
+        if (!msg || typeof msg.content !== 'string') continue;
+        if (!msg.content.includes(HORAE_INTERNAL_NO_SYSTEM_PROMPT_INJECTION_PREFIX)) continue;
+        found = true;
+        const cleaned = msg.content.replace(HORAE_INTERNAL_NO_SYSTEM_PROMPT_INJECTION_RE, '').trim();
+        if (cleaned) {
+            msg.content = cleaned;
+        } else {
+            chatMessages.splice(i, 1);
+        }
+    }
+    return found;
+}
+
 async function onPromptReady(eventData) {
     const skipVectorRecallOnce = _stripNoVectorRecallMarkers(eventData?.chat);
     const skipContextInjectionOnce = _stripNoContextInjectionMarkers(eventData?.chat);
+    const skipTimelineInjectionOnce = _stripNoTimelineInjectionMarkers(eventData?.chat);
+    const skipSystemPromptInjectionOnce = _stripNoSystemPromptInjectionMarkers(eventData?.chat);
     if (_isSummaryGeneration) return;
     if (skipContextInjectionOnce) {
         console.log('[Horae] Internal no-context marker detected, skip Horae context injection for this request');
@@ -18040,11 +18120,20 @@ async function onPromptReady(eventData) {
         const eqAutoApplied = _autoApplyEquipmentTemplatesByRace({ persist: false });
         if (eqAutoApplied && getContext()?.saveChat) await getContext().saveChat();
 
-        const rawDataPrompt = horaeManager.generateCompactPrompt(skipLast);
+        const rawDataPrompt = horaeManager.generateCompactPrompt(skipLast, {
+            includeTimeline: !skipTimelineInjectionOnce,
+        });
         const timelineMode = settings.timelineInjectionMode === 'separate' ? 'separate' : 'inline';
-        const { mainPrompt: dataPrompt, timelinePrompt } = timelineMode === 'separate'
-            ? _splitTimelineSection(rawDataPrompt)
-            : { mainPrompt: rawDataPrompt, timelinePrompt: '' };
+        let dataPrompt = rawDataPrompt;
+        let timelinePrompt = '';
+        if (timelineMode === 'separate' && !skipTimelineInjectionOnce) {
+            const split = _splitTimelineSection(rawDataPrompt);
+            dataPrompt = split.mainPrompt;
+            timelinePrompt = split.timelinePrompt;
+        }
+        if (skipTimelineInjectionOnce) {
+            console.log('[Horae] Internal no-timeline marker detected, skip story timeline injection for this request');
+        }
 
         let recallPrompt = '';
         console.log(`[Horae] 向量检查: vectorEnabled=${settings.vectorEnabled}, isReady=${vectorManager.isReady}, vectors=${vectorManager.vectors.size}`);
@@ -18069,10 +18158,14 @@ async function onPromptReady(eventData) {
             }
         }
 
-        const skipSystemPromptOnSend = _shouldSkipSystemPromptInjectionOnSend();
+        const skipSystemPromptOnSend = _shouldSkipSystemPromptInjectionOnSend() || skipSystemPromptInjectionOnce;
         const rulesPrompt = skipSystemPromptOnSend ? '' : horaeManager.generateSystemPromptAddition();
         if (skipSystemPromptOnSend) {
-            console.log('[Horae] Sub-API brief scope enabled, skipped system injection prompt on send');
+            if (skipSystemPromptInjectionOnce) {
+                console.log('[Horae] Internal no-system marker detected, skip system injection prompt for this request');
+            } else {
+                console.log('[Horae] Sub-API brief scope enabled, skipped system injection prompt on send');
+            }
         }
 
         let antiParaRef = '';
@@ -18098,7 +18191,7 @@ async function onPromptReady(eventData) {
 
         if (depthSource === 'preset') {
             // 预设 @D：不按聊天楼层定位，直接按完整提示词末尾偏移插入
-            if (timelinePrompt) {
+            if (!skipTimelineInjectionOnce && timelinePrompt) {
                 // 剧情轨迹保持与系统 @D 相同的定位逻辑
                 const markerAction = _resolveTimelineInsertIndexByStartMarker(eventData.chat);
                 if (markerAction?.mode === 'replace') {
@@ -18120,7 +18213,7 @@ async function onPromptReady(eventData) {
             console.log(`[Horae] 已注入上下文（预设@D），位置: -${position}${skipLast ? '（已跳过末尾消息）' : ''}${recallPrompt ? '（含向量召回）' : ''}`);
         } else {
             // 系统 @D：保留原有按聊天楼层定位的注入逻辑
-            if (timelinePrompt) {
+            if (!skipTimelineInjectionOnce && timelinePrompt) {
                 const markerAction = _resolveTimelineInsertIndexByStartMarker(eventData.chat);
                 if (markerAction?.mode === 'replace') {
                     eventData.chat[markerAction.index].content = timelinePrompt;
