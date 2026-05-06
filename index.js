@@ -13992,7 +13992,7 @@ async function generateForSummary(prompt, options = {}) {
     console.log(`[Horae] generateForSummary: task=${taskType || 'default'}, useCustom=${useCustom}, hasUrl=${hasUrl}, hasKey=${hasKey}, hasModel=${hasModel}`);
     if (useCustom && hasUrl && hasKey && hasModel) {
         console.log(`[Horae] 使用副API生成`);
-        return await generateWithDirectApi(prompt);
+        return await generateWithDirectApi(prompt, { taskType });
     }
     if (useCustom && (!hasUrl || !hasKey || !hasModel)) {
         const missing = [!hasUrl && 'API地址', !hasKey && 'API密钥', !hasModel && '模型名称'].filter(Boolean).join('、');
@@ -14016,6 +14016,7 @@ async function generateForSummary(prompt, options = {}) {
     const shouldSkipTimelineInject = !!options?.noTimelineInjectionMarker;
     const shouldSkipSystemInject = !!options?.noSystemPromptInjectionMarker;
     return await _generateForAiTasks(prompt, {
+        taskType,
         noVectorRecallMarker: shouldMarkNoRecall,
         noContextInjectionMarker: shouldSkipContextInject,
         noTimelineInjectionMarker: shouldSkipTimelineInject,
@@ -14052,7 +14053,9 @@ function _buildAutoSummaryPrompt(userName, eventText, sourceText, count) {
 }
 
 function _buildAutoResummaryPrompt(userName, eventText, count) {
-    const autoResumTemplate = settings.customAutoResummaryPrompt || getDefaultAutoResummaryPrompt();
+    let autoResumTemplate = settings.customAutoResummaryPrompt || getDefaultAutoResummaryPrompt();
+    // autoResumTemplate = `${_createNoContextInjectionMarker()}\n${autoResumTemplate}`
+    // console.log(`二次总结提示词:\n${autoResumTemplate}`);
     return autoResumTemplate
         .replace(/\{\{events\}\}/gi, eventText || '')
         .replace(/\{\{fulltext\}\}/gi, '')
@@ -15034,7 +15037,10 @@ function _vectorErrorHint(err) {
 }
 
 /** 直接请求API端点，完全独立于酒馆主连接，支持真并行 */
-async function generateWithDirectApi(prompt) {
+async function generateWithDirectApi(prompt, options = {}) {
+    const taskType = options?.taskType || '';
+    console.log(taskType, "taskType");
+    const skipSnapshotTimelineInjection = taskType === 'autoSummary';
     const _model = settings.autoSummaryModel.trim();
     const _apiKey = settings.autoSummaryApiKey.trim();
     if (/gemini/i.test(_model)) {
@@ -15068,8 +15074,6 @@ async function generateWithDirectApi(prompt) {
     console.log(`[Horae] 独立API请求: ${url}, 模型: ${body.model}`);
 
     // 酒馆助手部分
-    const rawDataPrompt = horaeManager.generateCompactPrompt(0, { includeTimeline: true });
-    const { mainPrompt: snapshotPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
     const orderedPrompts = [];
     const skipInjectionMarkers = [
         _createNoContextInjectionMarker(),
@@ -15081,8 +15085,14 @@ async function generateWithDirectApi(prompt) {
     // 所以把 marker 明确作为 system prompt 放进 ordered_prompts，确保 onPromptReady 能识别并短路。
     orderedPrompts.push({ role: 'system', content: skipInjectionMarkers });
     orderedPrompts.push('user_input');
-    if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
-    if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
+    if (!skipSnapshotTimelineInjection) {
+        const rawDataPrompt = horaeManager.generateCompactPrompt(0, { includeTimeline: true });
+        const { mainPrompt: snapshotPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
+        if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
+        if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
+    } else {
+        console.log('[Horae] autoSummary task: skip snapshot/timeline ordered_prompts injection (direct API)');
+    }
 
     // console.log(`副API组装提示词:\n${JSON.stringify(orderedPrompts)}`);
 
@@ -17316,16 +17326,15 @@ async function clearAllData() {
  */
 async function _generateForAiTasks(prompt, opts = {}) {
     const {
+        taskType = '',
         noVectorRecallMarker = false,
         noContextInjectionMarker = false,
         noTimelineInjectionMarker = false,
         noSystemPromptInjectionMarker = false,
     } = opts;
+    const skipSnapshotTimelineInjection = taskType === 'autoSummary';
     const context = getContext();
     const markerLines = [];
-
-    const rawDataPrompt = horaeManager.generateCompactPrompt(0, { includeTimeline: true });
-    const { mainPrompt: snapshotPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
     const orderedPrompts = [];
     const skipInjectionMarkers = [
         _createNoContextInjectionMarker(),
@@ -17337,8 +17346,14 @@ async function _generateForAiTasks(prompt, opts = {}) {
     // 所以把 marker 明确作为 system prompt 放进 ordered_prompts，确保 onPromptReady 能识别并短路。
     orderedPrompts.push({ role: 'system', content: skipInjectionMarkers });
     orderedPrompts.push('user_input');
-    if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
-    if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
+    if (!skipSnapshotTimelineInjection) {
+        const rawDataPrompt = horaeManager.generateCompactPrompt(0, { includeTimeline: true });
+        const { mainPrompt: snapshotPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
+        if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
+        if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
+    } else {
+        console.log('[Horae] autoSummary task: skip snapshot/timeline ordered_prompts injection');
+    }
 
     if (settings.useMainPresetForAiTasks && typeof context?.generate === 'function') {
         const finalPrompt = `${skipInjectionMarkers}\n${prompt}`
