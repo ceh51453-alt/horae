@@ -15084,33 +15084,10 @@ async function generateWithDirectApi(prompt) {
     if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
     if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
 
+    console.log(`组装提示词:\n${orderedPrompts}`);
+
     const guardedUserInput = String(prompt ?? '');
     try {
-        // const resp = await TavernHelper.generate({
-        //     user_input: guardedUserInput,
-
-        //     custom_api: {
-        //         apiurl: url,        // 你的接口地址 仅v1结尾,不能带后缀
-        //         key: _apiKey,       // 你的 API Key
-        //         model: _model,      // 模型名
-        //         source: "openai",   // 根据你的接口类型选择
-        //     },
-        //     overrides: {
-
-        //         world_info_before: '',
-        //         persona_description: '',
-        //         char_description: '',
-        //         char_personality: '',
-        //         scenario: '',
-        //         world_info_after: '',
-        //         dialogue_examples: '',
-
-        //         chat_history: {
-        //             prompts: [],    // 去除历史聊天
-        //         }
-        //     }
-        // });
-
         const resp = await TavernHelper.generateRaw({
             user_input: guardedUserInput,
             custom_api: {
@@ -15124,11 +15101,12 @@ async function generateWithDirectApi(prompt) {
 
         console.log(resp, '[Horae] 副API生成结果');
 
-        // return resp?.choices?.[0]?.message?.content || '';
         return resp || '';
 
     } catch (error) {
-        console.error(`出现了异常:${error}`);
+        const errMsg = error?.message || String(error);
+        console.error(`出现了异常:${errMsg}`, error);
+        showToast(`副API生成失败：${errMsg}`, 'error');
         return "";
     }
 
