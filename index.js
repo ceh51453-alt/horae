@@ -15084,7 +15084,7 @@ async function generateWithDirectApi(prompt) {
     if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
     if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
 
-    console.log(`组装提示词:\n${orderedPrompts}`);
+    console.log(`副API组装提示词:\n${JSON.stringify(orderedPrompts)}`);
 
     const guardedUserInput = String(prompt ?? '');
     try {

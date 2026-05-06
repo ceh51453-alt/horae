@@ -557,6 +557,31 @@ class HoraeManager {
         return this.getEvents(limit, 'all');
     }
 
+    _isTrackableAiMessage(msg) {
+        if (!msg || msg.is_user) return false;
+        if (msg.horae_meta?._skipHorae) return false;
+        return true;
+    }
+
+    _resolveAutoSummaryKeepStart(skipLast = 0) {
+        if (!this.settings?.autoSummaryEnabled) return null;
+
+        const keepRaw = parseInt(this.settings?.autoSummaryKeepRecent, 10);
+        const keepCount = Math.max(0, Number.isFinite(keepRaw) ? keepRaw : 10);
+        const chat = this.getChat();
+        const end = Math.max(0, chat.length - Math.max(0, skipLast));
+        const allAiIndices = [];
+
+        for (let i = 0; i < end; i++) {
+            if (this._isTrackableAiMessage(chat[i])) allAiIndices.push(i);
+        }
+
+        if (allAiIndices.length === 0) return null;
+        if (keepCount <= 0) return end;
+        if (allAiIndices.length <= keepCount) return 0;
+        return allAiIndices[allAiIndices.length - keepCount];
+    }
+
     /** 生成紧凑的上下文注入内容（skipLast: swipe时跳过末尾N条消息） */
     generateCompactPrompt(skipLast = 0, options = {}) {
         const state = this.getLatestState(skipLast);
@@ -1014,10 +1039,16 @@ class HoraeManager {
             const timelineChat = this.getChat();
             const autoSums = timelineChat?.[0]?.horae_meta?.autoSummaries || [];
             const activeSumIds = new Set(autoSums.filter(s => s.active).map(s => s.id));
+            const keepStart = this._resolveAutoSummaryKeepStart(skipLast);
             // 被活跃摘要压缩的事件不发送；摘要为 inactive 时其 _summaryId 事件不发送
             const events = allEvents.filter(e => {
                 if (e.event?._compressedBy && activeSumIds.has(e.event._compressedBy)) return false;
                 if (e.event?._summaryId && !activeSumIds.has(e.event._summaryId)) return false;
+                if (Number.isInteger(keepStart) && e.messageIndex >= keepStart) {
+                    const msg = timelineChat?.[e.messageIndex];
+                    // keepRecent 只跳过“尾部可见楼层”；隐藏楼层仍允许作为历史轨迹注入
+                    if (!msg?.is_hidden) return false;
+                }
                 return true;
             });
             if (events.length > 0) {
