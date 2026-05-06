@@ -824,7 +824,7 @@
         "rerankUrl": "URL Rerank API (необязательно)",
         "rerankKey": "Ключ Rerank API (необязательно)",
         "rerankModel": "Rerank-модель",
-        "rerankFetchHint": "Заполните URL и ключ, затем нажмите для получения списка.\nРекомендуется: qwen3-Reranker-4B / 8B",
+        "rerankFetchHint": "Заполните URL и ключ, затем нажмите для получения списка.\nРекомендуется: qwen3-Reranker-4B",
         "rerankFulltext": "Rerank — точность по полному тексту",
         "rerankFulltextHint": "По умолчанию Rerank использует конспекты. При включении — оригинальный полный текст для точного ранжирования.\nМожет уловить детали, упущенные в конспектах, но требует поддержки длинного контекста.\nТолько для Rerank-моделей с длинным контекстом (напр. Qwen3-Reranker, 32K).\nbge-reranker-v2-m3 (≤1024) и bce-reranker (≤512): НЕ включайте.",
         "rerankCandidates": "Размер пула кандидатов Rerank",

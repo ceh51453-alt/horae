@@ -828,7 +828,7 @@
         "rerankUrl": "Rerank API URL (선택사항)",
         "rerankKey": "Rerank API Key (선택사항)",
         "rerankModel": "Rerank 모델",
-        "rerankFetchHint": "URL과 키를 입력한 후 클릭하여 가져오세요.\n권장:  qwen3-Reranker-4B / 8B",
+        "rerankFetchHint": "URL과 키를 입력한 후 클릭하여 가져오세요.\n권장:  qwen3-Reranker-4B",
         "rerankFulltext": "Rerank 전문 정밀도",
         "rerankFulltextHint": "기본적으로 Rerank는 요약을 사용합니다. 활성화하면 원본 메시지 전문으로 정밀 순위를 매깁니다.\n요약에서 놓친 세부 사항을 포착할 수 있지만 긴 컨텍스트 모델 지원이 필요합니다.\n긴 컨텍스트 Rerank 모델 전용 (예: Qwen3-Reranker, 32K).\nbge-reranker-v2-m3 (≤1024) 및 bce-reranker (≤512): 활성화하지 마세요.",
         "rerankCandidates": "Rerank 후보 풀 수",

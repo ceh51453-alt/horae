@@ -829,7 +829,7 @@
         "rerankUrl": "Rerank API URL (optional)",
         "rerankKey": "Rerank API Key (optional)",
         "rerankModel": "Rerank Model",
-        "rerankFetchHint": "Fill in URL and key, then click to fetch.\nRecommended:  qwen3-Reranker-4B / 8B",
+        "rerankFetchHint": "Fill in URL and key, then click to fetch.\nRecommended:  qwen3-Reranker-4B",
         "rerankFulltext": "Rerank Fulltext Precision",
         "rerankFulltextHint": "By default Rerank uses summaries. When enabled, uses original message fulltext for precision ranking.\nCan capture details missed by summaries, but requires long-context model support.\nOnly for long-context Rerank models (e.g. Qwen3-Reranker, 32K).\nbge-reranker-v2-m3 (≤1024) and bce-reranker (≤512): Do NOT enable.",
         "rerankCandidates": "Rerank Candidate Pool Size",

@@ -15084,7 +15084,7 @@ async function generateWithDirectApi(prompt) {
     if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
     if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
 
-    console.log(`副API组装提示词:\n${JSON.stringify(orderedPrompts)}`);
+    // console.log(`副API组装提示词:\n${JSON.stringify(orderedPrompts)}`);
 
     const guardedUserInput = String(prompt ?? '');
     try {
@@ -17323,16 +17323,25 @@ async function _generateForAiTasks(prompt, opts = {}) {
     } = opts;
     const context = getContext();
     const markerLines = [];
-    if (noVectorRecallMarker) markerLines.push(_createNoVectorRecallMarker());
-    if (noContextInjectionMarker) markerLines.push(_createNoContextInjectionMarker());
-    if (noTimelineInjectionMarker) markerLines.push(_createNoTimelineInjectionMarker());
-    if (noSystemPromptInjectionMarker) markerLines.push(_createNoSystemPromptInjectionMarker());
-    const markerText = markerLines.join('\n');
+
+    const rawDataPrompt = horaeManager.generateCompactPrompt(0, { includeTimeline: true });
+    const { mainPrompt: snapshotPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
+    const orderedPrompts = [];
+    const skipInjectionMarkers = [
+        _createNoContextInjectionMarker(),
+        _createNoTimelineInjectionMarker(),
+        _createNoVectorRecallMarker(),
+        _createNoSystemPromptInjectionMarker(),
+    ].join('\n');
+    // generateRaw 的 user_input 在 prompt-ready 阶段不一定落到 eventData.chat[].content，
+    // 所以把 marker 明确作为 system prompt 放进 ordered_prompts，确保 onPromptReady 能识别并短路。
+    orderedPrompts.push({ role: 'system', content: skipInjectionMarkers });
+    orderedPrompts.push('user_input');
+    if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
+    if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
 
     if (settings.useMainPresetForAiTasks && typeof context?.generate === 'function') {
-        const finalPrompt = markerText
-            ? `${markerText}\n${prompt}`
-            : prompt;
+        const finalPrompt = `${skipInjectionMarkers}\n${prompt}`
         return await context.generate('quiet', {
             quiet_prompt: finalPrompt,
             quietToLoud: false,
@@ -17340,16 +17349,12 @@ async function _generateForAiTasks(prompt, opts = {}) {
         });
     }
 
-    if (markerText) {
-        return await context.generateRaw({
-            prompt: [
-                { role: 'system', content: markerText },
-                { role: 'user', content: prompt },
-            ],
-        });
-    }
+    const resp = await TavernHelper.generateRaw({
+        user_input: prompt,
+        ordered_prompts: orderedPrompts
+    })
 
-    return await context.generateRaw(prompt, null, false, false);
+    return resp;
 }
 
 /** 使用AI分析消息内容（支持轻量上下文 + 上一条 USER 行动 + 角色身份） */

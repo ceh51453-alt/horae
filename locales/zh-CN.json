@@ -826,7 +826,7 @@
         "rerankUrl": "Rerank API 地址（可选）",
         "rerankKey": "Rerank API 密钥（可选）",
         "rerankModel": "Rerank 模型",
-        "rerankFetchHint": "填写地址和密钥后点击拉取。\n推荐：qwen3-Reranker-4B / 8B （较差的模型会影响召回准确率）",
+        "rerankFetchHint": "填写地址和密钥后点击拉取。\n推荐：qwen3-Reranker-4B （较差的模型会影响召回准确率）",
         "rerankFulltext": "Rerank 全文精度",
         "rerankFulltextHint": "默认 Rerank 使用摘要。开启后使用原始消息全文做精度排序。\n可捕捉摘要遗漏的细节，但需要长上下文模型支持。\n仅适用于长上下文的 Rerank 模型（如 Qwen3-Reranker，32K）。\nbge-reranker-v2-m3（≤1024）与 bce-reranker（≤512）：请勿开启。",
         "rerankCandidates": "Rerank 候选池条数",

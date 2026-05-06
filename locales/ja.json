@@ -833,7 +833,7 @@
         "rerankUrl": "Rerank API URL（任意）",
         "rerankKey": "Rerank API Key（任意）",
         "rerankModel": "Rerankモデル",
-        "rerankFetchHint": "URLとキーを入力してからクリックで取得。\n推奨：qwen3-Reranker-4B / 8B",
+        "rerankFetchHint": "URLとキーを入力してからクリックで取得。\n推奨：qwen3-Reranker-4B",
         "rerankFulltext": "Rerank全文精度",
         "rerankFulltextHint": "デフォルトではRerankは要約を使用。有効にすると元のメッセージ全文で精密ランキング。\n要約では見落とされる詳細を捕捉できますが、長コンテキストモデルが必要です。\n長コンテキストRerankモデル向け（例：Qwen3-Reranker、32K）。\nbge-reranker-v2-m3（≤1024）、bce-reranker（≤512）：有効にしないでください。",
         "rerankCandidates": "Rerank候補プール件数",
