@@ -1212,6 +1212,7 @@ function getAllAgenda() {
     const userItems = getUserAgenda();
     for (const item of userItems) {
         if (item._deleted) continue;
+        const sourceMsgIndex = Number.isInteger(item._msgIndex) ? item._msgIndex : null;
         all.push({
             text: item.text,
             date: item.date || '',
@@ -1219,6 +1220,7 @@ function getAllAgenda() {
             done: !!item.done,
             createdAt: item.createdAt || 0,
             _store: 'user',
+            _msgIndex: sourceMsgIndex,
             _index: all.length
         });
     }
@@ -1981,6 +1983,9 @@ function updateAgendaDisplay() {
         const sourceIcon = item.source === 'ai'
             ? `<i class="fa-solid fa-robot horae-agenda-source-ai" title="${t('badge.aiRecord')}"></i>`
             : `<i class="fa-solid fa-user horae-agenda-source-user" title="${t('badge.userAdded')}"></i>`;
+        const floorDisplay = Number.isInteger(item._msgIndex)
+            ? `<span class="horae-agenda-floor"><i class="fa-solid fa-layer-group"></i> ${t('ui.messageLabel', { id: item._msgIndex })}</span>`
+            : '';
         const dateDisplay = item.date ? `<span class="horae-agenda-date"><i class="fa-regular fa-calendar"></i> ${escapeHtml(item.date)}</span>` : '';
 
         // 多选模式：显示 checkbox
@@ -1993,7 +1998,7 @@ function updateAgendaDisplay() {
             <div class="horae-agenda-item${selectedClass}" data-agenda-idx="${index}">
                 ${checkboxHtml}
                 <div class="horae-agenda-body">
-                    <div class="horae-agenda-meta">${sourceIcon}${dateDisplay}</div>
+                    <div class="horae-agenda-meta">${sourceIcon}${floorDisplay}${dateDisplay}</div>
                     <div class="horae-agenda-text">${escapeHtml(item.text)}</div>
                 </div>
             </div>
@@ -3042,7 +3047,17 @@ function openAgendaEditModal(agendaItem = null) {
         } else {
             // 新增
             const agenda = getUserAgenda();
-            agenda.push({ text, date, source: 'user', done: false, createdAt: Date.now() });
+            const context = getContext();
+            const lastMsgIndex = (context?.chat?.length || 0) - 1;
+            const sourceMsgIndex = lastMsgIndex >= 1 ? lastMsgIndex : null;
+            agenda.push({
+                text,
+                date,
+                source: 'user',
+                done: false,
+                createdAt: Date.now(),
+                ...(sourceMsgIndex !== null ? { _msgIndex: sourceMsgIndex } : {})
+            });
             setUserAgenda(agenda);
         }
 
@@ -15044,11 +15059,20 @@ async function generateWithDirectApi(prompt) {
     const rawDataPrompt = horaeManager.generateCompactPrompt(0, { includeTimeline: true });
     const { mainPrompt: snapshotPrompt, timelinePrompt } = _splitTimelineSection(rawDataPrompt);
     const orderedPrompts = [];
+    const skipInjectionMarkers = [
+        _createNoContextInjectionMarker(),
+        _createNoTimelineInjectionMarker(),
+        _createNoVectorRecallMarker(),
+        _createNoSystemPromptInjectionMarker(),
+    ].join('\n');
+    // generateRaw 的 user_input 在 prompt-ready 阶段不一定落到 eventData.chat[].content，
+    // 所以把 marker 明确作为 system prompt 放进 ordered_prompts，确保 onPromptReady 能识别并短路。
+    orderedPrompts.push({ role: 'system', content: skipInjectionMarkers });
     orderedPrompts.push('user_input');
     if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
     if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
 
-    const guardedUserInput = `${_createNoContextInjectionMarker()}\n${String(prompt ?? '')}`;
+    const guardedUserInput = String(prompt ?? '');
     try {
         // const resp = await TavernHelper.generate({
         //     user_input: guardedUserInput,
@@ -17372,6 +17396,13 @@ async function analyzeMessageWithAI(messageContent, opts = {}) {
             }
         }
     }
+
+    // 去除正文里面的horae标签，避免AI照抄
+    messageContent = messageContent
+        .replace(/<horae>[\s\S]*?<\/horae>/gi, '')
+        .replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, '')
+
+    console.log(`去除正文标签后的正文:\n${messageContent}`);
 
     const template = settings.customAnalysisPrompt || getDefaultAnalysisPrompt();
     let analysisPrompt = template
