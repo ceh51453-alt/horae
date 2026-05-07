@@ -1727,6 +1727,19 @@ export class VectorManager {
         const result = calculateDetailedRelativeTime(eventDate, currentDate);
         if (result.days === null || result.days === undefined) return '';
 
+        const getWeekDiffByMonday = (from, to) => {
+            if (!(from instanceof Date) || Number.isNaN(from.getTime())) return null;
+            if (!(to instanceof Date) || Number.isNaN(to.getTime())) return null;
+            const dayMs = 24 * 60 * 60 * 1000;
+            const weekMs = 7 * dayMs;
+            const weekStartUtc = (d) => {
+                const weekday = d.getDay();
+                const offset = weekday === 0 ? -6 : 1 - weekday;
+                return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() + offset);
+            };
+            return Math.round((weekStartUtc(to) - weekStartUtc(from)) / weekMs);
+        };
+
         const { days, fromDate, toDate } = result;
         if (days === 0) return '(今天)';
         if (days === 1) return '(昨天)';
@@ -1734,13 +1747,21 @@ export class VectorManager {
         if (days === 3) return '(大前天)';
         if (days >= 4 && days <= 13 && fromDate) {
             const WD = ['日', '一', '二', '三', '四', '五', '六'];
-            return `(上周${WD[fromDate.getDay()]})`;
+            if (toDate) {
+                const weekDiff = getWeekDiffByMonday(fromDate, toDate);
+                if (weekDiff === 1) return `(上周${WD[fromDate.getDay()]})`;
+                if (weekDiff === 2) return `(上上周${WD[fromDate.getDay()]})`;
+            } else {
+                return `(上周${WD[fromDate.getDay()]})`;
+            }
         }
         if (days >= 20 && days < 60 && fromDate && toDate && fromDate.getMonth() !== toDate.getMonth()) {
             return `(上个月${fromDate.getDate()}号)`;
         }
-        if (days >= 300 && fromDate && toDate && fromDate.getFullYear() < toDate.getFullYear()) {
-            return `(去年${fromDate.getMonth() + 1}月)`;
+        if (days >= 300 && fromDate && toDate) {
+            const yearDiff = toDate.getFullYear() - fromDate.getFullYear();
+            if (yearDiff === 1) return `(去年${fromDate.getMonth() + 1}月)`;
+            if (yearDiff === 2) return `(前年${fromDate.getMonth() + 1}月)`;
         }
         if (days > 0 && days < 30) return `(${days}天前)`;
         if (days > 0) return `(${Math.round(days / 30)}个月前)`;

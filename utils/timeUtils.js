@@ -18,6 +18,9 @@ const CHINESE_NUMS = {
     '三十一': 31, '卅': 30, '卅一': 31
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * DAY_MS;
+
 /** 从日期字符串中提取日数 */
 function extractDayNumber(dateStr) {
     if (!dateStr) return null;
@@ -208,6 +211,21 @@ export function calculateRelativeTime(fromDate, toDate) {
     return null;
 }
 
+function getWeekDiffByMonday(fromDate, toDate) {
+    if (!(fromDate instanceof Date) || Number.isNaN(fromDate.getTime())) return null;
+    if (!(toDate instanceof Date) || Number.isNaN(toDate.getTime())) return null;
+
+    const getWeekStartUtc = (d) => {
+        const weekday = d.getDay();
+        const offset = weekday === 0 ? -6 : 1 - weekday;
+        return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() + offset);
+    };
+
+    const fromWeekStart = getWeekStartUtc(fromDate);
+    const toWeekStart = getWeekStartUtc(toDate);
+    return Math.round((toWeekStart - fromWeekStart) / WEEK_MS);
+}
+
 /** 格式化相对时间描述 */
 export function formatRelativeTime(days, options = {}) {
     if (days === null || days === undefined) return '未知';
@@ -233,7 +251,13 @@ export function formatRelativeTime(days, options = {}) {
         // 上周几
         if (days >= 4 && days <= 13 && fromDate) {
             const weekday = fromDate.getDay();
-            return `上周${WEEKDAY_NAMES[weekday]}`;
+            if (toDate) {
+                const weekDiff = getWeekDiffByMonday(fromDate, toDate);
+                if (weekDiff === 1) return `上周${WEEKDAY_NAMES[weekday]}`;
+                if (weekDiff === 2) return `上上周${WEEKDAY_NAMES[weekday]}`;
+            } else {
+                return `上周${WEEKDAY_NAMES[weekday]}`;
+            }
         }
         
         // 上个月
@@ -248,12 +272,12 @@ export function formatRelativeTime(days, options = {}) {
         if (days >= 300 && fromDate && toDate) {
             const fromYear = fromDate.getFullYear();
             const toYear = toDate.getFullYear();
-            if (fromYear < toYear) {
+            const yearDiff = toYear - fromYear;
+            if (yearDiff >= 1) {
                 const fromMonth = fromDate.getMonth() + 1;
                 const fromDay = fromDate.getDate();
-                if (days < 730) {
-                    return `去年${fromMonth}月${fromDay}日`;
-                }
+                if (yearDiff === 1) return `去年${fromMonth}月${fromDay}日`;
+                if (yearDiff === 2) return `前年${fromMonth}月${fromDay}日`;
             }
         }
         
@@ -270,7 +294,13 @@ export function formatRelativeTime(days, options = {}) {
         
         if (absDays >= 4 && absDays <= 13 && fromDate) {
             const weekday = fromDate.getDay();
-            return `下周${WEEKDAY_NAMES[weekday]}`;
+            if (toDate) {
+                const weekDiff = getWeekDiffByMonday(fromDate, toDate);
+                if (weekDiff === -1) return `下周${WEEKDAY_NAMES[weekday]}`;
+                if (weekDiff === -2) return `下下周${WEEKDAY_NAMES[weekday]}`;
+            } else {
+                return `下周${WEEKDAY_NAMES[weekday]}`;
+            }
         }
         
         if (absDays >= 20 && absDays < 60 && fromDate && toDate) {
