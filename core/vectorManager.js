@@ -5,7 +5,7 @@
  * 数据按 chatId 隔离，向量存 IndexedDB，轻量索引存 chat[0].horae_meta.vectorIndex
  */
 
-import { calculateDetailedRelativeTime } from '../utils/timeUtils.js';
+import { calculateDetailedRelativeTime, getRelativeTimeMeta } from '../utils/timeUtils.js';
 import { t2s } from '../utils/zhConvert.js';
 import { tNodeForLang, detectEffectiveAiLang } from './i18n.js';
 
@@ -1727,45 +1727,37 @@ export class VectorManager {
         const result = calculateDetailedRelativeTime(eventDate, currentDate);
         if (result.days === null || result.days === undefined) return '';
 
-        const getWeekDiffByMonday = (from, to) => {
-            if (!(from instanceof Date) || Number.isNaN(from.getTime())) return null;
-            if (!(to instanceof Date) || Number.isNaN(to.getTime())) return null;
-            const dayMs = 24 * 60 * 60 * 1000;
-            const weekMs = 7 * dayMs;
-            const weekStartUtc = (d) => {
-                const weekday = d.getDay();
-                const offset = weekday === 0 ? -6 : 1 - weekday;
-                return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() + offset);
-            };
-            return Math.round((weekStartUtc(to) - weekStartUtc(from)) / weekMs);
-        };
+        const meta = getRelativeTimeMeta(result.days, { fromDate: result.fromDate, toDate: result.toDate });
+        const WD = ['日', '一', '二', '三', '四', '五', '六'];
 
-        const { days, fromDate, toDate } = result;
-        if (days === 0) return '(今天)';
-        if (days === 1) return '(昨天)';
-        if (days === 2) return '(前天)';
-        if (days === 3) return '(大前天)';
-        if (days >= 4 && days <= 13 && fromDate) {
-            const WD = ['日', '一', '二', '三', '四', '五', '六'];
-            if (toDate) {
-                const weekDiff = getWeekDiffByMonday(fromDate, toDate);
-                if (weekDiff === 1) return `(上周${WD[fromDate.getDay()]})`;
-                if (weekDiff === 2) return `(上上周${WD[fromDate.getDay()]})`;
-            } else {
-                return `(上周${WD[fromDate.getDay()]})`;
-            }
+        switch (meta.key) {
+            case 'today': return '(今天)';
+            case 'yesterday': return '(昨天)';
+            case 'day_before_yesterday': return '(前天)';
+            case 'three_days_ago': return '(大前天)';
+            case 'tomorrow': return '(明天)';
+            case 'day_after_tomorrow': return '(后天)';
+            case 'in_three_days': return '(大后天)';
+            case 'last_weekday': return `(上周${WD[meta.weekday]})`;
+            case 'week_before_last_weekday': return `(上上周${WD[meta.weekday]})`;
+            case 'next_weekday': return `(下周${WD[meta.weekday]})`;
+            case 'week_after_next_weekday': return `(下下周${WD[meta.weekday]})`;
+            case 'last_month_day': return `(上个月${meta.day}号)`;
+            case 'next_month_day': return `(下个月${meta.day}号)`;
+            case 'last_year_date': return `(去年${meta.month}月)`;
+            case 'year_before_last_date': return `(前年${meta.month}月)`;
+            case 'days_ago': return `(${meta.value}天前)`;
+            case 'days_later': return `(${meta.value}天后)`;
+            case 'weeks_ago': return `(${meta.value}周前)`;
+            case 'weeks_later': return `(${meta.value}周后)`;
+            case 'months_ago': return `(${meta.value}个月前)`;
+            case 'months_later': return `(${meta.value}个月后)`;
+            case 'years_months_ago': return `(${meta.years}年${meta.months}个月前)`;
+            case 'years_months_later': return `(${meta.years}年${meta.months}个月后)`;
+            case 'years_ago': return `(${meta.years}年前)`;
+            case 'years_later': return `(${meta.years}年后)`;
+            default: return '';
         }
-        if (days >= 20 && days < 60 && fromDate && toDate && fromDate.getMonth() !== toDate.getMonth()) {
-            return `(上个月${fromDate.getDate()}号)`;
-        }
-        if (days >= 300 && fromDate && toDate) {
-            const yearDiff = toDate.getFullYear() - fromDate.getFullYear();
-            if (yearDiff === 1) return `(去年${fromDate.getMonth() + 1}月)`;
-            if (yearDiff === 2) return `(前年${fromDate.getMonth() + 1}月)`;
-        }
-        if (days > 0 && days < 30) return `(${days}天前)`;
-        if (days > 0) return `(${Math.round(days / 30)}个月前)`;
-        return '';
     }
 
     // ========================================

@@ -3,7 +3,7 @@
  * 负责元数据的存储、解析、聚合
  */
 
-import { parseStoryDate, calculateRelativeTime, calculateDetailedRelativeTime, generateTimeReference, formatRelativeTime, formatFullDateTime } from '../utils/timeUtils.js';
+import { parseStoryDate, calculateDetailedRelativeTime, generateTimeReference, formatFullDateTime, getRelativeTimeMeta } from '../utils/timeUtils.js';
 import { detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './i18n.js';
 import { getPromptDefaultSync } from './promptDefaults.js';
 
@@ -1067,50 +1067,70 @@ class HoraeManager {
                     const result = calculateDetailedRelativeTime(eventDate, currentDate);
                     if (result.days === null || result.days === undefined) return '';
                     
-                    const { days, fromDate, toDate } = result;
-                    
-                    if (days === 0) return `(${L('今天','today','今日','오늘','сегодня')})`;
-                    if (days === 1) return `(${L('昨天','yesterday','昨日','어제','вчера')})`;
-                    if (days === 2) return `(${L('前天','day before yesterday','一昨日','그저께','позавчера')})`;
-                    if (days === 3) return `(${L('大前天','3 days ago','3日前','그끄저께','3 дня назад')})`;
-                    if (days === -1) return `(${L('明天','tomorrow','明日','내일','завтра')})`;
-                    if (days === -2) return `(${L('后天','day after tomorrow','明後日','모레','послезавтра')})`;
-                    if (days === -3) return `(${L('大后天','in 3 days','3日後','글피','через 3 дня')})`;
-                    
-                    if (days >= 4 && days <= 13 && fromDate) {
-                        const weekday = fromDate.getDay();
-                        const wdLabel = L(
-                            ['日','一','二','三','四','五','六'][weekday],
-                            ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][weekday],
-                            ['日','月','火','水','木','金','土'][weekday],
-                            ['일','월','화','수','목','금','토'][weekday],
-                            ['вс','пн','вт','ср','чт','пт','сб'][weekday],
-                        );
-                        return `(${L(`上周${wdLabel}`, `last ${wdLabel}`, `先週${wdLabel}`, `지난주 ${wdLabel}`, `прошлый ${wdLabel}`)})`;
-                    }
-                    
-                    if (days >= 20 && days < 60 && fromDate && toDate) {
-                        const fromMonth = fromDate.getMonth();
-                        const toMonth = toDate.getMonth();
-                        if (fromMonth !== toMonth) {
-                            const d = fromDate.getDate();
-                            return `(${L(`上个月${d}号`, `last month ${d}th`, `先月${d}日`, `지난달 ${d}일`, `прошлый месяц ${d}-го`)})`;
+                    const meta = getRelativeTimeMeta(result.days, { fromDate: result.fromDate, toDate: result.toDate });
+                    const weekdayLabel = (weekday) => L(
+                        ['日', '一', '二', '三', '四', '五', '六'][weekday],
+                        ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][weekday],
+                        ['日', '月', '火', '水', '木', '金', '土'][weekday],
+                        ['일', '월', '화', '수', '목', '금', '토'][weekday],
+                        ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'][weekday],
+                    );
+
+                    switch (meta.key) {
+                        case 'today': return `(${L('今天', 'today', '今日', '오늘', 'сегодня')})`;
+                        case 'yesterday': return `(${L('昨天', 'yesterday', '昨日', '어제', 'вчера')})`;
+                        case 'day_before_yesterday': return `(${L('前天', 'day before yesterday', '一昨日', '그저께', 'позавчера')})`;
+                        case 'three_days_ago': return `(${L('大前天', '3 days ago', '3日前', '그끄저께', '3 дня назад')})`;
+                        case 'tomorrow': return `(${L('明天', 'tomorrow', '明日', '내일', 'завтра')})`;
+                        case 'day_after_tomorrow': return `(${L('后天', 'day after tomorrow', '明後日', '모레', 'послезавтра')})`;
+                        case 'in_three_days': return `(${L('大后天', 'in 3 days', '3日後', '글피', 'через 3 дня')})`;
+                        case 'last_weekday': {
+                            const wd = weekdayLabel(meta.weekday);
+                            return `(${L(`上周${wd}`, `last ${wd}`, `先週${wd}`, `지난주 ${wd}`, `прошлый ${wd}`)})`;
                         }
-                    }
-                    
-                    if (days >= 300 && fromDate && toDate) {
-                        const fromYear = fromDate.getFullYear();
-                        const toYear = toDate.getFullYear();
-                        if (fromYear < toYear) {
-                            const m = fromDate.getMonth() + 1;
-                            return `(${L(`去年${m}月`, `last year month ${m}`, `去年${m}月`, `작년 ${m}월`, `прошлый год, ${m}-й мес.`)})`;
+                        case 'week_before_last_weekday': {
+                            const wd = weekdayLabel(meta.weekday);
+                            return `(${L(`上上周${wd}`, `the week before last ${wd}`, `先々週${wd}`, `지지난주 ${wd}`, `позапрошлый ${wd}`)})`;
                         }
+                        case 'next_weekday': {
+                            const wd = weekdayLabel(meta.weekday);
+                            return `(${L(`下周${wd}`, `next ${wd}`, `来週${wd}`, `다음주 ${wd}`, `следующий ${wd}`)})`;
+                        }
+                        case 'week_after_next_weekday': {
+                            const wd = weekdayLabel(meta.weekday);
+                            return `(${L(`下下周${wd}`, `the week after next ${wd}`, `再来週${wd}`, `다다음주 ${wd}`, `через неделю после следующей ${wd}`)})`;
+                        }
+                        case 'last_month_day':
+                            return `(${L(`上个月${meta.day}号`, `last month ${meta.day}th`, `先月${meta.day}日`, `지난달 ${meta.day}일`, `прошлый месяц ${meta.day}-го`)})`;
+                        case 'next_month_day':
+                            return `(${L(`下个月${meta.day}号`, `next month ${meta.day}th`, `来月${meta.day}日`, `다음달 ${meta.day}일`, `следующий месяц ${meta.day}-го`)})`;
+                        case 'last_year_date':
+                            return `(${L(`去年${meta.month}月`, `last year month ${meta.month}`, `去年${meta.month}月`, `작년 ${meta.month}월`, `прошлый год, ${meta.month}-й мес.`)})`;
+                        case 'year_before_last_date':
+                            return `(${L(`前年${meta.month}月`, `the year before last month ${meta.month}`, `一昨年${meta.month}月`, `재작년 ${meta.month}월`, `позапрошлый год, ${meta.month}-й мес.`)})`;
+                        case 'days_ago':
+                            return `(${L(`${meta.value}天前`, `${meta.value} days ago`, `${meta.value}日前`, `${meta.value}일 전`, `${meta.value} дн. назад`)})`;
+                        case 'days_later':
+                            return `(${L(`${meta.value}天后`, `in ${meta.value} days`, `${meta.value}日後`, `${meta.value}일 후`, `через ${meta.value} дн.`)})`;
+                        case 'weeks_ago':
+                            return `(${L(`${meta.value}周前`, `${meta.value} weeks ago`, `${meta.value}週間前`, `${meta.value}주 전`, `${meta.value} нед. назад`)})`;
+                        case 'weeks_later':
+                            return `(${L(`${meta.value}周后`, `in ${meta.value} weeks`, `${meta.value}週間後`, `${meta.value}주 후`, `через ${meta.value} нед.`)})`;
+                        case 'months_ago':
+                            return `(${L(`${meta.value}个月前`, `${meta.value} months ago`, `${meta.value}ヶ月前`, `${meta.value}개월 전`, `${meta.value} мес. назад`)})`;
+                        case 'months_later':
+                            return `(${L(`${meta.value}个月后`, `in ${meta.value} months`, `${meta.value}ヶ月後`, `${meta.value}개월 후`, `через ${meta.value} мес.`)})`;
+                        case 'years_months_ago':
+                            return `(${L(`${meta.years}年${meta.months}个月前`, `${meta.years} years ${meta.months} months ago`, `${meta.years}年${meta.months}ヶ月前`, `${meta.years}년 ${meta.months}개월 전`, `${meta.years} г. ${meta.months} мес. назад`)})`;
+                        case 'years_months_later':
+                            return `(${L(`${meta.years}年${meta.months}个月后`, `in ${meta.years} years ${meta.months} months`, `${meta.years}年${meta.months}ヶ月後`, `${meta.years}년 ${meta.months}개월 후`, `через ${meta.years} г. ${meta.months} мес.`)})`;
+                        case 'years_ago':
+                            return `(${L(`${meta.years}年前`, `${meta.years} years ago`, `${meta.years}年前`, `${meta.years}년 전`, `${meta.years} лет назад`)})`;
+                        case 'years_later':
+                            return `(${L(`${meta.years}年后`, `in ${meta.years} years`, `${meta.years}年後`, `${meta.years}년 후`, `через ${meta.years} лет`)})`;
+                        default:
+                            return '';
                     }
-                    
-                    if (days > 0 && days < 30) return `(${L(`${days}天前`, `${days} days ago`, `${days}日前`, `${days}일 전`, `${days} дн. назад`)})`;
-                    if (days > 0) { const m = Math.round(days / 30); return `(${L(`${m}个月前`, `${m} months ago`, `${m}ヶ月前`, `${m}개월 전`, `${m} мес. назад`)})`; }
-                    if (days === -999 || days === -998 || days === -997) return '';
-                    return '';
                 };
                 
                 const sortedEvents = [...events].sort((a, b) => {
