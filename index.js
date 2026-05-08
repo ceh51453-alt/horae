@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.12.10B
+ * 版本: 1.12.11B
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from '
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.12.10B';
+const VERSION = '1.12.11B';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -15382,6 +15382,83 @@ function _collectActiveSummaryCoveredIndices(chat) {
     return covered;
 }
 
+/**
+ * 纯判断：按「保留最近AI条数」计算自动显隐计划（不执行显隐）。
+ * 返回：
+ * - targetHideIndices：按当前配额应处于自动隐藏的楼层
+ * - toHide：当前应新增隐藏的楼层
+ * - toShow：当前应取消隐藏的楼层
+ */
+function _planAutoBufferVisibilityByKeepRecent(chat, keepRecent, activeSummaryCoveredIndices = null) {
+    if (!Array.isArray(chat) || chat.length <= 1) {
+        return {
+            keepStart: 0,
+            keepAiIndices: [],
+            allAiIndices: [],
+            markedAutoHiddenIndices: [],
+            targetHideIndices: [],
+            toHide: [],
+            toShow: [],
+        };
+    }
+
+    const keepWindow = _resolveAutoSummaryKeepWindow(chat, keepRecent);
+    const keepStart = Math.max(0, Math.min(keepWindow.keepStart, chat.length));
+    const coveredSet = activeSummaryCoveredIndices instanceof Set
+        ? new Set([...activeSummaryCoveredIndices].filter(i => Number.isInteger(i) && i >= 0 && i < chat.length))
+        : _collectActiveSummaryCoveredIndices(chat);
+
+    // 旧楼层自动隐藏策略：从第一条“应隐藏的AI楼层”开始，到 keepStart 前一层，连续作为隐藏候选。
+    let firstHideAnchor = -1;
+    for (const aiIdx of keepWindow.allAiIndices) {
+        if (aiIdx >= keepStart) break;
+        if (coveredSet.has(aiIdx)) continue;
+        firstHideAnchor = aiIdx;
+        break;
+    }
+
+    const targetHideSet = new Set();
+    if (firstHideAnchor >= 0) {
+        for (let i = firstHideAnchor; i < keepStart; i++) {
+            const msg = chat[i];
+            if (!msg) continue;
+            if (msg.horae_meta?._skipHorae) continue;
+            if (coveredSet.has(i)) continue;
+            targetHideSet.add(i);
+        }
+    }
+
+    const markedSet = new Set();
+    for (let i = 0; i < chat.length; i++) {
+        if (chat[i]?.horae_meta?._autoBufferHidden) markedSet.add(i);
+    }
+
+    const toHide = [];
+    for (const idx of targetHideSet) {
+        if (!chat[idx]) continue;
+        if (coveredSet.has(idx)) continue;
+        if (!chat[idx].is_hidden) toHide.push(idx);
+    }
+
+    const toShow = [];
+    for (const idx of markedSet) {
+        if (targetHideSet.has(idx)) continue;
+        if (!chat[idx]) continue;
+        if (coveredSet.has(idx)) continue;
+        toShow.push(idx);
+    }
+
+    return {
+        keepStart,
+        keepAiIndices: [...keepWindow.keepAiIndices],
+        allAiIndices: [...keepWindow.allAiIndices],
+        markedAutoHiddenIndices: [...markedSet].sort((a, b) => a - b),
+        targetHideIndices: [...targetHideSet].sort((a, b) => a - b),
+        toHide: toHide.sort((a, b) => a - b),
+        toShow: toShow.sort((a, b) => a - b),
+    };
+}
+
 function _buildAutoSummaryBufferHideIndices(chat, keepStart, tailAiIndices, activeSummaryCoveredIndices) {
     if (!Array.isArray(chat) || chat.length <= 1) return [];
     if (!Array.isArray(tailAiIndices) || tailAiIndices.length === 0) return [];
@@ -15435,6 +15512,20 @@ async function _syncAutoSummaryBufferHidden(chat, targetHideIndices, activeSumma
 
     if (toUnhide.length > 0) await setMessagesHidden(chat, toUnhide, false);
     if (toHide.length > 0) await setMessagesHidden(chat, toHide, true);
+}
+
+/**
+ * 一键执行自动显隐配额维护：
+ * 按 keepRecent 计算后，自动完成隐藏/取消隐藏。
+ * 调用方无需处理返回值或二次判断。
+ */
+async function _reconcileAutoBufferVisibilityByKeepRecent(chat, keepRecent, activeSummaryCoveredIndices = null) {
+    if (!Array.isArray(chat) || chat.length <= 1) return;
+    const coveredSet = activeSummaryCoveredIndices instanceof Set
+        ? new Set([...activeSummaryCoveredIndices].filter(i => Number.isInteger(i) && i >= 0 && i < chat.length))
+        : _collectActiveSummaryCoveredIndices(chat);
+    const plan = _planAutoBufferVisibilityByKeepRecent(chat, keepRecent, coveredSet);
+    await _syncAutoSummaryBufferHidden(chat, plan.targetHideIndices, coveredSet);
 }
 
 function _pickAutoSummaryBatchEvents(chat, eventCandidates, maxEvents, maxTokens) {
@@ -17755,14 +17846,26 @@ async function onMessageReceived(messageId) {
 /**
  * 消息删除时触发 — 重建表格数据
  */
-function onMessageDeleted() {
+async function onMessageDeleted() {
     if (!settings.enabled) return;
 
-    horaeManager.rebuildTableData();
-    horaeManager.rebuildRelationships();
-    horaeManager.rebuildLocationMemory();
-    horaeManager.rebuildRpgData();
-    getContext().saveChat();
+    try {
+        horaeManager.rebuildTableData();
+        horaeManager.rebuildRelationships();
+        horaeManager.rebuildLocationMemory();
+        horaeManager.rebuildRpgData();
+
+        const chat = horaeManager.getChat();
+        if (settings.autoSummaryEnabled && settings.sendTimeline) {
+            const keepRecent = Math.max(0, parseInt(settings.autoSummaryKeepRecent, 10) || 10);
+            const activeCovered = _collectActiveSummaryCoveredIndices(chat);
+            await _reconcileAutoBufferVisibilityByKeepRecent(chat, keepRecent, activeCovered);
+        }
+
+        await getContext().saveChat();
+    } catch (err) {
+        console.error('[Horae] onMessageDeleted 失败:', err);
+    }
 
     refreshAllDisplays();
     renderCustomTablesList();
