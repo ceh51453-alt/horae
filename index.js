@@ -15093,13 +15093,82 @@ async function generateWithDirectApi(prompt, options = {}) {
         const promptSplit = _buildPromptSplitBeforeMessage(messageIndex);
         const snapshotPrompt = _getSnapshotPromptBeforeMessage(messageIndex, promptSplit);
         const timelinePrompt = _getTimelinePromptBeforeMessage(messageIndex, promptSplit);
-        if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
+
         if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
+        if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
     } else {
         console.log('[Horae] autoSummary task: skip snapshot/timeline ordered_prompts injection (direct API)');
     }
 
     orderedPrompts.push('user_input');
+
+    orderedPrompts.push({
+        role: 'system', content: `【格式字面性声明】
+<horae> 内每一行的结构是：字段名 + 英文冒号 + 值。
+- 字段名（time、location、characters、costume、item、item!、item!!、item-、
+  affection、npc、agenda、agenda-、event）必须原样英文输出，不得翻译为中文。
+- 字段名与值之间的分隔符固定为英文冒号 :，不得替换为中文冒号 ：、竖线 |、
+  等号 =、方括号包裹或其他任何形式。
+- 值的内部分隔符（| = @ ~）按各字段原定义使用，不在本条限制内。
+
+正确：
+  time:1988/1/1 10:11
+  event:关键|U在酒馆向艾伦打听黑市商人下落，递出10金币后得知商人明晚在废弃码头出现。
+
+错误：
+  [时间|1988/1/1 10:11]
+  time：1988/1/1 10:11
+  [time] 1988/1/1 10:11
+  event|关键|...（字段名后用了竖线而不是冒号）
+
+【输出前思考】
+在输出 <horae> 之前，先在 <thinking> 标签内完成分析，覆盖以下判断点（顺序和措辞自由）：
+
+1. 本楼核心事件
+   - 时间、地点、在场角色相比参考状态有无变化？
+   - 用一两句话概括这一楼发生了什么。
+
+2. 物品清点（对照参考状态逐一核对）
+   - 本楼有无角色主动获取/消耗/丢弃符合记录标准的物品？
+   - 参考状态里的物品是否被用完/损坏？需要时准备 item-。
+   - 排除：临时日用品、环境道具、服装、普通食物。
+   - 无变动则明确说"无物品变动"。
+
+3. 待办事项清算
+   - 列出参考状态里所有现存 agenda。
+   - 逐条判断：本楼时间是否已越过其时间节点？是否被执行/取消？
+   - 需核销的，先把原文逐字抄下来准备 agenda-。
+   - 新产生的约定，检查是否与现存条目重复或需要合并。
+
+4. NPC 与好感度
+   - 有无新角色首次登场？
+   - 现有 NPC 的关系/好感度是否被明文推动？（无明文描写不动）
+
+5. event 融合判断
+   - 本楼有几个值得记录的事件片段？若多于一个，现在就决定如何串联成一条。
+   - 确认 event 写入 <horaeevent>，不会出现在 <horae> 内。
+
+6. event 收笔位置确认
+   - 【待分析文本】在哪个动作/对话处停止？我用一句自己的话概括最后发生了什么。
+   - 我准备写的 event 最后一句，是否超出了原文最后一句的范围？
+   - 若超出，裁掉多余部分。
+
+7. 格式自检
+   - 所有必填字段（time/location/characters/costume）是否齐全？
+   - agenda- 的文本是否逐字复制而非改写？
+   - event 是否控制在 80-150 字、监控视角、无文学修饰？
+
+思考结束后直接输出 <horae> 和 <horaeevent>，不要在两者之间插入任何解释。
+` });
+
+    orderedPrompts.push({
+        role: 'assistant', content: `<thinking>
+收到，我按检查点梳理，然后严格按 "英文字段名:值" 的字面语法输出。
+字段名不翻译、字段名后只用英文冒号，值内部的 | = @ ~ 保持原定义。
+event 唯一且只放在 <horaeevent> 内。
+
+1. 本楼核心事件：` });
+
 
     // console.log(`副API组装提示词:\n${JSON.stringify(orderedPrompts)}`);
 
@@ -17450,8 +17519,9 @@ async function _generateForAiTasks(prompt, opts = {}) {
         const promptSplit = _buildPromptSplitBeforeMessage(messageIndex);
         const snapshotPrompt = _getSnapshotPromptBeforeMessage(messageIndex, promptSplit);
         const timelinePrompt = _getTimelinePromptBeforeMessage(messageIndex, promptSplit);
-        if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
+
         if (timelinePrompt?.trim()) orderedPrompts.push({ role: 'system', content: timelinePrompt.trim() });
+        if (snapshotPrompt?.trim()) orderedPrompts.push({ role: 'system', content: snapshotPrompt.trim() });
     } else {
         console.log('[Horae] autoSummary task: skip snapshot/timeline ordered_prompts injection');
     }
@@ -17466,6 +17536,74 @@ async function _generateForAiTasks(prompt, opts = {}) {
     }
 
     orderedPrompts.push('user_input');
+
+    orderedPrompts.push({
+        role: 'system', content: `【格式字面性声明】
+<horae> 内每一行的结构是：字段名 + 英文冒号 + 值。
+- 字段名（time、location、characters、costume、item、item!、item!!、item-、
+  affection、npc、agenda、agenda-、event）必须原样英文输出，不得翻译为中文。
+- 字段名与值之间的分隔符固定为英文冒号 :，不得替换为中文冒号 ：、竖线 |、
+  等号 =、方括号包裹或其他任何形式。
+- 值的内部分隔符（| = @ ~）按各字段原定义使用，不在本条限制内。
+
+正确：
+  time:1988/1/1 10:11
+  event:关键|U在酒馆向艾伦打听黑市商人下落，递出10金币后得知商人明晚在废弃码头出现。
+
+错误：
+  [时间|1988/1/1 10:11]
+  time：1988/1/1 10:11
+  [time] 1988/1/1 10:11
+  event|关键|...（字段名后用了竖线而不是冒号）
+
+【输出前思考】
+在输出 <horae> 之前，先在 <thinking> 标签内完成分析，覆盖以下判断点（顺序和措辞自由）：
+
+1. 本楼核心事件
+   - 时间、地点、在场角色相比参考状态有无变化？
+   - 用一两句话概括这一楼发生了什么。
+
+2. 物品清点（对照参考状态逐一核对）
+   - 本楼有无角色主动获取/消耗/丢弃符合记录标准的物品？
+   - 参考状态里的物品是否被用完/损坏？需要时准备 item-。
+   - 排除：临时日用品、环境道具、服装、普通食物。
+   - 无变动则明确说"无物品变动"。
+
+3. 待办事项清算
+   - 列出参考状态里所有现存 agenda。
+   - 逐条判断：本楼时间是否已越过其时间节点？是否被执行/取消？
+   - 需核销的，先把原文逐字抄下来准备 agenda-。
+   - 新产生的约定，检查是否与现存条目重复或需要合并。
+
+4. NPC 与好感度
+   - 有无新角色首次登场？
+   - 现有 NPC 的关系/好感度是否被明文推动？（无明文描写不动）
+
+5. event 融合判断
+   - 本楼有几个值得记录的事件片段？若多于一个，现在就决定如何串联成一条。
+   - 确认 event 写入 <horaeevent>，不会出现在 <horae> 内。
+
+6. event 收笔位置确认
+   - 【待分析文本】在哪个动作/对话处停止？我用一句自己的话概括最后发生了什么。
+   - 我准备写的 event 最后一句，是否超出了原文最后一句的范围？
+   - 若超出，裁掉多余部分。
+
+7. 格式自检
+   - 所有必填字段（time/location/characters/costume）是否齐全？
+   - agenda- 的文本是否逐字复制而非改写？
+   - event 是否控制在 80-150 字、监控视角、无文学修饰？
+
+思考结束后直接输出 <horae> 和 <horaeevent>，不要在两者之间插入任何解释。
+` });
+
+    orderedPrompts.push({
+        role: 'assistant', content: `<thinking>
+收到，我按检查点梳理，然后严格按 "英文字段名:值" 的字面语法输出。
+字段名不翻译、字段名后只用英文冒号，值内部的 | = @ ~ 保持原定义。
+event 唯一且只放在 <horaeevent> 内。
+
+1. 本楼核心事件：` });
+
 
     const resp = await TavernHelper.generateRaw({
         user_input: prompt,
@@ -18187,8 +18325,11 @@ function _buildRawTimelinePromptBySkipLast(skipLast) {
  */
 function _buildPromptSplitBeforeMessage(messageIndex) {
     const skipLast = _resolveSkipLastBeforeMessage(messageIndex);
-    const snapshotPrompt = horaeManager.generateCompactPrompt(skipLast, { includeTimeline: false });
+    const snapshotPrompt = horaeManager.generateCompactPrompt(skipLast, { includeTimeline: false, noStatusHead: true });
     const timelinePrompt = _buildRawTimelinePromptBySkipLast(skipLast);
+    if (snapshotPrompt) {
+
+    }
     return {
         skipLast,
         snapshotPrompt: snapshotPrompt || '',

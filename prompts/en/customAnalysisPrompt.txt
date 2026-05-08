@@ -80,3 +80,17 @@ event:importance level|event description
 ★ Strictly forbid vague statements:
   ❌ Wrong example: "U and Allen chatted in the tavern, had a great time, and agreed to meet again." (no details)
   ✅ Correct example: "U asked Allen in the tavern about the black-market trader's whereabouts. Allen was wary at first, but after U offered 10 gold coins, he revealed the trader would appear at the abandoned dock tomorrow night. Allen's attitude toward U shifted from guarded to greedy. The two agreed to act together tomorrow night."
+★ Strictly forbid narrative continuation: the event description must stop exactly at the final explicit action/dialogue in [Text to Analyze].
+  Do not add any follow-up action, response, exit, or ending that is not written in the source, even if it would "obviously happen."
+  ❌ Wrong example (source ends at "the heroine says she wants milk tea"):
+     "…The male lead asks what she wants to drink, she answers milk tea, and he nods and gets up to buy it."
+     ("nods and gets up to buy it" is continuation not present in the source text)
+  ✅ Correct example:
+     "…The male lead asks what she wants to drink, and she answers milk tea."
+     (Stop at the source's last sentence; no continuation)
+
+[Event Field Uniqueness and Placement]
+- Each reply must contain exactly one event entry, no more.
+- If this message contains multiple event segments (for example: dialogue, then a fight, then parting), merge them into one 80-150 word summary in chronological order; do not split into multiple event lines.
+- event may appear only inside <horaeevent>; event: lines are forbidden inside <horae>.
+- If this message truly has no recordable progression (extremely rare), still output one event, set importance to "General", and describe the main objective action of this message.

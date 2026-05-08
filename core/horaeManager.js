@@ -191,19 +191,19 @@ class HoraeManager {
         const state = createEmptyMeta();
         state._previousLocation = '';
         const end = Math.max(0, chat.length - skipLast);
-        
+
         for (let i = 0; i < end; i++) {
             const meta = chat[i].horae_meta;
             if (!meta) continue;
             if (meta._skipHorae) continue;
-            
+
             if (meta.timestamp?.story_date) {
                 state.timestamp.story_date = meta.timestamp.story_date;
             }
             if (meta.timestamp?.story_time) {
                 state.timestamp.story_time = meta.timestamp.story_time;
             }
-            
+
             if (meta.scene?.location) {
                 state._previousLocation = state.scene.location;
                 state.scene.location = meta.scene.location;
@@ -214,11 +214,11 @@ class HoraeManager {
             if (meta.scene?.characters_present?.length > 0) {
                 state.scene.characters_present = [...meta.scene.characters_present];
             }
-            
+
             if (meta.costumes) {
                 Object.assign(state.costumes, meta.costumes);
             }
-            
+
             // 物品：合并更新
             if (meta.items) {
                 for (let [name, newInfo] of Object.entries(meta.items)) {
@@ -230,7 +230,7 @@ class HoraeManager {
                     // 纯个体量词 → 去掉
                     name = name.replace(new RegExp(`[\\(（][${COUNTING_CLASSIFIERS}][\\)）]$`), '').trim();
                     // 度量/容器单位保留
-                    
+
                     // 数量为0视为消耗，自动删除
                     const zeroMatch = name.match(/[\(（]0[a-zA-Z\u4e00-\u9fff]*[\)）]$/);
                     if (zeroMatch) {
@@ -243,7 +243,7 @@ class HoraeManager {
                         }
                         continue;
                     }
-                    
+
                     // 检测消耗状态标记，视为删除（简繁中+英文兼容）
                     const consumedPatterns = /[\(（](已消耗|已用完|已销毁|已銷毀|消耗殆尽|消耗殆盡|消耗|用尽|用盡|consumed|used\s*up|destroyed|depleted)[\)）]/i;
                     const holderConsumed = /^(消耗|已消耗|已用完|消耗殆尽|消耗殆盡|用尽|用盡|无|無|consumed|used\s*up|depleted|none)$/i;
@@ -258,10 +258,10 @@ class HoraeManager {
                         }
                         continue;
                     }
-                    
+
                     // 基本名匹配已有物品
                     const existingKey = findExistingItemByBaseName(state.items, name);
-                    
+
                     if (existingKey) {
                         const existingItem = state.items[existingKey];
                         const mergedItem = { ...existingItem };
@@ -279,7 +279,7 @@ class HoraeManager {
                             mergedItem.description = newInfo.description;
                         }
                         if (!mergedItem.description) mergedItem.description = existingItem.description || '';
-                        
+
                         if (existingKey !== name) {
                             delete state.items[existingKey];
                         }
@@ -289,7 +289,7 @@ class HoraeManager {
                     }
                 }
             }
-            
+
             // 处理已删除物品
             if (meta.deletedItems && meta.deletedItems.length > 0) {
                 for (const deletedItem of meta.deletedItems) {
@@ -303,7 +303,7 @@ class HoraeManager {
                     }
                 }
             }
-            
+
             // 好感度：支持绝对值和相对值
             if (meta.affection) {
                 for (const [key, value] of Object.entries(meta.affection)) {
@@ -322,7 +322,7 @@ class HoraeManager {
                     }
                 }
             }
-            
+
             // NPC：逐字段合并，保留_id
             if (meta.npcs) {
                 // 可更新字段 vs 受保护字段
@@ -377,7 +377,7 @@ class HoraeManager {
                 }
             }
         }
-        
+
         // 过滤用户已删除的NPC（防回滚）
         const deletedNpcs = chat[0]?.horae_meta?._deletedNpcs;
         if (deletedNpcs?.length) {
@@ -391,7 +391,7 @@ class HoraeManager {
                 }
             }
         }
-        
+
         // 为无ID物品分配ID
         let maxId = 0;
         for (const info of Object.values(state.items)) {
@@ -406,7 +406,7 @@ class HoraeManager {
                 info._id = padItemId(maxId);
             }
         }
-        
+
         // 为无ID的NPC分配ID
         let maxNpcId = 0;
         for (const info of Object.values(state.npcs)) {
@@ -421,7 +421,7 @@ class HoraeManager {
                 info._id = padItemId(maxNpcId);
             }
         }
-        
+
         return state;
     }
 
@@ -522,33 +522,33 @@ class HoraeManager {
         const chat = this.getChat();
         const end = Math.max(0, chat.length - skipLast);
         const events = [];
-        
+
         for (let i = 0; i < end; i++) {
             const meta = chat[i].horae_meta;
             if (meta?._skipHorae) continue;
-            
+
             const metaEvents = meta?.events || (meta?.event ? [meta.event] : []);
-            
+
             for (let j = 0; j < metaEvents.length; j++) {
                 const evt = metaEvents[j];
                 if (!evt?.summary) continue;
-                
+
                 if (filterLevel !== 'all' && evt.level !== filterLevel) {
                     continue;
                 }
-                
+
                 events.push({
                     messageIndex: i,
                     eventIndex: j,
                     timestamp: meta.timestamp,
                     event: evt
                 });
-                
+
                 if (limit > 0 && events.length >= limit) break;
             }
             if (limit > 0 && events.length >= limit) break;
         }
-        
+
         return events;
     }
 
@@ -595,40 +595,43 @@ class HoraeManager {
             if (lang === 'ru') return ru;
             return en;
         };
-        
+
         // 状态快照头
-        lines.push(L(
-            '[当前状态快照——对比本回合剧情，仅在<horae>中输出发生实质变化的字段]',
-            '[Current State Snapshot — compare with this round\'s plot, only output substantively changed fields in <horae>]',
-            '[現在の状態スナップショット——今回のストーリーと比較し、実質的に変化したフィールドのみ<horae>に出力]',
-            '[현재 상태 스냅샷——이번 라운드의 스토리와 비교하여 실질적으로 변경된 필드만 <horae>에 출력]',
-            '[Снимок текущего состояния — сравните с сюжетом этого раунда, выводите в <horae> только существенно изменившиеся поля]',
-        ));
-        
+        if (!options?.noStatusHead) {
+            lines.push(L(
+                '[当前状态快照——对比本回合剧情，仅在<horae>中输出发生实质变化的字段]',
+                '[Current State Snapshot — compare with this round\'s plot, only output substantively changed fields in <horae>]',
+                '[現在の状態スナップショット——今回のストーリーと比較し、実質的に変化したフィールドのみ<horae>に出力]',
+                '[현재 상태 스냅샷——이번 라운드의 스토리와 비교하여 실질적으로 변경된 필드만 <horae>에 출력]',
+                '[Снимок текущего состояния — сравните с сюжетом этого раунда, выводите в <horae> только существенно изменившиеся поля]',
+            ));
+        }
+
+
         const includeTimeline = options?.includeTimeline !== false;
         const sendTimeline = includeTimeline && this.settings?.sendTimeline !== false;
         const sendCharacters = this.settings?.sendCharacters !== false;
         const sendItems = this.settings?.sendItems !== false;
-        
+
         // 时间
         if (state.timestamp.story_date) {
             const fullDateTime = formatFullDateTime(state.timestamp.story_date, state.timestamp.story_time);
-            lines.push(`[${L('时间','Time','時間','시간','Время')}|${fullDateTime}]`);
-            
+            lines.push(`[${L('时间', 'Time', '時間', '시간', 'Время')}|${fullDateTime}]`);
+
             // 时间参考
             if (sendTimeline) {
                 const timeRef = generateTimeReference(state.timestamp.story_date);
                 if (timeRef && timeRef.type === 'standard') {
-                    lines.push(`[${L('时间参考','Time Ref','時間参考','시간 참조','Время (справка)')}|${L('昨天','yesterday','昨日','어제','вчера')}=${timeRef.yesterday}|${L('前天','day before','一昨日','그저께','позавчера')}=${timeRef.dayBefore}|${L('3天前','3 days ago','3日前','3일 전','3 дня назад')}=${timeRef.threeDaysAgo}]`);
+                    lines.push(`[${L('时间参考', 'Time Ref', '時間参考', '시간 참조', 'Время (справка)')}|${L('昨天', 'yesterday', '昨日', '어제', 'вчера')}=${timeRef.yesterday}|${L('前天', 'day before', '一昨日', '그저께', 'позавчера')}=${timeRef.dayBefore}|${L('3天前', '3 days ago', '3日前', '3일 전', '3 дня назад')}=${timeRef.threeDaysAgo}]`);
                 } else if (timeRef && timeRef.type === 'fantasy') {
-                    lines.push(`[${L('时间参考','Time Ref','時間参考','시간 참조','Время (справка)')}|${L('奇幻日历模式，参见剧情轨迹中的相对时间标记','Fantasy calendar mode, see relative time markers in story timeline','ファンタジー暦モード、ストーリー軌跡の相対時間マーカーを参照','판타지 달력 모드, 스토리 궤적의 상대 시간 마커 참조','Режим фэнтезийного календаря, см. относительные метки времени в сюжетной линии')}]`);
+                    lines.push(`[${L('时间参考', 'Time Ref', '時間参考', '시간 참조', 'Время (справка)')}|${L('奇幻日历模式，参见剧情轨迹中的相对时间标记', 'Fantasy calendar mode, see relative time markers in story timeline', 'ファンタジー暦モード、ストーリー軌跡の相対時間マーカーを参照', '판타지 달력 모드, 스토리 궤적의 상대 시간 마커 참조', 'Режим фэнтезийного календаря, см. относительные метки времени в сюжетной линии')}]`);
                 }
             }
         }
-        
+
         // 场景
         if (state.scene.location) {
-            let sceneStr = `[${L('场景','Scene','シーン','장면','Сцена')}|${state.scene.location}`;
+            let sceneStr = `[${L('场景', 'Scene', 'シーン', '장면', 'Сцена')}|${state.scene.location}`;
             if (state.scene.atmosphere) {
                 sceneStr += `|${state.scene.atmosphere}`;
             }
@@ -640,22 +643,22 @@ class HoraeManager {
                 const loc = state.scene.location;
                 const entry = this._findLocationMemory(loc, locMem, state._previousLocation);
                 if (entry?.desc) {
-                    lines.push(`[${L('场景记忆','Scene Memory','シーン記憶','장면 기억','Память сцены')}|${entry.desc}]`);
+                    lines.push(`[${L('场景记忆', 'Scene Memory', 'シーン記憶', '장면 기억', 'Память сцены')}|${entry.desc}]`);
                 }
                 const sepMatch = loc.match(/[·・\-\/\|]/);
                 if (sepMatch) {
                     const parent = loc.substring(0, sepMatch.index).trim();
                     if (parent && locMem[parent] && locMem[parent].desc && parent !== entry?._matchedName) {
-                        lines.push(`[${L('场景记忆','Scene Memory','シーン記憶','장면 기억','Память сцены')}:${parent}|${locMem[parent].desc}]`);
+                        lines.push(`[${L('场景记忆', 'Scene Memory', 'シーン記憶', '장면 기억', 'Память сцены')}:${parent}|${locMem[parent].desc}]`);
                     }
                 }
             }
         }
-        
+
         // 在场角色和服装
         if (sendCharacters) {
             const presentChars = state.scene.characters_present || [];
-            
+
             if (presentChars.length > 0) {
                 const charStrs = [];
                 for (const char of presentChars) {
@@ -669,9 +672,9 @@ class HoraeManager {
                         charStrs.push(char);
                     }
                 }
-                lines.push(`[${L('在场','Present','出席','참석','Присутствуют')}|${charStrs.join('|')}]`);
+                lines.push(`[${L('在场', 'Present', '出席', '참석', 'Присутствуют')}|${charStrs.join('|')}]`);
             }
-            
+
             // 情绪状态（仅在场角色，变化驱动）
             if (this.settings?.sendMood) {
                 const moodEntries = [];
@@ -681,15 +684,15 @@ class HoraeManager {
                     }
                 }
                 if (moodEntries.length > 0) {
-                    lines.push(`[${L('情绪','Mood','感情','감정','Настроение')}|${moodEntries.join('|')}]`);
+                    lines.push(`[${L('情绪', 'Mood', '感情', '감정', 'Настроение')}|${moodEntries.join('|')}]`);
                 }
             }
-            
+
             // 关系网络（仅在场角色相关的关系，从 chat[0] 读取，零AI输出token）
             if (this.settings?.sendRelationships) {
                 const rels = this.getRelationshipsForCharacters(presentChars);
                 if (rels.length > 0) {
-                    lines.push(`\n[${L('关系网络','Relationship Network','関係ネットワーク','관계 네트워크','Сеть отношений')}]`);
+                    lines.push(`\n[${L('关系网络', 'Relationship Network', '関係ネットワーク', '관계 네트워크', 'Сеть отношений')}]`);
                     for (const r of rels) {
                         const noteStr = r.note ? `(${r.note})` : '';
                         lines.push(`${r.from}→${r.to}: ${r.type}${noteStr}`);
@@ -697,7 +700,7 @@ class HoraeManager {
                 }
             }
         }
-        
+
         // 物品（已装备的物品不在此处显示，避免重复）
         if (sendItems) {
             const items = Object.entries(state.items);
@@ -713,11 +716,11 @@ class HoraeManager {
             }
             const unequipped = items.filter(([name]) => !equippedNames.has(name));
             if (unequipped.length > 0) {
-                lines.push(`\n[${L('物品清单','Item List','アイテムリスト','아이템 목록','Список предметов')}]`);
+                lines.push(`\n[${L('物品清单', 'Item List', 'アイテムリスト', '아이템 목록', 'Список предметов')}]`);
                 for (const [name, info] of unequipped) {
                     const id = info._id || '???';
                     const icon = info.icon || '';
-                    const imp = (info.importance === '!!' || info.importance === '关键' || info.importance === '關鍵') ? L('关键','critical','重要','핵심','критич.') : (info.importance === '!' || info.importance === '重要') ? L('重要','important','重要','중요','важно') : '';
+                    const imp = (info.importance === '!!' || info.importance === '关键' || info.importance === '關鍵') ? L('关键', 'critical', '重要', '핵심', 'критич.') : (info.importance === '!' || info.importance === '重要') ? L('重要', 'important', '重要', '중요', 'важно') : '';
                     const desc = info.description ? ` | ${info.description}` : '';
                     const holder = info.holder || '';
                     const loc = info.location ? `@${info.location}` : '';
@@ -725,22 +728,22 @@ class HoraeManager {
                     lines.push(`#${id} ${icon}${name}${impTag}${desc} = ${holder}${loc}`);
                 }
             } else {
-                lines.push(`\n[${L('物品清单','Item List','アイテムリスト','아이템 목록','Список предметов')}] (${L('空','empty','空','비어있음','пусто')})`);
+                lines.push(`\n[${L('物品清单', 'Item List', 'アイテムリスト', '아이템 목록', 'Список предметов')}] (${L('空', 'empty', '空', '비어있음', 'пусто')})`);
             }
         }
-        
+
         // 好感度
         if (sendCharacters) {
             const affections = Object.entries(state.affection).filter(([_, v]) => v !== 0);
             if (affections.length > 0) {
                 const affStr = affections.map(([k, v]) => `${k}:${v > 0 ? '+' : ''}${v}`).join('|');
-                lines.push(`[${L('好感','Affection','好感度','호감도','Расположение')}|${affStr}]`);
+                lines.push(`[${L('好感', 'Affection', '好感度', '호감도', 'Расположение')}|${affStr}]`);
             }
-            
+
             // NPC信息
             const npcs = Object.entries(state.npcs);
             if (npcs.length > 0) {
-                lines.push(`\n[${L('已知NPC','Known NPCs','既知NPC','알려진 NPC','Известные NPC')}]`);
+                lines.push(`\n[${L('已知NPC', 'Known NPCs', '既知NPC', '알려진 NPC', 'Известные NPC')}]`);
                 for (const [name, info] of npcs) {
                     const id = info._id || '?';
                     const app = info.appearance || '';
@@ -753,22 +756,22 @@ class HoraeManager {
                     }
                     // 扩展字段
                     const extras = [];
-                    if (info._aliases?.length) extras.push(`${L('曾用名','aliases','旧名','이전 이름','псевдонимы')}:${info._aliases.join('/')}`);
-                    if (info.gender) extras.push(`${L('性别','gender','性別','성별','пол')}:${info.gender}`);
+                    if (info._aliases?.length) extras.push(`${L('曾用名', 'aliases', '旧名', '이전 이름', 'псевдонимы')}:${info._aliases.join('/')}`);
+                    if (info.gender) extras.push(`${L('性别', 'gender', '性別', '성별', 'пол')}:${info.gender}`);
                     if (info.age) {
                         const ageResult = this.calcCurrentAge(info, state.timestamp.story_date);
-                        extras.push(`${L('年龄','age','年齢','나이','возраст')}:${ageResult.display}`);
+                        extras.push(`${L('年龄', 'age', '年齢', '나이', 'возраст')}:${ageResult.display}`);
                     }
-                    if (info.race) extras.push(`${L('种族','race','種族','종족','раса')}:${info.race}`);
-                    if (info.job) extras.push(`${L('职业','occupation','職業','직업','профессия')}:${info.job}`);
-                    if (info.birthday) extras.push(`${L('生日','birthday','誕生日','생일','день рождения')}:${info.birthday}`);
-                    if (info.note) extras.push(`${L('补充','notes','備考','비고','примечания')}:${info.note}`);
+                    if (info.race) extras.push(`${L('种族', 'race', '種族', '종족', 'раса')}:${info.race}`);
+                    if (info.job) extras.push(`${L('职业', 'occupation', '職業', '직업', 'профессия')}:${info.job}`);
+                    if (info.birthday) extras.push(`${L('生日', 'birthday', '誕生日', '생일', 'день рождения')}:${info.birthday}`);
+                    if (info.note) extras.push(`${L('补充', 'notes', '備考', '비고', 'примечания')}:${info.note}`);
                     if (extras.length > 0) npcStr += `~${extras.join('~')}`;
                     lines.push(npcStr);
                 }
             }
         }
-        
+
         // 待办事项
         const chatForAgenda = this.getChat();
         const allAgendaItems = [];
@@ -800,13 +803,13 @@ class HoraeManager {
         }
         const activeAgenda = allAgendaItems.filter(a => !a.done);
         if (activeAgenda.length > 0) {
-            lines.push(`\n[${L('待办事项','Agenda','予定事項','할 일 목록','Список дел')}]`);
+            lines.push(`\n[${L('待办事项', 'Agenda', '予定事項', '할 일 목록', 'Список дел')}]`);
             for (const item of activeAgenda) {
                 const datePrefix = item.date ? `${item.date} ` : '';
                 lines.push(`· ${datePrefix}${item.text}`);
             }
         }
-        
+
         // RPG 状态（仅启用时注入，按在场角色过滤）
         if (this.settings?.rpgMode) {
             const rpg = this.getRpgStateAt(skipLast);
@@ -856,7 +859,7 @@ class HoraeManager {
             };
 
             if (sendBars && Object.keys(rpg.bars).length > 0) {
-                lines.push(`\n[${L('RPG状态','RPG Status','RPGステータス','RPG 상태','RPG-статус')}]`);
+                lines.push(`\n[${L('RPG状态', 'RPG Status', 'RPGステータス', 'RPG 상태', 'RPG-статус')}]`);
                 for (const [name, bars] of Object.entries(rpg.bars)) {
                     if (_cUoB && name !== userName) continue;
                     if (filterRpg && !rpgAllowed.has(name)) continue;
@@ -866,14 +869,14 @@ class HoraeManager {
                         parts.push(`${label} ${val[0]}/${val[1]}`);
                     }
                     const sts = rpg.status?.[name];
-                    if (sts?.length > 0) parts.push(`${L('状态','status','ステータス','상태','статус')}:${sts.join('/')}`);
+                    if (sts?.length > 0) parts.push(`${L('状态', 'status', 'ステータス', '상태', 'статус')}:${sts.join('/')}`);
                     if (parts.length > 0) lines.push(`${_ctxPre(name, _cUoB)}${parts.join(' | ')}`);
                 }
                 for (const [name, effects] of Object.entries(rpg.status || {})) {
                     if (rpg.bars[name] || effects.length === 0) continue;
                     if (_cUoB && name !== userName) continue;
                     if (filterRpg && !rpgAllowed.has(name)) continue;
-                    lines.push(`${_ctxPre(name, _cUoB)}${L('状态','status','ステータス','상태','статус')}:${effects.join('/')}`);
+                    lines.push(`${_ctxPre(name, _cUoB)}${L('状态', 'status', 'ステータス', '상태', 'статус')}:${effects.join('/')}`);
                 }
             }
 
@@ -881,7 +884,7 @@ class HoraeManager {
                 const hasAny = Object.entries(rpg.skills).some(([n, arr]) =>
                     arr?.length > 0 && (!_cUoS || n === userName) && (!filterRpg || rpgAllowed.has(n)));
                 if (hasAny) {
-                    lines.push(`\n[${L('技能列表','Skill List','スキルリスト','스킬 목록','Список навыков')}]`);
+                    lines.push(`\n[${L('技能列表', 'Skill List', 'スキルリスト', '스킬 목록', 'Список навыков')}]`);
                     for (const [name, skills] of Object.entries(rpg.skills)) {
                         if (!skills?.length) continue;
                         if (_cUoS && name !== userName) continue;
@@ -903,7 +906,7 @@ class HoraeManager {
             const sendAttrs = this.settings?.sendRpgAttributes !== false;
             const attrCfg = this.settings?.rpgAttributeConfig || [];
             if (sendAttrs && attrCfg.length > 0 && Object.keys(rpg.attributes || {}).length > 0) {
-                lines.push(`\n[${L('多维属性','Attributes','多次元属性','다차원 속성','Атрибуты')}]`);
+                lines.push(`\n[${L('多维属性', 'Attributes', '多次元属性', '다차원 속성', 'Атрибуты')}]`);
                 for (const [name, vals] of Object.entries(rpg.attributes)) {
                     if (_cUoA && name !== userName) continue;
                     if (filterRpg && !rpgAllowed.has(name)) continue;
@@ -938,7 +941,7 @@ class HoraeManager {
                         }
                     }
                     if (parts.length > 0) {
-                        if (!hasEqData) { lines.push(`\n[${L('装备','Equipment','装備','장비','Снаряжение')}]`); hasEqData = true; }
+                        if (!hasEqData) { lines.push(`\n[${L('装备', 'Equipment', '装備', '장비', 'Снаряжение')}]`); hasEqData = true; }
                         lines.push(`${_ctxPre(name, _cUoE)}${parts.join(' | ')}`);
                     }
                 }
@@ -966,7 +969,7 @@ class HoraeManager {
                         parts.push(`${catName}:${repValue}${subText ? `（${subText}）` : ''}`);
                     }
                     if (parts.length > 0) {
-                        if (!hasRepData) { lines.push(`\n[${L('声望','Reputation','名声','명성','Репутация')}]`); hasRepData = true; }
+                        if (!hasRepData) { lines.push(`\n[${L('声望', 'Reputation', '名声', '명성', 'Репутация')}]`); hasRepData = true; }
                         lines.push(`${_ctxPre(name, _cUoR)}${parts.join(' | ')}`);
                     }
                 }
@@ -983,9 +986,9 @@ class HoraeManager {
                     const lv = rpg.levels?.[name];
                     const xp = rpg.xp?.[name];
                     if (lv == null && !xp) continue;
-                    if (!hasLvlData) { lines.push(`\n[${L('等级','Level','レベル','레벨','Уровень')}]`); hasLvlData = true; }
+                    if (!hasLvlData) { lines.push(`\n[${L('等级', 'Level', 'レベル', '레벨', 'Уровень')}]`); hasLvlData = true; }
                     let lvStr = lv != null ? `Lv.${lv}` : '';
-                    if (xp) lvStr += ` (${L('经验','XP','経験','경험','опыт')}: ${xp[0]}/${xp[1]})`;
+                    if (xp) lvStr += ` (${L('经验', 'XP', '経験', '경험', 'опыт')}: ${xp[0]}/${xp[1]})`;
                     lines.push(`${_ctxPre(name, _cUoL)}${lvStr.trim()}`);
                 }
             }
@@ -1004,7 +1007,7 @@ class HoraeManager {
                         if (val != null) parts.push(`${d.name}×${val}`);
                     }
                     if (parts.length > 0) {
-                        if (!hasCurData) { lines.push(`\n[${L('货币','Currency','通貨','화폐','Валюта')}]`); hasCurData = true; }
+                        if (!hasCurData) { lines.push(`\n[${L('货币', 'Currency', '通貨', '화폐', 'Валюта')}]`); hasCurData = true; }
                         lines.push(`${_ctxPre(name, _cUoC)}${parts.join(', ')}`);
                     }
                 }
@@ -1014,7 +1017,7 @@ class HoraeManager {
             if (!!this.settings?.sendRpgStronghold) {
                 const shNodes = rpg.strongholds || [];
                 if (shNodes.length > 0) {
-                    lines.push(`\n[${L('据点','Stronghold','拠点','거점','Опорный пункт')}]`);
+                    lines.push(`\n[${L('据点', 'Stronghold', '拠点', '거점', 'Опорный пункт')}]`);
                     function _shTreeStr(nodes, parentId, indent) {
                         const children = nodes.filter(n => (n.parent || null) === parentId);
                         let str = '';
@@ -1052,21 +1055,21 @@ class HoraeManager {
                 return true;
             });
             if (events.length > 0) {
-                lines.push(`\n[${L('剧情轨迹','Story Timeline','ストーリー軌跡','스토리 궤적','Сюжетная линия')}]`);
-                
+                lines.push(`\n[${L('剧情轨迹', 'Story Timeline', 'ストーリー軌跡', '스토리 궤적', 'Сюжетная линия')}]`);
+
                 const currentDate = state.timestamp?.story_date || '';
-                
+
                 const getLevelMark = (level) => {
                     if (level === '关键' || level === '關鍵') return '★';
                     if (level === '重要') return '●';
                     return '○';
                 };
-                
+
                 const getRelativeDesc = (eventDate) => {
                     if (!eventDate || !currentDate) return '';
                     const result = calculateDetailedRelativeTime(eventDate, currentDate);
                     if (result.days === null || result.days === undefined) return '';
-                    
+
                     const meta = getRelativeTimeMeta(result.days, { fromDate: result.fromDate, toDate: result.toDate });
                     const weekdayLabel = (weekday) => L(
                         ['日', '一', '二', '三', '四', '五', '六'][weekday],
@@ -1132,11 +1135,11 @@ class HoraeManager {
                             return '';
                     }
                 };
-                
+
                 const sortedEvents = [...events].sort((a, b) => {
                     return (a.messageIndex || 0) - (b.messageIndex || 0);
                 });
-                
+
                 const criticalAndImportant = sortedEvents.filter(e =>
                     e.event?.level === '关键' || e.event?.level === '關鍵' || e.event?.level === '重要' || e.event?.level === '摘要' || e.event?.isSummary
                 );
@@ -1146,10 +1149,10 @@ class HoraeManager {
                     (e.event?.level === '一般' || !e.event?.level) && !e.event?.isSummary
                 );
                 const normalEvents = contextDepth > 0 ? normalEventsAll.slice(-contextDepth) : [];
-                
+
                 const allToShow = [...criticalAndImportant, ...normalEvents]
                     .sort((a, b) => (a.messageIndex || 0) - (b.messageIndex || 0));
-                
+
                 // 预构建 summaryId→日期范围 映射，让摘要事件带上时间跨度
                 const _sumDateRanges = {};
                 for (const s of autoSums) {
@@ -1167,7 +1170,7 @@ class HoraeManager {
                         const dateRange = e.event?._summaryId ? _sumDateRanges[e.event._summaryId] : '';
                         const dateTag = dateRange ? `·${dateRange}` : '';
                         const relTag = dateRange ? getRelativeDesc(dateRange.split('~')[0]) : '';
-                        lines.push(`📋 [${L('摘要','Summary','要約','요약','Сводка')}${dateTag}]${relTag}: ${e.event.summary}`);
+                        lines.push(`📋 [${L('摘要', 'Summary', '要約', '요약', 'Сводка')}${dateTag}]${relTag}: ${e.event.summary}`);
                     } else {
                         const mark = getLevelMark(e.event?.level);
                         const date = e.timestamp?.story_date || '?';
@@ -1180,7 +1183,7 @@ class HoraeManager {
                 }
             }
         }
-        
+
         // 自定义表格数据（合并全局、角色和本地）
         const chat = this.getChat();
         const firstMsg = chat?.[0];
@@ -1192,19 +1195,19 @@ class HoraeManager {
             const rows = table.rows || 2;
             const cols = table.cols || 2;
             const data = table.data || {};
-            
+
             // 有内容或有填表说明才输出
             const hasContent = Object.values(data).some(v => v && v.trim());
             const hasPrompt = table.prompt && table.prompt.trim();
             if (!hasContent && !hasPrompt) continue;
-            
-            const tableName = table.name || L('自定义表格','Custom Table','カスタムテーブル','커스텀 테이블','Пользовательская таблица');
-            lines.push(`\n[${tableName}](${rows - 1}${L('行','rows','行','행','строк')}×${cols - 1}${L('列','cols','列','열','столбцов')})`);
-            
+
+            const tableName = table.name || L('自定义表格', 'Custom Table', 'カスタムテーブル', '커스텀 테이블', 'Пользовательская таблица');
+            lines.push(`\n[${tableName}](${rows - 1}${L('行', 'rows', '行', '행', 'строк')}×${cols - 1}${L('列', 'cols', '列', '열', 'столбцов')})`);
+
             if (table.prompt && table.prompt.trim()) {
-                lines.push(`(${L('填写要求','Instructions','記入要件','작성 요구사항','Инструкции')}: ${table.prompt.trim()})`);
+                lines.push(`(${L('填写要求', 'Instructions', '記入要件', '작성 요구사항', 'Инструкции')}: ${table.prompt.trim()})`);
             }
-            
+
             // 检测最后有内容的行（含行标题列）
             let lastDataRow = 0;
             for (let r = rows - 1; r >= 1; r--) {
@@ -1217,7 +1220,7 @@ class HoraeManager {
                 if (lastDataRow > 0) break;
             }
             if (lastDataRow === 0) lastDataRow = 1;
-            
+
             const lockedRows = new Set(table.lockedRows || []);
             const lockedCols = new Set(table.lockedCols || []);
             const lockedCells = new Set(table.lockedCells || []);
@@ -1225,7 +1228,7 @@ class HoraeManager {
             // 输出表头行（带坐标标注）
             const headerRow = [];
             for (let c = 0; c < cols; c++) {
-                const label = data[`0-${c}`] || (c === 0 ? L('表头','Header','見出し','헤더','Заголовок') : `${L('列','Col','列','열','Столбец')}${c}`);
+                const label = data[`0-${c}`] || (c === 0 ? L('表头', 'Header', '見出し', '헤더', 'Заголовок') : `${L('列', 'Col', '列', '열', 'Столбец')}${c}`);
                 const coord = `[0,${c}]`;
                 headerRow.push(lockedCols.has(c) ? `${coord}${label}🔒` : `${coord}${label}`);
             }
@@ -1246,7 +1249,7 @@ class HoraeManager {
                 }
                 lines.push(rowData.join(' | '));
             }
-            
+
             // 标注被省略的尾部空行
             if (lastDataRow < rows - 1) {
                 lines.push(`(${L(
@@ -1268,11 +1271,11 @@ class HoraeManager {
                 if (!colHasData) emptyCols.push(c);
             }
             if (emptyCols.length > 0) {
-                const emptyColNames = emptyCols.map(c => data[`0-${c}`] || `${L('列','Col','列','열','Столбец')}${c}`);
-                lines.push(`(${emptyColNames.join(L('、',', ','、',', ',', '))}${L('：暂无数据，如剧情中已有相关信息请填写',': no data yet, please fill in if relevant info exists in the story','：データなし、ストーリーに関連情報があれば記入してください',': 데이터 없음, 스토리에 관련 정보가 있으면 작성해 주세요',': нет данных, заполните, если в сюжете есть соответствующая информация')})`);
+                const emptyColNames = emptyCols.map(c => data[`0-${c}`] || `${L('列', 'Col', '列', '열', 'Столбец')}${c}`);
+                lines.push(`(${emptyColNames.join(L('、', ', ', '、', ', ', ', '))}${L('：暂无数据，如剧情中已有相关信息请填写', ': no data yet, please fill in if relevant info exists in the story', '：データなし、ストーリーに関連情報があれば記入してください', ': 데이터 없음, 스토리에 관련 정보가 있으면 작성해 주세요', ': нет данных, заполните, если в сюжете есть соответствующая информация')})`);
             }
         }
-        
+
         return lines.join('\n');
     }
 
@@ -1310,34 +1313,34 @@ class HoraeManager {
 
         // 剥离 <think>/<thinking> 块，防止思维链内的 horae 标签污染解析
         message = message.replace(/<think(?:ing)?[\s>][\s\S]*?<\/think(?:ing)?>/gi, '');
-        
+
         // 提取所有 <horae> 块；多块时优先选最靠后的有效块（正文末尾的才是真正输出）
         let match = null;
         const allHoraeMatches = [...message.matchAll(/<horae>([\s\S]*?)<\/horae>/gi)];
         const horaeFieldPattern = /^(time|timestamp|location|atmosphere|scene_desc|characters|costume|item[!]*|item-|event|affection|npc|agenda|agenda-|rel|mood):/m;
         if (allHoraeMatches.length > 1) {
             match = [...allHoraeMatches].reverse().find(m => horaeFieldPattern.test(m[1]))
-                 || allHoraeMatches[allHoraeMatches.length - 1];
+                || allHoraeMatches[allHoraeMatches.length - 1];
         } else if (allHoraeMatches.length === 1) {
             match = allHoraeMatches[0];
         }
         if (!match) {
             match = message.match(/<!--horae([\s\S]*?)-->/i);
         }
-        
+
         const allEventMatches = [...message.matchAll(/<horaeevent>([\s\S]*?)<\/horaeevent>/gi)];
         const eventMatch = allEventMatches.length > 1
             ? ([...allEventMatches].reverse().find(m => /^event:/m.test(m[1])) || allEventMatches[allEventMatches.length - 1])
             : allEventMatches[0] || null;
         const tableMatches = [...message.matchAll(/<horaetable[:：]\s*(.+?)>([\s\S]*?)<\/horaetable(?:[:：][^>]*)?>/gi)];
         const rpgMatches = [...message.matchAll(/<horaerpg>([\s\S]*?)<\/horaerpg>/gi)];
-        
+
         if (!match && !eventMatch && tableMatches.length === 0 && rpgMatches.length === 0) return null;
-        
+
         const content = match ? match[1].trim() : '';
         const eventContent = eventMatch ? eventMatch[1].trim() : '';
         const lines = content.split('\n').concat(eventContent.split('\n'));
-        
+
         const result = {
             timestamp: {},
             costumes: {},
@@ -1352,11 +1355,11 @@ class HoraeManager {
             mood: {},
             relationships: [],
         };
-        
+
         for (const line of lines) {
             const trimmedLine = line.trim();
             if (!trimmedLine) continue;
-            
+
             // time:10/1 15:00 或 time:小镇历永夜2931年 2月1日(五) 20:30
             if (trimmedLine.startsWith('time:')) {
                 const timeStr = trimmedLine.substring(5).trim();
@@ -1424,22 +1427,22 @@ class HoraeManager {
                 } else {
                     itemStr = trimmedLine.substring(5).trim();
                 }
-                
+
                 const eqIndex = itemStr.indexOf('=');
                 if (eqIndex > 0) {
                     let itemNamePart = itemStr.substring(0, eqIndex).trim();
                     const rest = itemStr.substring(eqIndex + 1).trim();
-                    
+
                     let icon = null;
                     let itemName = itemNamePart;
                     let description = undefined;  // undefined = 合并时不覆盖原有描述
-                    
+
                     const emojiMatch = itemNamePart.match(/^([\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{1F900}-\u{1F9FF}]|[\u{1FA00}-\u{1FA6F}]|[\u{1FA70}-\u{1FAFF}]|[\u{231A}-\u{231B}]|[\u{23E9}-\u{23F3}]|[\u{23F8}-\u{23FA}]|[\u{25AA}-\u{25AB}]|[\u{25B6}]|[\u{25C0}]|[\u{25FB}-\u{25FE}]|[\u{2614}-\u{2615}]|[\u{2648}-\u{2653}]|[\u{267F}]|[\u{2693}]|[\u{26A1}]|[\u{26AA}-\u{26AB}]|[\u{26BD}-\u{26BE}]|[\u{26C4}-\u{26C5}]|[\u{26CE}]|[\u{26D4}]|[\u{26EA}]|[\u{26F2}-\u{26F3}]|[\u{26F5}]|[\u{26FA}]|[\u{26FD}]|[\u{2702}]|[\u{2705}]|[\u{2708}-\u{270D}]|[\u{270F}]|[\u{2712}]|[\u{2714}]|[\u{2716}]|[\u{271D}]|[\u{2721}]|[\u{2728}]|[\u{2733}-\u{2734}]|[\u{2744}]|[\u{2747}]|[\u{274C}]|[\u{274E}]|[\u{2753}-\u{2755}]|[\u{2757}]|[\u{2763}-\u{2764}]|[\u{2795}-\u{2797}]|[\u{27A1}]|[\u{27B0}]|[\u{27BF}]|[\u{2934}-\u{2935}]|[\u{2B05}-\u{2B07}]|[\u{2B1B}-\u{2B1C}]|[\u{2B50}]|[\u{2B55}]|[\u{3030}]|[\u{303D}]|[\u{3297}]|[\u{3299}])/u);
                     if (emojiMatch) {
                         icon = emojiMatch[1];
                         itemNamePart = itemNamePart.substring(icon.length).trim();
                     }
-                    
+
                     const pipeIndex = itemNamePart.indexOf('|');
                     if (pipeIndex > 0) {
                         itemName = itemNamePart.substring(0, pipeIndex).trim();
@@ -1448,12 +1451,12 @@ class HoraeManager {
                     } else {
                         itemName = itemNamePart;
                     }
-                    
+
                     // 去掉无意义的数量标记
                     itemName = itemName.replace(/[\(（]1[\)）]$/, '').trim();
                     itemName = itemName.replace(new RegExp(`[\\(（]1[${COUNTING_CLASSIFIERS}][\\)）]$`), '').trim();
                     itemName = itemName.replace(new RegExp(`[\\(（][${COUNTING_CLASSIFIERS}][\\)）]$`), '').trim();
-                    
+
                     const atIndex = rest.indexOf('@');
                     const itemInfo = {
                         icon: icon,
@@ -1472,14 +1475,14 @@ class HoraeManager {
                 if (parts.length >= 2) {
                     const levelRaw = parts[0].trim();
                     const summary = parts.slice(1).join('|').trim();
-                    
+
                     let level = '一般';
                     if (levelRaw === '关键' || levelRaw === '關鍵' || levelRaw.toLowerCase() === 'critical') {
                         level = '关键';
                     } else if (levelRaw === '重要' || levelRaw.toLowerCase() === 'important') {
                         level = '重要';
                     }
-                    
+
                     result.events.push({
                         is_important: level === '重要' || level === '关键',
                         level: level,
@@ -1514,7 +1517,7 @@ class HoraeManager {
                 const npcInfo = this._parseNpcFields(npcStr);
                 const name = npcInfo._name;
                 delete npcInfo._name;
-                
+
                 if (name) {
                     npcInfo.last_seen = new Date().toISOString();
                     if (!result.npcs[name]) {
@@ -1593,7 +1596,7 @@ class HoraeManager {
                 const tableName = tm[1].trim();
                 const tableContent = tm[2].trim();
                 const updates = this._parseTableCellEntries(tableContent);
-                
+
                 if (Object.keys(updates).length > 0) {
                     result.tableUpdates.push({ name: tableName, updates });
                 }
@@ -1617,7 +1620,7 @@ class HoraeManager {
     /** 将解析结果合并到元数据 */
     mergeParsedToMeta(baseMeta, parsed) {
         const meta = baseMeta ? JSON.parse(JSON.stringify(baseMeta)) : createEmptyMeta();
-        
+
         if (parsed.timestamp?.story_date) {
             meta.timestamp.story_date = parsed.timestamp.story_date;
         }
@@ -1625,7 +1628,7 @@ class HoraeManager {
             meta.timestamp.story_time = parsed.timestamp.story_time;
         }
         meta.timestamp.absolute = new Date().toISOString();
-        
+
         if (parsed.scene?.location) {
             meta.scene.location = parsed.scene.location;
         }
@@ -1638,20 +1641,20 @@ class HoraeManager {
         if (parsed.scene?.characters_present?.length > 0) {
             meta.scene.characters_present = parsed.scene.characters_present;
         }
-        
+
         if (parsed.costumes) {
             Object.assign(meta.costumes, parsed.costumes);
         }
-        
+
         if (parsed.items) {
             Object.assign(meta.items, parsed.items);
         }
-        
+
         if (parsed.deletedItems && parsed.deletedItems.length > 0) {
             if (!meta.deletedItems) meta.deletedItems = [];
             meta.deletedItems = [...new Set([...meta.deletedItems, ...parsed.deletedItems])];
         }
-        
+
         // 支持新格式（events数组）和旧格式（单个event）
         if (parsed.events && parsed.events.length > 0) {
             meta.events = parsed.events;
@@ -1659,15 +1662,15 @@ class HoraeManager {
             // 兼容旧格式：转换为数组
             meta.events = [parsed.event];
         }
-        
+
         if (parsed.affection) {
             Object.assign(meta.affection, parsed.affection);
         }
-        
+
         if (parsed.npcs) {
             Object.assign(meta.npcs, parsed.npcs);
         }
-        
+
         // 追加AI写入的待办（跳过用户已手动删除的）
         if (parsed.agenda && parsed.agenda.length > 0) {
             if (!meta.agenda) meta.agenda = [];
@@ -1694,24 +1697,24 @@ class HoraeManager {
                 }
             }
         }
-        
+
         // 关系网络：存入当前消息（后续由 processAIResponse 合并到 chat[0]）
         if (parsed.relationships && parsed.relationships.length > 0) {
             if (!meta.relationships) meta.relationships = [];
             meta.relationships = parsed.relationships;
         }
-        
+
         // 情绪状态
         if (parsed.mood && Object.keys(parsed.mood).length > 0) {
             if (!meta.mood) meta.mood = {};
             Object.assign(meta.mood, parsed.mood);
         }
-        
+
         // tableUpdates 作为副属性传递
         if (parsed.tableUpdates) {
             meta._tableUpdates = parsed.tableUpdates;
         }
-        
+
         if (parsed.rpg) {
             const r = parsed.rpg;
             const hasContent = Object.keys(r.bars || {}).length > 0
@@ -1730,7 +1733,7 @@ class HoraeManager {
                 meta._rpgChanges = parsed.rpg;
             }
         }
-        
+
         return meta;
     }
 
@@ -2712,8 +2715,8 @@ class HoraeManager {
             if (!agendaText || !deleteText) return false;
             // 精确匹配 或 互相包含（允许AI缩写/扩写）
             return agendaText === deleteText ||
-                   agendaText.includes(deleteText) ||
-                   deleteText.includes(agendaText);
+                agendaText.includes(deleteText) ||
+                deleteText.includes(agendaText);
         };
 
         if (chat[0]?.horae_meta?.agenda) {
@@ -2963,7 +2966,7 @@ class HoraeManager {
         // 根据用户配置的剔除标签，整块移除小剧场等自定义区块，防止其内部的 horae 标签污染正文解析
         const cleanedContent = this._stripCustomTags(messageContent, this.settings?.vectorStripTags);
         let parsed = this.parseHoraeTag(cleanedContent);
-        
+
         // 标签解析失败时，自动 fallback 到宽松格式解析
         if (!parsed) {
             parsed = this.parseLooseFormat(cleanedContent);
@@ -2971,11 +2974,11 @@ class HoraeManager {
                 console.log(`[Horae] #${messageIndex} 未检测到标签，已通过宽松解析提取数据`);
             }
         }
-        
+
         if (parsed) {
             const existingMeta = this.getMessageMeta(messageIndex);
             const newMeta = this.mergeParsedToMeta(existingMeta, parsed);
-            
+
             // 处理表格更新
             if (newMeta._tableUpdates) {
                 // 记录表格贡献，用于回退
@@ -2983,7 +2986,7 @@ class HoraeManager {
                 this.applyTableUpdates(newMeta._tableUpdates);
                 delete newMeta._tableUpdates;
             }
-            
+
             // 处理AI标记已完成的待办
             if (parsed.deletedAgenda && parsed.deletedAgenda.length > 0) {
                 this.removeCompletedAgenda(parsed.deletedAgenda);
@@ -2998,14 +3001,14 @@ class HoraeManager {
             } else if (parsed.scene?.scene_desc && parsed.scene?.location) {
                 this._updateLocationMemory(parsed.scene.location, parsed.scene.scene_desc);
             }
-            
+
             // 关系网络：合并到 chat[0].horae_meta.relationships
             if (parsed.relationships && parsed.relationships.length > 0) {
                 this._mergeRelationships(parsed.relationships);
             }
-            
+
             this.setMessageMeta(messageIndex, newMeta);
-            
+
             // RPG 数据：合并到 chat[0].horae_meta.rpg
             if (newMeta._rpgChanges) {
                 this._mergeRpgData(newMeta._rpgChanges);
@@ -3027,11 +3030,11 @@ class HoraeManager {
     _parseNpcFields(npcStr) {
         const info = {};
         if (!npcStr) return { _name: '' };
-        
+
         // 1. 分离扩展字段
         const tildeParts = npcStr.split('~');
         const mainPart = tildeParts[0].trim(); // 名|外貌=性格@关系
-        
+
         for (let i = 1; i < tildeParts.length; i++) {
             const kv = tildeParts[i].trim();
             if (!kv) continue;
@@ -3040,7 +3043,7 @@ class HoraeManager {
             const key = kv.substring(0, colonIdx).trim();
             const value = kv.substring(colonIdx + 1).trim();
             if (!value) continue;
-            
+
             // 关键词匹配
             if (/^(性别|gender|sex)$/i.test(key)) info.gender = value;
             else if (/^(年龄|age|年纪)$/i.test(key)) info.age = value;
@@ -3049,25 +3052,25 @@ class HoraeManager {
             else if (/^(生日|birthday|birth)$/i.test(key)) info.birthday = value;
             else if (/^(补充|note|备注|其他)$/i.test(key)) info.note = value;
         }
-        
+
         // 2. 解析主体
         let name = '';
         const pipeIdx = mainPart.indexOf('|');
         if (pipeIdx > 0) {
             name = mainPart.substring(0, pipeIdx).trim();
             const descPart = mainPart.substring(pipeIdx + 1).trim();
-            
+
             const hasNewFormat = descPart.includes('=') || descPart.includes('@');
-            
+
             if (hasNewFormat) {
                 const atIdx = descPart.indexOf('@');
                 let beforeAt = atIdx >= 0 ? descPart.substring(0, atIdx) : descPart;
                 const relationship = atIdx >= 0 ? descPart.substring(atIdx + 1).trim() : '';
-                
+
                 const eqIdx = beforeAt.indexOf('=');
                 const appearance = eqIdx >= 0 ? beforeAt.substring(0, eqIdx).trim() : beforeAt.trim();
                 const personality = eqIdx >= 0 ? beforeAt.substring(eqIdx + 1).trim() : '';
-                
+
                 if (appearance) info.appearance = appearance;
                 if (personality) info.personality = personality;
                 if (relationship) info.relationship = relationship;
@@ -3080,7 +3083,7 @@ class HoraeManager {
         } else {
             name = mainPart.trim();
         }
-        
+
         info._name = name;
         return info;
     }
@@ -3092,20 +3095,20 @@ class HoraeManager {
     _parseTableCellEntries(text) {
         const updates = {};
         if (!text) return updates;
-        
+
         const cellRegex = /^(\d+)[,\-](\d+)[:：]\s*(.*)$/;
-        
+
         for (const line of text.split('\n')) {
             const trimmed = line.trim();
             if (!trimmed) continue;
-            
+
             // 按 | 分割
             const segments = trimmed.split(/\s*[|｜]\s*/);
-            
+
             for (const seg of segments) {
                 const s = seg.trim();
                 if (!s) continue;
-                
+
                 const m = s.match(cellRegex);
                 if (m) {
                     const r = parseInt(m[1]);
@@ -3118,7 +3121,7 @@ class HoraeManager {
                 }
             }
         }
-        
+
         return updates;
     }
 
@@ -3221,7 +3224,7 @@ class HoraeManager {
     rebuildTableData(maxIndex = -1) {
         const chat = this.getChat();
         if (!chat || chat.length === 0) return;
-        
+
         const firstMsg = chat[0];
         const limit = maxIndex >= 0 ? Math.min(maxIndex + 1, chat.length) : chat.length;
 
@@ -3272,7 +3275,7 @@ class HoraeManager {
         for (const overlay of Object.values(charTableOverlays)) {
             resetTable(overlay);
         }
-        
+
         // 2. 预扫描：找到每个表格最后一个 _isUserEdit 所在的消息索引
         const lastUserEditIdx = new Map();
         for (let i = 0; i < limit; i++) {
@@ -3305,7 +3308,7 @@ class HoraeManager {
                 }
             }
         }
-        
+
         console.log(`[Horae] 表格数据已重建，回放了 ${totalApplied} 条消息的表格贡献（截止到#${limit - 1}）`);
     }
 
@@ -3434,8 +3437,8 @@ class HoraeManager {
     generateSystemPromptAddition() {
         const [userName, charName] = this._getDefaultNames();
         const subs = this.generateLocationMemoryPrompt() + this.generateCustomTablesPrompt() +
-                     this.generateRelationshipPrompt() + this.generateMoodPrompt() +
-                     this.generateRpgPrompt() + this._generateAntiParaphrasePrompt();
+            this.generateRelationshipPrompt() + this.generateMoodPrompt() +
+            this.generateRpgPrompt() + this._generateAntiParaphrasePrompt();
 
         if (this.settings?.customSystemPrompt) {
             const custom = this.settings.customSystemPrompt
@@ -4199,9 +4202,9 @@ class HoraeManager {
         const tags = ['<horae>...</horae>', '<horaeevent>...</horaeevent>'];
         const rpgActive = this.settings?.rpgMode &&
             (this.settings.sendRpgBars !== false || this.settings.sendRpgSkills !== false ||
-             this.settings.sendRpgAttributes !== false || !!this.settings.sendRpgReputation ||
-             !!this.settings.sendRpgEquipment || !!this.settings.sendRpgLevel || !!this.settings.sendRpgCurrency ||
-             !!this.settings.sendRpgStronghold);
+                this.settings.sendRpgAttributes !== false || !!this.settings.sendRpgReputation ||
+                !!this.settings.sendRpgEquipment || !!this.settings.sendRpgLevel || !!this.settings.sendRpgCurrency ||
+                !!this.settings.sendRpgStronghold);
         if (rpgActive) tags.push('<horaerpg>...</horaerpg>');
         const lang = this._getAiOutputLang();
         const joined = tags.join(' and ');
@@ -4305,12 +4308,12 @@ class HoraeManager {
             let importance = '';  // 一般用空字符串
             if (exclamations === '!!') importance = '!!';  // 关键
             else if (exclamations === '!') importance = '!';  // 重要
-            
+
             const eqIndex = itemStr.indexOf('=');
             if (eqIndex > 0) {
                 let itemNamePart = itemStr.substring(0, eqIndex).trim();
                 const rest = itemStr.substring(eqIndex + 1).trim();
-                
+
                 let icon = null;
                 let itemName = itemNamePart;
                 const emojiMatch = itemNamePart.match(/^([\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}])/u);
@@ -4318,7 +4321,7 @@ class HoraeManager {
                     icon = emojiMatch[1];
                     itemName = itemNamePart.substring(icon.length).trim();
                 }
-                
+
                 let description = undefined;  // undefined = 没有描述字段，合并时不覆盖原有描述
                 const pipeIdx = itemName.indexOf('|');
                 if (pipeIdx > 0) {
@@ -4326,12 +4329,12 @@ class HoraeManager {
                     if (descText) description = descText;  // 只有非空才设置
                     itemName = itemName.substring(0, pipeIdx).trim();
                 }
-                
+
                 // 去掉无意义的数量标记
                 itemName = itemName.replace(/[\(（]1[\)）]$/, '').trim();
                 itemName = itemName.replace(new RegExp(`[\\(（]1[${COUNTING_CLASSIFIERS}][\\)）]$`), '').trim();
                 itemName = itemName.replace(new RegExp(`[\\(（][${COUNTING_CLASSIFIERS}][\\)）]$`), '').trim();
-                
+
                 const atIndex = rest.indexOf('@');
                 const itemInfo = {
                     icon: icon,
@@ -4361,14 +4364,14 @@ class HoraeManager {
             if (parts.length >= 2) {
                 const levelRaw = parts[0].trim();
                 const summary = parts.slice(1).join('|').trim();
-                
+
                 let level = '一般';
                 if (levelRaw === '关键' || levelRaw === '關鍵' || levelRaw.toLowerCase() === 'critical') {
                     level = '关键';
                 } else if (levelRaw === '重要' || levelRaw.toLowerCase() === 'important') {
                     level = '重要';
                 }
-                
+
                 result.events.push({
                     is_important: level === '重要' || level === '关键',
                     level: level,
@@ -4402,7 +4405,7 @@ class HoraeManager {
             const npcInfo = this._parseNpcFields(npcStr);
             const name = npcInfo._name;
             delete npcInfo._name;
-            
+
             if (name) {
                 npcInfo.last_seen = new Date().toISOString();
                 result.npcs[name] = npcInfo;
@@ -4454,7 +4457,7 @@ class HoraeManager {
                 const tableName = tm[1].trim();
                 const tableContent = tm[2].trim();
                 const updates = this._parseTableCellEntries(tableContent);
-                
+
                 if (Object.keys(updates).length > 0) {
                     result.tableUpdates.push({ name: tableName, updates });
                     hasAnyData = true;

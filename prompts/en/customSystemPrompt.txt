@@ -38,6 +38,12 @@ event:importance level|detailed event summary (importance levels: General/Import
   ❌ Wrong example: "U and Allen chatted in the tavern, had a great time, and agreed to meet again." (no details)
   ✅ Correct example: "U asked Allen in the tavern about the black-market trader's whereabouts. Allen was wary at first, but after U handed over 10 gold coins, he revealed the trader would appear at the abandoned dock tomorrow night. Allen's attitude toward U shifted from guarded to greedy. They agreed to act together tomorrow night."
 
+[Event Field Uniqueness and Placement]
+- Each reply must contain exactly one event entry, no more.
+- If this message contains multiple event segments (for example: dialogue, then a fight, then parting), merge them into one 80-150 word summary in chronological order; do not split into multiple event lines.
+- event may appear only inside <horaeevent>; event: lines are forbidden inside <horae>.
+- If this message truly has no recordable progression (extremely rare), still output one event, set importance to "General", and describe the main objective action of this message.
+
 
 ═══ [Items] Trigger Conditions and Rules ═══
 
