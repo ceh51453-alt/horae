@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.12.11B
+ * 版本: 1.12.12B
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, getPromptDefaultSync } from '
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.12.11B';
+const VERSION = '1.12.12B';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -163,7 +163,7 @@ const DEFAULT_SETTINGS = {
     autoSummarySourceMode: 'events', // 'fulltext'(全文+时间线) | 'events'(仅时间线事件)
     autoSummaryBufferMode: 'messages', // 'messages'(按AI条数) | 'tokens'
     autoSummaryBufferLimit: 10,     // 旧版缓冲阈值（迁移用）
-    autoSummaryBufferMsgLimit: 10,  // 按AI条数触发的阈值
+    autoSummaryBufferMsgLimit: 12,  // 按AI条数触发的阈值
     autoSummaryBufferTokenLimit: 30000, // 按Token数触发的阈值
     autoSummaryResummaryThreshold: 7, // <=0 关闭二次总结；>0 时同层摘要达到此值触发更高层摘要（2->3->4...）
     autoSummaryBatchMaxMsgs: 50,    // 单次摘要最大消息条数
@@ -211,25 +211,25 @@ const DEFAULT_SETTINGS = {
     vectorSource: 'local',             // 'local' = 本地模型, 'api' = 远程 API
     vectorModel: 'Xenova/bge-small-zh-v1.5',
     vectorDtype: 'q8',
-    vectorApiUrl: '',                  // OpenAI 兼容 embedding API 地址
+    vectorApiUrl: 'https://api.siliconflow.cn/v1',                  // OpenAI 兼容 embedding API 地址
     vectorApiKey: '',                  // API 密钥
-    vectorApiModel: '',                // 远程 embedding 模型名称
-    vectorPureMode: false,             // 纯向量模式（强模型优化，关闭关键词启发式）
-    vectorRerankEnabled: false,        // 启用 Rerank 二次排序
-    vectorRerankFullText: false,       // Rerank 使用全文而非摘要（需要长上下文模型如 Qwen3-Reranker）
-    vectorRerankModel: '',             // Rerank 模型名称
+    vectorApiModel: 'Qwen/Qwen3-Embedding-8B',                // 远程 embedding 模型名称
+    vectorPureMode: true,             // 纯向量模式（强模型优化，关闭关键词启发式）
+    vectorRerankEnabled: true,        // 启用 Rerank 二次排序
+    vectorRerankFullText: true,       // Rerank 使用全文而非摘要（需要长上下文模型如 Qwen3-Reranker）
+    vectorRerankModel: 'Qwen/Qwen3-Reranker-4B',             // Rerank 模型名称
     vectorRerankUrl: '',               // Rerank API 地址（留空则复用 embedding 地址）
     vectorRerankKey: '',               // Rerank API 密钥（留空则复用 embedding 密钥）
     vectorRerankCandidates: 25,        // Rerank 候选条数（embedding 召回上限）
     vectorRerankRecallThreshold: 0.3,  // Rerank 路径的 embedding 召回阈值
     vectorRerankMinScore: 0.5,         // Rerank 最低分；低于此分丢弃
     vectorRecallPresets: [],           // 用户自定义召回参数预设
-    vectorRecallPresetSelected: 'builtin:small',
+    vectorRecallPresetSelected: 'builtin:rerank',
     vectorTopK: 5,
     vectorThreshold: 0.72,
     vectorFullTextCount: 3,
     vectorFullTextThreshold: 0.9,
-    vectorStripTags: '',
+    vectorStripTags: 'dream_status,Episode,details,think,thinking,Thinking',
 };
 
 const PROMPT_SETTING_KEYS = [
@@ -11559,6 +11559,7 @@ function initSettingsEvents() {
         horaeManager.init(getContext(), settings);
         _refreshSystemPromptDisplay();
         applyI18nToDOM(document.getElementById('horae-drawer') || document);
+        updateAutoSummaryHint();
         initTabs();
         refreshAllDisplays();
         if (prev !== this.value) {
@@ -12274,6 +12275,16 @@ function initSettingsEvents() {
         'rpgBarConfig', 'rpgAttributeConfig', 'rpgAttrViewMode', 'equipmentTemplates',
         ..._PRESET_PROMPT_KEYS,
     ];
+    // 仅用于“恢复默认”：不影响导入/导出的键范围
+    const _SETTINGS_RESET_EXTRA_KEYS = [
+        'autoSummaryKeepRecent',
+        'autoSummaryBufferMode',
+        'autoSummarySourceMode',
+        'autoSummaryBufferMsgLimit',
+        'autoSummaryResummaryThreshold',
+        'autoSummaryBatchMaxMsgs',
+        'autoSummaryBatchMaxTokens',
+    ];
 
     $('#horae-settings-export').on('click', () => {
         const payload = {};
@@ -12339,8 +12350,11 @@ function initSettingsEvents() {
 
     $('#horae-settings-reset').on('click', async () => {
         if (!confirm(t('confirm.resetAllSettings'))) return;
-        for (const k of _SETTINGS_EXPORT_KEYS) {
-            settings[k] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS[k]));
+        const resetKeys = Array.from(new Set([..._SETTINGS_EXPORT_KEYS, ..._SETTINGS_RESET_EXTRA_KEYS]));
+        for (const k of resetKeys) {
+            if (Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, k)) {
+                settings[k] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS[k]));
+            }
         }
         _ensureLocalizedRpgDefaults({ force: true });
         _normalizeRpgSettingsInPlace();
@@ -13716,7 +13730,11 @@ async function _ensureVectorIndexBeforeRecall() {
     const { missing, indexable } = _countVectorIndexGap(chat);
     if (missing <= 0) return;
 
-    showToast(`检测到 ${missing}/${indexable} 条向量索引缺失，正在补建索引。请勿切换或退出聊天。`, 'warning');
+    // showToast(`检测到 ${missing}/${indexable} 条向量索引缺失，正在补建索引。请勿切换或退出聊天。`, 'warning');
+
+    if (missing > 1) {
+        showToast(`检测到 ${missing} 条向量索引缺失，正在补建索引。请勿切换或退出聊天。`, 'warning');
+    }
 
     const runChatId = chatId;
     _vectorEnsureIndexChatId = runChatId;
@@ -13726,7 +13744,7 @@ async function _ensureVectorIndexBeforeRecall() {
         const result = await _vectorEnsureIndexPromise;
         const currentChatId = _deriveChatId(getContext());
         if (currentChatId === runChatId) {
-            showToast(`向量索引补建完成：新增 ${result.indexed} 条，跳过 ${result.skipped} 条。`, 'success');
+            // showToast(`向量索引补建完成：新增 ${result.indexed} 条，跳过 ${result.skipped} 条。`, 'success');
         } else {
             console.warn(`[Horae] 向量索引补建完成，但聊天已切换: ${runChatId} -> ${currentChatId}`);
         }
@@ -15967,8 +15985,16 @@ function _syncAutoSummaryTriggerLimitInput() {
 /** 根据缓冲模式动态更新缓冲上限的说明文案 */
 function updateAutoSummaryHint() {
     const hintEl = document.getElementById('horae-auto-summary-limit-hint');
-    if (!hintEl) return;
     const mode = settings.autoSummaryBufferMode || 'messages';
+
+    const labelEl = document.getElementById('horae-auto-summary-limit-label');
+    if (labelEl) {
+        labelEl.textContent = mode === 'tokens'
+            ? t('settings.triggerThreshold')
+            : t('settings.triggerThresholdMessages');
+    }
+
+    if (!hintEl) return;
     if (mode === 'tokens') {
         hintEl.innerHTML = t('ui.tokenModeHint') + '<br>' +
             '<small>' + t('ui.tokenModeHint2') + '<br>' +
@@ -17794,6 +17820,7 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
 
     console.log(`[Horae] 前置补全：检测到上一条AI楼层 #${targetIndex} 缺少时间线，尝试上下文增强分析`);
     showToast(t('toast.autoFillPrevTimelineStart', { id: targetIndex }), 'info');
+    const autoFillFailedToast = '补全失败,请手动重试';
 
     let parsed = horaeManager.parseHoraeTag(sourceText);
     if (!parsed) {
@@ -17812,11 +17839,14 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
             });
         } catch (err) {
             console.warn(`[Horae] 前置补全失败 #${targetIndex}:`, err);
-            showToast(t('toast.aiEnrichFailed', { error: err?.message || err || 'unknown' }), 'error');
+            showToast(autoFillFailedToast, 'error');
             return;
         }
     }
-    if (!parsed) return;
+    if (!parsed) {
+        showToast(autoFillFailedToast, 'error');
+        return;
+    }
 
     const mergedMeta = horaeManager.mergeParsedToMeta(existingMeta, parsed);
     const mergedEvents = Array.isArray(mergedMeta?.events)
@@ -17824,6 +17854,7 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
         : [];
     if (mergedEvents.length === 0) {
         console.log(`[Horae] 前置补全跳过：#${targetIndex} 未提取到有效事件摘要`);
+        showToast(autoFillFailedToast, 'error');
         return;
     }
 
@@ -17861,10 +17892,12 @@ async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
         await getContext().saveChat();
     } catch (err) {
         console.warn('[Horae] 前置补全保存失败:', err);
+        showToast(autoFillFailedToast, 'error');
+        return;
     }
 
     console.log(`[Horae] 前置补全完成：已写回上一条AI楼层 #${targetIndex} 的完整解析结果`);
-    showToast(t('toast.autoFillPrevTimelineDone', { id: targetIndex }), 'success');
+    // showToast(t('toast.autoFillPrevTimelineDone', { id: targetIndex }), 'success');
 }
 
 // ============================================

@@ -226,6 +226,12 @@ function getWeekDiffByMonday(fromDate, toDate) {
     return Math.round((toWeekStart - fromWeekStart) / WEEK_MS);
 }
 
+function getCalendarMonthDiff(fromDate, toDate) {
+    if (!(fromDate instanceof Date) || Number.isNaN(fromDate.getTime())) return null;
+    if (!(toDate instanceof Date) || Number.isNaN(toDate.getTime())) return null;
+    return (toDate.getFullYear() - fromDate.getFullYear()) * 12 + (toDate.getMonth() - fromDate.getMonth());
+}
+
 /** 获取相对时间语义标签（统一判定逻辑，供不同模块复用） */
 export function getRelativeTimeMeta(days, options = {}) {
     if (days === null || days === undefined) return { key: 'unknown', days };
@@ -257,10 +263,9 @@ export function getRelativeTimeMeta(days, options = {}) {
             }
         }
 
-        if (days >= 20 && days < 60 && fromDate && toDate) {
-            const fromMonth = fromDate.getMonth();
-            const toMonth = toDate.getMonth();
-            if (fromMonth !== toMonth) {
+        if (days >= 7 && days < 60 && fromDate && toDate) {
+            const monthDiff = getCalendarMonthDiff(fromDate, toDate);
+            if (monthDiff === 1) {
                 return { key: 'last_month_day', days, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
             }
         }
@@ -275,8 +280,13 @@ export function getRelativeTimeMeta(days, options = {}) {
             }
         }
 
-        if (days < 14) return { key: 'weeks_ago', days, value: Math.ceil(days / 7) };
-        if (days < 365) return { key: 'months_ago', days, value: Math.round(days / 30) };
+        // 仅保留“上周X / 上上周X”语义；超过后改用其他表达，避免出现“3-5周前”。
+        if (days < 30) return { key: 'days_ago', days, value: days };
+        if (days < 365) {
+            const monthDiff = fromDate && toDate ? getCalendarMonthDiff(fromDate, toDate) : null;
+            const months = monthDiff && monthDiff > 0 ? monthDiff : Math.floor(days / 30);
+            return { key: 'months_ago', days, value: months };
+        }
 
         const years = Math.floor(days / 365);
         const remainMonths = Math.round((days % 365) / 30);
@@ -299,16 +309,20 @@ export function getRelativeTimeMeta(days, options = {}) {
         }
     }
 
-    if (absDays >= 20 && absDays < 60 && fromDate && toDate) {
-        const fromMonth = fromDate.getMonth();
-        const toMonth = toDate.getMonth();
-        if (fromMonth !== toMonth) {
+    if (absDays >= 7 && absDays < 60 && fromDate && toDate) {
+        const monthDiff = getCalendarMonthDiff(fromDate, toDate);
+        if (monthDiff === -1) {
             return { key: 'next_month_day', days, absDays, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
         }
     }
 
-    if (absDays < 14) return { key: 'weeks_later', days, absDays, value: Math.ceil(absDays / 7) };
-    if (absDays < 365) return { key: 'months_later', days, absDays, value: Math.round(absDays / 30) };
+    // 仅保留“下周X / 下下周X”语义；超过后改用其他表达，避免出现“3-5周后”。
+    if (absDays < 30) return { key: 'days_later', days, absDays, value: absDays };
+    if (absDays < 365) {
+        const monthDiff = fromDate && toDate ? getCalendarMonthDiff(fromDate, toDate) : null;
+        const months = monthDiff && monthDiff < 0 ? Math.abs(monthDiff) : Math.floor(absDays / 30);
+        return { key: 'months_later', days, absDays, value: months };
+    }
 
     const years = Math.floor(absDays / 365);
     const remainMonths = Math.round((absDays % 365) / 30);

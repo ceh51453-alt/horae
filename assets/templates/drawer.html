@@ -10,7 +10,7 @@
                 <i class="fa-regular fa-clock"></i>
                 Horae 时光记忆
             </div>
-            <span class="horae-version">1.12.11B</span>
+            <span class="horae-version">1.12.12B</span>
         </div>
         
         <!-- 标签页导航 -->
@@ -984,7 +984,7 @@
                             </div>
                             <div class="horae-setting-item">
                                 <label class="horae-setting-control-row" for="horae-setting-auto-summary-limit">
-                                    <span data-i18n="settings.triggerThreshold">触发阈值</span>
+                                    <span id="horae-auto-summary-limit-label" data-i18n="settings.triggerThreshold">触发阈值</span>
                                     <span class="horae-setting-input-unit">
                                         <input type="number" id="horae-setting-auto-summary-limit" min="5" max="99999" value="10">
                                     </span>
@@ -993,10 +993,9 @@
                             </div>
                             <div class="horae-setting-hint" data-i18n="settings.autoSummaryExample" style="margin:8px 0; padding:8px; border-radius:6px; background:var(--horae-bg-secondary); font-size:11px; line-height:1.6;">
                                 <i class="fa-solid fa-lightbulb" style="color:var(--horae-accent);"></i>
-                                <b>举例</b>：假设保留=5，触发阈值=10条AI<br>
-                                → 旧的连续未总结AI达到10条时触发总结<br>
-                                → 切到Token模式时会自动套用Token阈值<br>
-                                → 全文来源细节更多，事件来源更省Token
+                                <b>示例</b>：假如设置的保留数是5，总结数是12，那么当AI消息数量达到17时，会进行一次总结，总结的数量是前面的12条<br>
+                                因为一般酒馆里还会有user消息，所以按楼层数来理解的话，就是当你到34层时，会总结前面的24层；<br>
+                                若改为Token模式，则使用Token阈值触发。
                             </div>
                             <div class="horae-setting-item">
                                 <label data-i18n="settings.resummaryThreshold">
@@ -1541,7 +1540,7 @@
                 </div>
                 
                 <div class="horae-about">
-                    <p>Horae v1.12.11B | 作者: SenriYuki</p>
+                    <p>Horae v1.12.12B | 作者: SenriYuki</p>
                     <p>基于时间锚点的AI记忆增强系统</p>
                 </div>
             </div>
