@@ -269,6 +269,7 @@ let selectedNpcs = new Set();       // 选中的NPC名称
 let timelineMultiSelectMode = false; // 时间线多选模式
 let selectedTimelineEvents = new Set(); // 选中的事件（"msgIndex-eventIndex"格式）
 let timelineLongPressTimer = null;  // 时间线长按计时器
+const _panelAiAnalysisInProgress = new Set(); // 底部楼层面板 AI 分析中的消息索引
 const _hideUnhideDebugStats = {
     hide: 0,
     unhide: 0,
@@ -10337,8 +10338,8 @@ function addMessagePanel(messageEl, messageIndex) {
                     <button class="horae-btn-rescan" title="${t('tooltip.rescan')}">
                         <i class="fa-solid fa-rotate"></i>
                     </button>
-                    <button class="horae-btn-expand" title="${t('tooltip.expandCollapse')}">
-                        <i class="fa-solid fa-chevron-down"></i>
+                    <button class="horae-btn-expand" title="${t('tooltip.aiAnalysis')}">
+                        <i class="fa-solid fa-magnifying-glass"></i>
                     </button>
                 </div>
             </div>
@@ -10623,6 +10624,42 @@ function buildPanelContent(messageIndex, meta) {
 }
 
 /**
+ * 楼层面板 AI 分析入口守卫：
+ * 1) 已有时间线先确认是否重跑
+ * 2) 分析中则阻止重复触发
+ * 3) 满足条件后执行传入的分析方法
+ */
+async function handlePanelAiAnalyzeAction(messageId, runAnalysis, options = {}) {
+    if (typeof runAnalysis !== 'function') return false;
+
+    const {
+        reanalyzeConfirmText = '该楼层已有时间线数据，是否重新分析？',
+        analyzingToastText = '正在分析中，请稍后',
+    } = options;
+
+    const existingMeta = horaeManager.getMessageMeta(messageId);
+    const existingEvents = existingMeta?.events || (existingMeta?.event ? [existingMeta.event] : []);
+    const hasTimeline = existingEvents.some(evt => evt?.summary && String(evt.summary).trim());
+
+    if (hasTimeline && !confirm(reanalyzeConfirmText)) {
+        return false;
+    }
+
+    if (_panelAiAnalysisInProgress.has(messageId)) {
+        showToast(analyzingToastText, 'info');
+        return false;
+    }
+
+    _panelAiAnalysisInProgress.add(messageId);
+    try {
+        await runAnalysis();
+        return true;
+    } finally {
+        _panelAiAnalysisInProgress.delete(messageId);
+    }
+}
+
+/**
  * 绑定面板事件
  */
 function bindPanelEvents(panelEl) {
@@ -10641,8 +10678,6 @@ function bindPanelEvents(panelEl) {
         const togglePanel = () => {
             const isHidden = contentEl.style.display === 'none';
             contentEl.style.display = isHidden ? 'block' : 'none';
-            const icon = expandBtn?.querySelector('i');
-            if (icon) icon.className = isHidden ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down';
         };
 
         const sideplayBtn = panelEl.querySelector('.horae-btn-sideplay');
@@ -10651,7 +10686,10 @@ function bindPanelEvents(panelEl) {
             if (e.target.closest('.horae-btn-expand') || e.target.closest('.horae-btn-rescan') || e.target.closest('.horae-btn-sideplay')) return;
             togglePanel();
         });
-        expandBtn?.addEventListener('click', togglePanel);
+        expandBtn?.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await handlePanelAiAnalyzeAction(messageId, () => runPanelAiAnalyze(expandBtn));
+        });
         rescanBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
             rescanMessageMeta(messageId, panelEl);
@@ -10838,8 +10876,7 @@ function bindPanelEvents(panelEl) {
         }
     });
 
-    // AI分析按钮（消耗API）
-    panelEl.querySelector('.horae-btn-ai-analyze')?.addEventListener('click', async () => {
+    async function runPanelAiAnalyze(btn) {
         const chat = horaeManager.getChat();
         const message = chat[messageId];
         if (!message) {
@@ -10847,10 +10884,14 @@ function bindPanelEvents(panelEl) {
             return;
         }
 
-        const btn = panelEl.querySelector('.horae-btn-ai-analyze');
-        const originalText = btn.innerHTML;
-        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${t('ui.analyzing')}`;
-        btn.disabled = true;
+        let originalText = '';
+        if (btn) {
+            originalText = btn.innerHTML;
+            btn.innerHTML = btn.classList.contains('horae-btn-ai-analyze')
+                ? `<i class="fa-solid fa-spinner fa-spin"></i> ${t('ui.analyzing')}`
+                : `<i class="fa-solid fa-spinner fa-spin"></i>`;
+            btn.disabled = true;
+        }
 
         try {
             const result = await analyzeMessageWithAI(message.mes, { messageIndex: messageId });
@@ -10884,6 +10925,31 @@ function bindPanelEvents(panelEl) {
                 getContext().saveChat();
                 refreshAllDisplays();
                 showToast(t('toast.saveSuccess'), 'success');
+
+                // 更新面板摘要（收缩态）
+                const summaryTime = panelEl.querySelector('.horae-summary-time');
+                const summaryEvent = panelEl.querySelector('.horae-summary-event');
+                const summaryChars = panelEl.querySelector('.horae-summary-chars');
+
+                if (summaryTime) {
+                    if (newMeta.timestamp.story_date) {
+                        const parsed = parseStoryDate(newMeta.timestamp.story_date);
+                        let dateDisplay = newMeta.timestamp.story_date;
+                        if (parsed && parsed.type === 'standard') {
+                            dateDisplay = formatStoryDate(parsed, true);
+                        }
+                        summaryTime.textContent = dateDisplay + (newMeta.timestamp.story_time ? ' ' + newMeta.timestamp.story_time : '');
+                    } else {
+                        summaryTime.textContent = '--';
+                    }
+                }
+                if (summaryEvent) {
+                    const evts = newMeta.events || (newMeta.event ? [newMeta.event] : []);
+                    summaryEvent.textContent = evts.length > 0 ? evts.map(e => e.summary).join(' | ') : t('ui.noSpecialEvents');
+                }
+                if (summaryChars) {
+                    summaryChars.textContent = t('ui.presentCount', { n: newMeta.scene.characters_present.length });
+                }
             } else {
                 showToast(t('toast.aiAnalysisNoData'), 'warning');
             }
@@ -10891,9 +10957,18 @@ function bindPanelEvents(panelEl) {
             console.error('[Horae] AI分析失败:', error);
             showToast(t('toast.aiAnalysisFailed', { error: error.message }), 'error');
         } finally {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
+            if (btn) {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
         }
+    }
+
+    // AI分析按钮（消耗API）
+    panelEl.querySelector('.horae-btn-ai-analyze')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const btn = panelEl.querySelector('.horae-btn-ai-analyze');
+        await handlePanelAiAnalyzeAction(messageId, () => runPanelAiAnalyze(btn));
     });
 }
 
