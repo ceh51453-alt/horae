@@ -15806,20 +15806,17 @@ async function checkAutoSummary() {
 
         if (!shouldTrigger || tailEventCandidates.length === 0 || tailAiCount === 0) return;
 
-        // 单次摘要批量上限：防止旧档案首次启用时 token 爆炸
-        const MAX_BATCH_EVENTS = settings.autoSummaryBatchMaxMsgs || 50;
-        const MAX_BATCH_TOKENS = settings.autoSummaryBatchMaxTokens || 80000;
-        const {
-            events: bufferEvents,
-            msgIndices: batchEventIndices
-        } = _pickAutoSummaryBatchEvents(chat, tailEventCandidates, MAX_BATCH_EVENTS, MAX_BATCH_TOKENS);
-        if (!bufferEvents.length || !batchEventIndices.length) return;
+        let bufferEvents = [];
+        let batchIndices = [];
+        let selectedAiIndices = [];
 
-        const batchEventMsgIndices = [...batchEventIndices].sort((a, b) => a - b);
-        let batchIndices = [...batchEventMsgIndices];
-        if (batchEventMsgIndices.length > 0) {
-            const batchStart = batchEventMsgIndices[0];
-            const batchEnd = batchEventMsgIndices[batchEventMsgIndices.length - 1];
+        if (bufferMode === 'messages') {
+            // messages模式：每次严格固定为“阈值条AI消息”，不受批量上限二次裁剪
+            selectedAiIndices = [...tailAiIndices].slice(0, bufferLimit);
+            if (!selectedAiIndices.length) return;
+
+            const batchStart = selectedAiIndices[0];
+            const batchEnd = selectedAiIndices[selectedAiIndices.length - 1];
             const expanded = [];
             for (let i = batchStart; i <= batchEnd; i++) {
                 if (i < 0 || i >= cutoff || !chat[i]) continue;
@@ -15827,9 +15824,40 @@ async function checkAutoSummary() {
                 if (activeSummaryCoveredIndices.has(i)) continue;
                 expanded.push(i);
             }
-            if (expanded.length > 0) batchIndices = expanded;
+            batchIndices = expanded;
+            if (!batchIndices.length) return;
+
+            const batchSet = new Set(batchIndices);
+            bufferEvents = tailEventCandidates.filter(e => batchSet.has(e.msgIdx));
+            if (!bufferEvents.length) return;
+        } else {
+            // tokens模式：沿用批量上限，避免单次输入过大
+            const MAX_BATCH_EVENTS = settings.autoSummaryBatchMaxMsgs || 50;
+            const MAX_BATCH_TOKENS = settings.autoSummaryBatchMaxTokens || 80000;
+            const {
+                events: pickedEvents,
+                msgIndices: batchEventIndices
+            } = _pickAutoSummaryBatchEvents(chat, tailEventCandidates, MAX_BATCH_EVENTS, MAX_BATCH_TOKENS);
+            if (!pickedEvents.length || !batchEventIndices.length) return;
+
+            const batchEventMsgIndices = [...batchEventIndices].sort((a, b) => a - b);
+            batchIndices = [...batchEventMsgIndices];
+            if (batchEventMsgIndices.length > 0) {
+                const batchStart = batchEventMsgIndices[0];
+                const batchEnd = batchEventMsgIndices[batchEventMsgIndices.length - 1];
+                const expanded = [];
+                for (let i = batchStart; i <= batchEnd; i++) {
+                    if (i < 0 || i >= cutoff || !chat[i]) continue;
+                    if (chat[i]?.horae_meta?._skipHorae) continue;
+                    if (activeSummaryCoveredIndices.has(i)) continue;
+                    expanded.push(i);
+                }
+                if (expanded.length > 0) batchIndices = expanded;
+            }
+            if (!batchIndices.length) return;
+            bufferEvents = pickedEvents;
+            selectedAiIndices = [...new Set(bufferEvents.map(e => e.msgIdx).filter(i => _isTrackableAiMessage(chat[i])))].sort((a, b) => a - b);
         }
-        if (!batchIndices.length) return;
 
         // 检测缓冲区消息的时间线/时间戳缺失情况
         const _missingTimestamp = [];
@@ -15865,7 +15893,7 @@ async function checkAutoSummary() {
             }
         }
 
-        const selectedAiCount = [...new Set(bufferEvents.map(e => e.msgIdx).filter(i => _isTrackableAiMessage(chat[i])))].length;
+        const selectedAiCount = selectedAiIndices.length;
         const remainingAi = Math.max(0, tailAiCount - selectedAiCount);
         const remainingHint = remainingAi > 0 ? ` (${remainingAi} remaining)` : '';
         const batchMsg = t('toast.autoSummaryProgress', { batch: selectedAiCount, total: tailAiCount, remaining: remainingHint });
