@@ -5,7 +5,7 @@
  * 数据按 chatId 隔离，向量存 IndexedDB，轻量索引存 chat[0].horae_meta.vectorIndex
  */
 
-import { calculateDetailedRelativeTime } from '../utils/timeUtils.js';
+import { calculateDetailedRelativeTime, getRelativeTimeMeta } from '../utils/timeUtils.js';
 import { t2s } from '../utils/zhConvert.js';
 import { tNodeForLang, detectEffectiveAiLang } from './i18n.js';
 
@@ -230,8 +230,7 @@ export class VectorManager {
 
     /**
      * 将 horae_meta 序列化为检索文本
-     * 事件摘要为核心（占主要权重），场景/角色/NPC 为辅
-     * 去掉物品、服装、心情等噪音，让 embedding 集中在语义关键内容
+     * 仅保留事件摘要与 RPG 变更，避免时间/地点/人物等上下文噪音
      */
     buildVectorDocument(meta) {
         if (!meta) return '';
@@ -245,36 +244,10 @@ export class VectorManager {
             }
         }
 
-        const npcTexts = [];
-        if (meta.npcs) {
-            for (const [name, info] of Object.entries(meta.npcs)) {
-                let s = name;
-                if (info.appearance) s += ` ${info.appearance}`;
-                if (info.relationship) s += ` ${info.relationship}`;
-                npcTexts.push(s);
-            }
-        }
-
-        if (eventTexts.length === 0 && npcTexts.length === 0) return '';
-
         // 单事件一行、段落空行分隔；保留语义边界
         const eventBlock = eventTexts.length > 0
-            ? eventTexts.map((evt, i) => `[Event ${i + 1}] ${evt}`).join('\n')
+            ? eventTexts.join('\n')
             : '';
-
-        const contextLines = [];
-        if (npcTexts.length > 0) {
-            for (const t of npcTexts) contextLines.push(`[NPC] ${t}`);
-        }
-        if (meta.scene?.location) contextLines.push(`[Location] ${meta.scene.location}`);
-        const chars = meta.scene?.characters_present || [];
-        if (chars.length > 0) contextLines.push(`[Characters] ${chars.join(', ')}`);
-        if (meta.timestamp?.story_date) {
-            const time = meta.timestamp.story_time
-                ? `${meta.timestamp.story_date} ${meta.timestamp.story_time}`
-                : meta.timestamp.story_date;
-            contextLines.push(`[Time] ${time}`);
-        }
 
         const rpgLines = [];
         const rpg = meta._rpgChanges;
@@ -295,9 +268,10 @@ export class VectorManager {
             }
         }
 
+        if (!eventBlock && rpgLines.length === 0) return '';
+
         const blocks = [];
         if (eventBlock) blocks.push(eventBlock);
-        if (contextLines.length > 0) blocks.push(contextLines.join('\n'));
         if (rpgLines.length > 0) blocks.push(rpgLines.join('\n'));
 
         return blocks.join('\n\n');
@@ -453,8 +427,10 @@ export class VectorManager {
      */
     buildMergedRecallQuery(stateQuery, userQuery) {
         const sections = [];
-        if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
-        if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
+        // if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
+        // if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
+        if (stateQuery) sections.push(`在"${stateQuery}"的背景下`);
+        if (userQuery) sections.push(`玩家试图 ${userQuery}`);
         return sections.join('\n').trim();
     }
 
@@ -476,9 +452,10 @@ export class VectorManager {
      * @param {number} topK
      * @param {number} threshold
      * @param {Set<number>} excludeIndices - 排除的消息索引（已在上下文中）
+     * @param {Map<number, Set<string>>} excludeReasonMap - 排除原因映射（可选）
      * @returns {Promise<Array<{messageIndex: number, similarity: number, document: string}>>}
      */
-    async search(queryText, topK = 5, threshold = 0.72, excludeIndices = new Set(), pureMode = false) {
+    async search(queryText, topK = 5, threshold = 0.72, excludeIndices = new Set(), pureMode = false, excludeReasonMap = null) {
         if (!this.isReady || !queryText || this.vectors.size === 0) return [];
 
         const prepared = this._prepareText(queryText, true);
@@ -495,21 +472,52 @@ export class VectorManager {
 
         const scored = [];
         const allScored = [];
+        const excludedByIndex = [];
+        const belowThreshold = [];
         let searchedCount = 0;
 
+        const resolveExcludeReasons = (msgIdx) => {
+            if (!(excludeReasonMap instanceof Map)) return ['unknown'];
+            const reasons = excludeReasonMap.get(msgIdx);
+            if (!reasons) return ['unknown'];
+            if (Array.isArray(reasons)) return reasons.length > 0 ? reasons : ['unknown'];
+            if (reasons instanceof Set) return reasons.size > 0 ? [...reasons] : ['unknown'];
+            return [String(reasons)];
+        };
+
         for (const [msgIdx, entry] of this.vectors) {
-            if (excludeIndices.has(msgIdx)) continue;
+            if (excludeIndices.has(msgIdx)) {
+                excludedByIndex.push({ messageIndex: msgIdx, reasons: resolveExcludeReasons(msgIdx) });
+                continue;
+            }
             searchedCount++;
             const sim = this._dotProduct(queryVec, entry.vector);
             allScored.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
             if (sim >= threshold) {
                 scored.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
+            } else {
+                belowThreshold.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
+            }
+        }
+
+        if (excludedByIndex.length > 0) {
+            excludedByIndex.sort((a, b) => a.messageIndex - b.messageIndex);
+            console.log(`[Horae Vector] 排除索引过滤: ${excludedByIndex.length} 条未参与相似度计算`);
+            for (const x of excludedByIndex) {
+                console.log(`  #${x.messageIndex} | reason=${x.reasons.join('+')}`);
             }
         }
 
         allScored.sort((a, b) => b.similarity - a.similarity);
         const bestSim = allScored.length > 0 ? allScored[0].similarity : 0;
         console.log(`[Horae Vector] 搜索了 ${searchedCount} 条 | 最高相似度=${bestSim.toFixed(4)} | 超过阈值(${threshold}): ${scored.length} 条`);
+        if (belowThreshold.length > 0) {
+            belowThreshold.sort((a, b) => b.similarity - a.similarity);
+            console.log(`[Horae Vector] 阈值过滤: ${belowThreshold.length} 条低于阈值(${threshold})`);
+            for (const x of belowThreshold) {
+                console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=below-threshold`);
+            }
+        }
         if (scored.length === 0 && allScored.length > 0) {
             console.log(`[Horae Vector] 阈值下 Top-5 候选:`);
             for (const c of allScored.slice(0, 5)) {
@@ -520,10 +528,22 @@ export class VectorManager {
         scored.sort((a, b) => b.similarity - a.similarity);
 
         const adjusted = pureMode ? scored : this._adjustThresholdByFrequency(scored, threshold);
-        if (!pureMode) console.log(`[Horae Vector] 频率过滤后: ${adjusted.length} 条`);
+        if (!pureMode) {
+            const adjustedIds = new Set(adjusted.map(x => x.messageIndex));
+            const removedByFrequency = scored.filter(x => !adjustedIds.has(x.messageIndex));
+            console.log(`[Horae Vector] 频率过滤后: ${adjusted.length} 条 | 过滤 ${removedByFrequency.length} 条`);
+            for (const x of removedByFrequency) {
+                console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=frequency-adjusted-threshold`);
+            }
+        }
 
         const deduped = this._deduplicateResults(adjusted);
-        console.log(`[Horae Vector] 去重后: ${deduped.length} 条`);
+        const dedupedIds = new Set(deduped.map(x => x.messageIndex));
+        const removedByDedup = adjusted.filter(x => !dedupedIds.has(x.messageIndex));
+        console.log(`[Horae Vector] 去重后: ${deduped.length} 条 | 过滤 ${removedByDedup.length} 条`);
+        for (const x of removedByDedup) {
+            console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=deduplicated`);
+        }
 
         return deduped.slice(0, topK);
     }
@@ -627,18 +647,33 @@ export class VectorManager {
 
         const EXCLUDE_RECENT = 5;
         const excludeIndices = new Set();
+        const excludeReasonMap = new Map();
+        const addExcludeReason = (idx, reason) => {
+            if (!excludeReasonMap.has(idx)) excludeReasonMap.set(idx, new Set());
+            excludeReasonMap.get(idx).add(reason);
+        };
         for (let i = Math.max(0, chat.length - EXCLUDE_RECENT); i < chat.length; i++) {
             excludeIndices.add(i);
+            addExcludeReason(i, 'recent-window');
         }
         if (extraExcludeIndices && typeof extraExcludeIndices[Symbol.iterator] === 'function') {
             for (const idx of extraExcludeIndices) {
                 if (Number.isInteger(idx) && idx >= 0 && idx < chat.length) {
                     excludeIndices.add(idx);
+                    addExcludeReason(idx, 'already-in-prompt');
                 }
             }
         }
         if (excludeIndices.size > EXCLUDE_RECENT) {
             console.log(`[Horae Vector] 额外排除已在Prompt中的楼层: +${excludeIndices.size - EXCLUDE_RECENT}`);
+        }
+        if (excludeIndices.size > 0) {
+            const sortedExcluded = [...excludeIndices].sort((a, b) => a - b);
+            console.log(`[Horae Vector] 本次检索排除楼层明细: ${sortedExcluded.length} 条`);
+            for (const idx of sortedExcluded) {
+                const reasons = [...(excludeReasonMap.get(idx) || ['unknown'])];
+                console.log(`  #${idx} | reason=${reasons.join('+')}`);
+            }
         }
 
         const merged = new Map();
@@ -653,7 +688,18 @@ export class VectorManager {
             merged.set(r.messageIndex, r);
         }
 
-        const hybridResults = await this._hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, recallTopK, recallThreshold, pureMode);
+        const hybridResults = await this._hybridSearch(
+            userQuery,
+            state,
+            horaeManager,
+            skipLast,
+            settings,
+            excludeIndices,
+            excludeReasonMap,
+            recallTopK,
+            recallThreshold,
+            pureMode
+        );
         console.log(`[Horae Vector] 向量混合搜索: ${hybridResults.length} 条命中`);
         for (const r of hybridResults) {
             if (!merged.has(r.messageIndex)) {
@@ -722,7 +768,7 @@ export class VectorManager {
                     const useFullText = !!settings.vectorRerankFullText;
                     const _stripTags = settings.vectorStripTags || '';
                     const currentDateForRerank = state.timestamp?.story_date;
-                    // Rerank 文档 = 时间头 + 结构化 metadata + 可选全文片段（≤1200 字）
+                    // Rerank 文档 = 时间头 + 结构化 metadata + 可选全文片段（全文模式）
                     const rerankDocs = rerankCandidates.map(r => {
                         const meta = chat[r.messageIndex]?.horae_meta;
                         const timeTag = this._buildTimeTag(meta?.timestamp, currentDateForRerank);
@@ -730,7 +776,7 @@ export class VectorManager {
                         const baseDoc = r.document || '';
                         if (useFullText) {
                             const fullText = this._extractCleanText(chat[r.messageIndex]?.mes, _stripTags);
-                            const snippet = fullText ? fullText.substring(0, 1200) : '';
+                            const snippet = fullText || '';
                             if (snippet) return `${head}${baseDoc}\n---\n${snippet}`;
                             return `${head}${baseDoc}`;
                         }
@@ -738,12 +784,52 @@ export class VectorManager {
                     });
                     console.log(`[Horae Vector] Rerank 输入: ${rerankCandidates.length} 条候选 / 模式=${useFullText ? '全文精排' : '摘要排序'}`);
 
-                    const reranked = await this._rerank(
-                        rerankQuery,
-                        rerankDocs,
-                        rerankCandidates.length,
-                        settings
-                    );
+                    let rerankPlan = null;
+                    let rerankDocsForDebug = rerankDocs;
+                    let reranked = [];
+                    if (useFullText) {
+                        rerankPlan = this._buildRerankBatchPlan(rerankQuery, rerankDocs, 32768);
+                        rerankDocsForDebug = rerankPlan.documents;
+                        if (rerankPlan.batches.length > 1 || rerankPlan.truncatedCount > 0) {
+                            console.log(`[Horae Vector] Rerank 分批: batches=${rerankPlan.batches.length} / budget=${rerankPlan.docBudget} tokens / query=${rerankPlan.queryTokens} tokens / truncated=${rerankPlan.truncatedCount}`);
+                        }
+
+                        const merged = [];
+                        for (let bi = 0; bi < rerankPlan.batches.length; bi++) {
+                            const batch = rerankPlan.batches[bi];
+                            console.log(`[Horae Vector] Rerank batch ${bi + 1}/${rerankPlan.batches.length}: docs=${batch.documents.length}, estTokens=${batch.estimatedTokens}`);
+                            const batchReranked = await this._rerank(
+                                rerankQuery,
+                                batch.documents,
+                                batch.documents.length,
+                                settings
+                            );
+                            for (const rr of batchReranked) {
+                                const globalIndex = batch.indices[rr.index];
+                                if (globalIndex === undefined) continue;
+                                merged.push({
+                                    index: globalIndex,
+                                    relevance_score: rr.relevance_score,
+                                });
+                            }
+                        }
+
+                        const bestByIndex = new Map();
+                        for (const rr of merged) {
+                            const prev = bestByIndex.get(rr.index);
+                            if (!prev || (rr.relevance_score ?? 0) > (prev.relevance_score ?? 0)) {
+                                bestByIndex.set(rr.index, rr);
+                            }
+                        }
+                        reranked = [...bestByIndex.values()].sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+                    } else {
+                        reranked = await this._rerank(
+                            rerankQuery,
+                            rerankDocs,
+                            rerankCandidates.length,
+                            settings
+                        );
+                    }
                     if (reranked && reranked.length > 0) {
                         const minScore = this._effectiveRerankMinScore(settings);
                         const passed = reranked.filter(rr => (rr.relevance_score ?? 0) >= minScore);
@@ -769,7 +855,7 @@ export class VectorManager {
                             useFullText,
                             candidates: rerankCandidates.map((r, i) => ({
                                 messageIndex: r.messageIndex,
-                                docPreview: (rerankDocs[i] || '').substring(0, 120),
+                                docPreview: (rerankDocsForDebug[i] || '').substring(0, 120),
                                 priorScore: r.similarity,
                                 source: r.source,
                             })),
@@ -782,6 +868,18 @@ export class VectorManager {
                             passedCount: passed.length,
                             droppedCount: dropped,
                             retainedTop1: passed.length === 0 && finalReranked.length > 0,
+                            batching: rerankPlan ? {
+                                contextLimit: rerankPlan.contextLimit,
+                                budgetTokens: rerankPlan.docBudget,
+                                queryTokens: rerankPlan.queryTokens,
+                                batchCount: rerankPlan.batches.length,
+                                truncatedCount: rerankPlan.truncatedCount,
+                                batches: rerankPlan.batches.map((b, idx) => ({
+                                    batch: idx + 1,
+                                    docs: b.documents.length,
+                                    estimatedTokens: b.estimatedTokens,
+                                })),
+                            } : null,
                         };
                     }
                 } catch (err) {
@@ -1478,7 +1576,7 @@ export class VectorManager {
     // 向量+关键词混合搜索（兜底）
     // ========================================
 
-    async _hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, topK, threshold, pureMode = false) {
+    async _hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, excludeReasonMap, topK, threshold, pureMode = false) {
         if (!this.isReady || this.vectors.size === 0) return [];
 
         // 跳过 user 消息，取最近一条 AI 消息的完整 meta（含 events）
@@ -1498,7 +1596,7 @@ export class VectorManager {
         // 严格使用用户设置阈值
         const mergedThreshold = threshold;
 
-        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode);
+        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode, excludeReasonMap);
         results = results.map(r => ({ ...r, source: 'merged' }));
         console.log(`[Horae Vector] 合并查询搜索: ${results.length} 条 | threshold=${mergedThreshold.toFixed(2)}`);
 
@@ -1629,24 +1727,37 @@ export class VectorManager {
         const result = calculateDetailedRelativeTime(eventDate, currentDate);
         if (result.days === null || result.days === undefined) return '';
 
-        const { days, fromDate, toDate } = result;
-        if (days === 0) return '(今天)';
-        if (days === 1) return '(昨天)';
-        if (days === 2) return '(前天)';
-        if (days === 3) return '(大前天)';
-        if (days >= 4 && days <= 13 && fromDate) {
-            const WD = ['日', '一', '二', '三', '四', '五', '六'];
-            return `(上周${WD[fromDate.getDay()]})`;
+        const meta = getRelativeTimeMeta(result.days, { fromDate: result.fromDate, toDate: result.toDate });
+        const WD = ['日', '一', '二', '三', '四', '五', '六'];
+
+        switch (meta.key) {
+            case 'today': return '(今天)';
+            case 'yesterday': return '(昨天)';
+            case 'day_before_yesterday': return '(前天)';
+            case 'three_days_ago': return '(大前天)';
+            case 'tomorrow': return '(明天)';
+            case 'day_after_tomorrow': return '(后天)';
+            case 'in_three_days': return '(大后天)';
+            case 'last_weekday': return `(上周${WD[meta.weekday]})`;
+            case 'week_before_last_weekday': return `(上上周${WD[meta.weekday]})`;
+            case 'next_weekday': return `(下周${WD[meta.weekday]})`;
+            case 'week_after_next_weekday': return `(下下周${WD[meta.weekday]})`;
+            case 'last_month_day': return `(上个月${meta.day}号)`;
+            case 'next_month_day': return `(下个月${meta.day}号)`;
+            case 'last_year_date': return `(去年${meta.month}月)`;
+            case 'year_before_last_date': return `(前年${meta.month}月)`;
+            case 'days_ago': return `(${meta.value}天前)`;
+            case 'days_later': return `(${meta.value}天后)`;
+            case 'weeks_ago': return `(${meta.value}周前)`;
+            case 'weeks_later': return `(${meta.value}周后)`;
+            case 'months_ago': return `(${meta.value}个月前)`;
+            case 'months_later': return `(${meta.value}个月后)`;
+            case 'years_months_ago': return `(${meta.years}年${meta.months}个月前)`;
+            case 'years_months_later': return `(${meta.years}年${meta.months}个月后)`;
+            case 'years_ago': return `(${meta.years}年前)`;
+            case 'years_later': return `(${meta.years}年后)`;
+            default: return '';
         }
-        if (days >= 20 && days < 60 && fromDate && toDate && fromDate.getMonth() !== toDate.getMonth()) {
-            return `(上个月${fromDate.getDate()}号)`;
-        }
-        if (days >= 300 && fromDate && toDate && fromDate.getFullYear() < toDate.getFullYear()) {
-            return `(去年${fromDate.getMonth() + 1}月)`;
-        }
-        if (days > 0 && days < 30) return `(${days}天前)`;
-        if (days > 0) return `(${Math.round(days / 30)}个月前)`;
-        return '';
     }
 
     // ========================================
@@ -1789,6 +1900,120 @@ export class VectorManager {
             console.error('[Horae Vector] API embedding 响应解析失败:', err);
             throw wrapped;
         }
+    }
+
+    _estimateRerankTokens(text) {
+        if (!text) return 0;
+        const str = String(text);
+        let cjkCount = 0;
+        for (const ch of str) {
+            const cp = ch.codePointAt(0);
+            if (
+                (cp >= 0x3400 && cp <= 0x4DBF) ||
+                (cp >= 0x4E00 && cp <= 0x9FFF) ||
+                (cp >= 0xF900 && cp <= 0xFAFF) ||
+                (cp >= 0x3040 && cp <= 0x30FF) ||
+                (cp >= 0xAC00 && cp <= 0xD7AF)
+            ) {
+                cjkCount++;
+            }
+        }
+        const otherCount = Math.max(0, str.length - cjkCount);
+        // Conservative estimate: CJK ~= 1 token, others ~= 0.3~0.4 token/char, then add safety margin.
+        const rough = (cjkCount * 1.35) + (otherCount * 0.45);
+        return Math.ceil((rough + 8) * 1.18);
+    }
+
+    _truncateTextByEstimatedTokens(text, tokenLimit) {
+        if (!text || tokenLimit <= 0) return '';
+        const source = String(text);
+        if (this._estimateRerankTokens(source) <= tokenLimit) return source;
+
+        let low = 0;
+        let high = source.length;
+        let best = 0;
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const candidate = source.substring(0, mid);
+            if (this._estimateRerankTokens(candidate) <= tokenLimit) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return source.substring(0, best).trimEnd();
+    }
+
+    _buildRerankBatchPlan(query, documents, contextLimit = 32768) {
+        const safeUsageRatio = 0.68;
+        const staticReserve = 1800;
+        const perDocOverhead = 24;
+
+        const queryTokens = this._estimateRerankTokens(query);
+        const docBudget = Math.max(
+            1024,
+            Math.floor(contextLimit * safeUsageRatio) - staticReserve - queryTokens
+        );
+        const maxSingleDocTokens = Math.max(768, docBudget - 256);
+
+        const normalizedDocs = [];
+        const docTokenEstimates = [];
+        let truncatedCount = 0;
+
+        for (const doc of documents || []) {
+            let text = typeof doc === 'string' ? doc : String(doc ?? '');
+            let estimated = this._estimateRerankTokens(text) + perDocOverhead;
+            if (estimated > maxSingleDocTokens) {
+                const allowedTokens = Math.max(512, maxSingleDocTokens - perDocOverhead);
+                const trimmed = this._truncateTextByEstimatedTokens(text, allowedTokens);
+                if (trimmed && trimmed.length < text.length) {
+                    text = trimmed;
+                    truncatedCount++;
+                }
+                estimated = this._estimateRerankTokens(text) + perDocOverhead;
+            }
+            normalizedDocs.push(text);
+            docTokenEstimates.push(Math.max(perDocOverhead, estimated));
+        }
+
+        const batches = [];
+        let currentIndices = [];
+        let currentDocs = [];
+        let currentTokens = 0;
+        const flush = () => {
+            if (currentIndices.length === 0) return;
+            batches.push({
+                indices: currentIndices,
+                documents: currentDocs,
+                estimatedTokens: currentTokens,
+            });
+            currentIndices = [];
+            currentDocs = [];
+            currentTokens = 0;
+        };
+
+        for (let i = 0; i < normalizedDocs.length; i++) {
+            const nextTokens = docTokenEstimates[i];
+            if (currentIndices.length > 0 && (currentTokens + nextTokens) > docBudget) {
+                flush();
+            }
+            currentIndices.push(i);
+            currentDocs.push(normalizedDocs[i]);
+            currentTokens += nextTokens;
+        }
+        flush();
+
+        return {
+            documents: normalizedDocs,
+            batches,
+            truncatedCount,
+            queryTokens,
+            docBudget,
+            contextLimit,
+            safeUsageRatio,
+            staticReserve,
+        };
     }
 
     /**
