@@ -10,7 +10,7 @@
                 <i class="fa-regular fa-clock"></i>
                 Horae 时光记忆
             </div>
-            <span class="horae-version">1.12.13B</span>
+            <span class="horae-version">1.12.14</span>
         </div>
         
         <!-- 标签页导航 -->
@@ -148,7 +148,7 @@
                         <button id="horae-btn-fix-summaries" class="horae-icon-btn" data-i18n-title="tooltip.fixSummaries" title="">
                             <i class="fa-solid fa-screwdriver-wrench"></i>
                         </button>
-                        <button id="horae-btn-auto-summary-now" class="horae-icon-btn" title="立刻执行自动总结">
+                        <button id="horae-btn-auto-summary-now" class="horae-icon-btn" data-i18n-title="tooltip.autoSummaryNow" title="">
                             <i class="fa-solid fa-bolt"></i>
                         </button>
                         <button id="horae-btn-scan-all" class="horae-icon-btn" data-i18n-title="tooltip.refreshTimeline" title="">
@@ -679,65 +679,6 @@
                     </div>
                     </div>
                 </div>
-
-                <div class="horae-settings-section">
-                    <div class="horae-section-header horae-collapse-header" id="horae-sub-api-collapse-toggle" data-i18n="settings.subApiSection">
-                        <i class="fa-solid fa-plug-circle-bolt"></i>
-                        副API
-                        <i class="fa-solid fa-chevron-down horae-collapse-icon collapsed"></i>
-                    </div>
-                    <div id="horae-sub-api-collapse-body" style="display: none;">
-                        <span class="horae-setting-hint" data-i18n="settings.subApiSectionHint" style="margin-bottom: 8px;">
-                            <i class="fa-solid fa-circle-info"></i>
-                            这里配置副API的地址、密钥和模型，用于总结/补全等副任务。
-                        </span>
-                        <div id="horae-auto-summary-api-options">
-                            <div class="horae-setting-item">
-                                <label data-i18n="settings.summaryApiUrl">API 地址</label>
-                                <input type="text" id="horae-setting-auto-summary-api-url" class="horae-edit-field"
-                                    placeholder="https://api.openai.com/v1">
-                                <span class="horae-setting-sub-hint" data-i18n="settings.summaryApiUrlHint">OpenAI 兼容端点基础地址，如 https://api.openai.com/v1</span>
-                            </div>
-                            <div class="horae-setting-item">
-                                <label data-i18n="settings.summaryApiKey">API 密钥</label>
-                                <input type="password" id="horae-setting-auto-summary-api-key" class="horae-edit-field"
-                                    placeholder="sk-...">
-                            </div>
-                            <div class="horae-setting-item">
-                                <label data-i18n="settings.summaryModel">模型</label>
-                                <div style="display:flex; gap:4px; align-items:center;">
-                                    <select id="horae-setting-auto-summary-model" class="horae-edit-field" style="flex:1; min-width:0;">
-                                        <option value="">-- 请先拉取模型列表 --</option>
-                                    </select>
-                                    <button id="horae-btn-fetch-models" class="horae-btn" style="white-space:nowrap; padding:4px 8px;" data-i18n-title="tooltip.fetchModels" title="">
-                                        <i class="fa-solid fa-arrows-rotate"></i>
-                                    </button>
-                                </div>
-                                <span class="horae-setting-sub-hint" data-i18n="settings.summaryFetchModelsHint">填好地址和密钥后点击 <i class="fa-solid fa-arrows-rotate"></i> 拉取。低成本模型即可。</span>
-                            </div>
-                            <div class="horae-setting-item">
-                                <label data-i18n="settings.subApiScope">应用范围</label>
-                                <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px;">
-                                    <label>
-                                        <input type="checkbox" id="horae-setting-sub-api-scope-auto-summary">
-                                        <span data-i18n="settings.subApiScopeAutoSummary">自动总结</span>
-                                    </label>
-                                    <label>
-                                        <input type="checkbox" id="horae-setting-sub-api-scope-manual-summary">
-                                        <span data-i18n="settings.subApiScopeManualSummary">手动总结</span>
-                                    </label>
-                                    <label>
-                                        <input type="checkbox" id="horae-setting-sub-api-scope-brief">
-                                        <span data-i18n="settings.subApiScopeBrief">摘要</span>
-                                    </label>
-                                    <span class="horae-setting-sub-hint" data-i18n="settings.subApiScopeBriefHint" style="margin-left: 22px;">
-                                        开启摘要使用副API后，“自动补全上一消息”会同步开启，格式提示词将不会在发送新消息时注入，因此摘要不会跟着正文一起输出，而是在发新消息时使用副API补全，手动点击楼层界面中的AI分析一样会使用副API
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
                 
                 <div class="horae-settings-section">
                     <div class="horae-section-header horae-collapse-header" id="horae-custom-tables-collapse-toggle" data-i18n="settings.customTables">
@@ -984,7 +925,7 @@
                             </div>
                             <div class="horae-setting-item">
                                 <label class="horae-setting-control-row" for="horae-setting-auto-summary-limit">
-                                    <span id="horae-auto-summary-limit-label" data-i18n="settings.triggerThreshold">触发阈值</span>
+                                    <span data-i18n="settings.triggerThreshold">触发阈值</span>
                                     <span class="horae-setting-input-unit">
                                         <input type="number" id="horae-setting-auto-summary-limit" min="5" max="99999" value="10">
                                     </span>
@@ -993,9 +934,10 @@
                             </div>
                             <div class="horae-setting-hint" data-i18n="settings.autoSummaryExample" style="margin:8px 0; padding:8px; border-radius:6px; background:var(--horae-bg-secondary); font-size:11px; line-height:1.6;">
                                 <i class="fa-solid fa-lightbulb" style="color:var(--horae-accent);"></i>
-                                <b>示例</b>：假如设置的保留数是5，总结数是12，那么当AI消息数量达到17时，会进行一次总结，总结的数量是前面的12条<br>
-                                因为一般酒馆里还会有user消息，所以按楼层数来理解的话，就是当你到34层时，会总结前面的24层；<br>
-                                若改为Token模式，则使用Token阈值触发。
+                                <b>举例</b>：假设保留=5，触发阈值=10条AI<br>
+                                → 旧的连续未总结AI达到10条时触发总结<br>
+                                → 切到Token模式时会自动套用Token阈值<br>
+                                → 全文来源细节更多，事件来源更省Token
                             </div>
                             <div class="horae-setting-item">
                                 <label data-i18n="settings.resummaryThreshold">
@@ -1020,6 +962,49 @@
                                     每次总结送入的文本 Token 上限，超出则截断至此值。<br>
                                     参考各模型上下文窗口（建议设为 30%~50%）：<br>
                                     Claude ≈ 80K~200K · GPT-4o ≈ 80K~128K · Gemini ≈ 100K~1000K · DeepSeek ≈ 64K
+                                </span>
+                            </div>
+                            <div class="horae-setting-item" style="border-top: 1px solid var(--horae-border); padding-top: 8px; margin-top: 4px;">
+                                <label data-i18n="settings.useIndependentApi">
+                                    <input type="checkbox" id="horae-setting-auto-summary-custom-api">
+                                    使用独立 API（省钱 & 真并行）
+                                </label>
+                                <span class="horae-setting-sub-hint" data-i18n="settings.useIndependentApiHint">填入一个 OpenAI 兼容端点，总结/补全将直接请求该端点，不占用酒馆主连接。</span>
+                            </div>
+                            <div id="horae-auto-summary-api-options" style="display: none;">
+                                <div class="horae-setting-item">
+                                    <label data-i18n="settings.summaryApiUrl">API 地址</label>
+                                    <input type="text" id="horae-setting-auto-summary-api-url" class="horae-edit-field"
+                                        placeholder="https://api.openai.com/v1">
+                                    <span class="horae-setting-sub-hint" data-i18n="settings.summaryApiUrlHint">OpenAI 兼容端点基础地址，如 https://api.openai.com/v1</span>
+                                </div>
+                                <div class="horae-setting-item">
+                                    <label data-i18n="settings.summaryApiKey">API 密钥</label>
+                                    <input type="password" id="horae-setting-auto-summary-api-key" class="horae-edit-field"
+                                        placeholder="sk-...">
+                                </div>
+                                <div class="horae-setting-item">
+                                    <label data-i18n="settings.summaryModel">模型</label>
+                                    <div style="display:flex; gap:4px; align-items:center;">
+                                        <select id="horae-setting-auto-summary-model" class="horae-edit-field" style="flex:1; min-width:0;">
+                                            <option value="">-- 请先拉取模型列表 --</option>
+                                        </select>
+                                        <button id="horae-btn-fetch-models" class="horae-btn" style="white-space:nowrap; padding:4px 8px;" data-i18n-title="tooltip.fetchModels" title="">
+                                            <i class="fa-solid fa-arrows-rotate"></i>
+                                        </button>
+                                    </div>
+                                    <span class="horae-setting-sub-hint" data-i18n="settings.summaryFetchModelsHint">填好地址和密钥后点击 <i class="fa-solid fa-arrows-rotate"></i> 拉取。低成本模型即可。</span>
+                                </div>
+                                <div class="horae-setting-item" style="margin-top:6px;">
+                                    <button id="horae-btn-test-sub-api" class="horae-btn" data-i18n="settings.testSubApi" style="width:100%;">
+                                        <i class="fa-solid fa-plug-circle-check"></i> 测试副API连接
+                                    </button>
+                                </div>
+                                <span class="horae-setting-sub-hint" data-i18n="settings.subApiHint">
+                                    <i class="fa-solid fa-circle-info"></i>
+                                    填写完成后，自动总结将通过独立 HTTP 请求并行生成，不影响酒馆主 API。<br>
+                                    支持所有 OpenAI 兼容格式的端点（OpenAI、DeepSeek、OpenRouter 等）。<br>
+                                    连接测试仅查询模型列表，不消耗生成次数。
                                 </span>
                             </div>
                         </div>
@@ -1157,6 +1142,13 @@
                                              如果你使用的是小型或低维度模型，<strong>请不要开启</strong>，否则召回质量会下降。
                                         </span>
                                     </div>
+                                    <div class="horae-setting-item">
+                                        <label data-i18n="vector.debugLog">
+                                            <input type="checkbox" id="horae-setting-vector-debug-log">
+                                            详细调试日志
+                                        </label>
+                                        <span class="horae-setting-sub-hint" data-i18n="vector.debugLogHint">开启后向控制台输出阈值、频率、去重、Rerank 等召回明细。仅排查问题时开启，正常使用请关闭。</span>
+                                    </div>
                                 </div>
                                 <div class="horae-setting-item">
                                     <label data-i18n="vector.topK">
@@ -1239,7 +1231,7 @@
                                                 <i class="fa-solid fa-arrows-rotate"></i>
                                             </button>
                                         </div>
-                                        <span class="horae-setting-sub-hint" data-i18n="vector.rerankFetchHint">填好地址和密钥后点击 <i class="fa-solid fa-arrows-rotate"></i> 拉取。<br>推荐: qwen3-Reranker-4B</span>
+                                        <span class="horae-setting-sub-hint" data-i18n="vector.rerankFetchHint">填好地址和密钥后点击 <i class="fa-solid fa-arrows-rotate"></i> 拉取。<br>推荐: qwen3-Reranker-4B / 8B</span>
                                     </div>
                                     <div class="horae-setting-item" style="margin-top: 4px;">
                                         <label data-i18n="vector.rerankFulltext">
@@ -1540,7 +1532,7 @@
                 </div>
                 
                 <div class="horae-about">
-                    <p>Horae v1.12.13B | 作者: SenriYuki</p>
+                    <p>Horae v1.12.14 | 作者: SenriYuki</p>
                     <p>基于时间锚点的AI记忆增强系统</p>
                 </div>
             </div>

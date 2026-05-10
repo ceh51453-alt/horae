@@ -57,6 +57,16 @@ export class VectorManager {
         this.totalDocuments = 0;
         this._pendingCallbacks = new Map();
         this._callId = 0;
+        this._debugLog = false;
+    }
+
+    /**
+     * 详细调试日志（默认关闭）
+     * 由 recall() 入口从 settings.vectorDebugLog 同步刷新 this._debugLog。
+     * 用于排除原因/阈值过滤/频率过滤/去重过滤等明细日志，避免污染普通用户控制台。
+     */
+    _debug(...args) {
+        if (this._debugLog) console.log(...args);
     }
 
     // ========================================
@@ -230,7 +240,12 @@ export class VectorManager {
 
     /**
      * 将 horae_meta 序列化为检索文本
-     * 仅保留事件摘要与 RPG 变更，避免时间/地点/人物等上下文噪音
+     * 设计取舍：
+     * - 事件摘要为主权重，独立首段
+     * - 时间/地点/在场角色作为锚点（区分 4/1 vs 6/3 同类事件、跨地点同类事件）
+     * - 不写英文标签（[Event]/[NPC] 等对中文 embedding 是无意义低 IDF token）
+     * - 不写 NPC 外貌/性格/关系/服装/物品/情绪等高重复字段（IDF 噪声重灾区）
+     * - RPG 变更使用中文短句
      */
     buildVectorDocument(meta) {
         if (!meta) return '';
@@ -244,34 +259,42 @@ export class VectorManager {
             }
         }
 
-        // 单事件一行、段落空行分隔；保留语义边界
-        const eventBlock = eventTexts.length > 0
-            ? eventTexts.join('\n')
-            : '';
+        const anchorTokens = [];
+        if (meta.scene?.location) anchorTokens.push(meta.scene.location);
+        const chars = meta.scene?.characters_present || [];
+        if (chars.length > 0) anchorTokens.push(chars.join(' '));
+        if (meta.timestamp?.story_date) {
+            anchorTokens.push(
+                meta.timestamp.story_time
+                    ? `${meta.timestamp.story_date} ${meta.timestamp.story_time}`
+                    : meta.timestamp.story_date
+            );
+        }
 
         const rpgLines = [];
         const rpg = meta._rpgChanges;
         if (rpg) {
             if (rpg.levels && Object.keys(rpg.levels).length > 0) {
                 for (const [owner, lv] of Object.entries(rpg.levels)) {
-                    rpgLines.push(`[RPG] ${owner} → Lv.${lv}`);
+                    rpgLines.push(`${owner} 等级${lv}`);
                 }
             }
             for (const eq of (rpg.equipment || [])) {
-                rpgLines.push(`[RPG] ${eq.owner} equip ${eq.name}(${eq.slot})`);
+                rpgLines.push(`${eq.owner} 装备 ${eq.name}(${eq.slot})`);
             }
             for (const u of (rpg.unequip || [])) {
-                rpgLines.push(`[RPG] ${u.owner} unequip ${u.name}(${u.slot})`);
+                rpgLines.push(`${u.owner} 卸下 ${u.name}(${u.slot})`);
             }
             for (const bc of (rpg.baseChanges || [])) {
-                if (bc.field === 'level') rpgLines.push(`[RPG] base ${bc.path} → Lv.${bc.value}`);
+                if (bc.field === 'level') rpgLines.push(`基地 ${bc.path} 等级${bc.value}`);
             }
         }
 
-        if (!eventBlock && rpgLines.length === 0) return '';
+        if (eventTexts.length === 0 && anchorTokens.length === 0 && rpgLines.length === 0) return '';
 
         const blocks = [];
-        if (eventBlock) blocks.push(eventBlock);
+        if (eventTexts.length > 0) blocks.push(eventTexts.join('\n'));
+        if (anchorTokens.length > 0) blocks.push(anchorTokens.join(' '));
         if (rpgLines.length > 0) blocks.push(rpgLines.join('\n'));
 
         return blocks.join('\n\n');
@@ -427,10 +450,8 @@ export class VectorManager {
      */
     buildMergedRecallQuery(stateQuery, userQuery) {
         const sections = [];
-        // if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
-        // if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
-        if (stateQuery) sections.push(`在"${stateQuery}"的背景下`);
-        if (userQuery) sections.push(`玩家试图 ${userQuery}`);
+        if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
+        if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
         return sections.join('\n').trim();
     }
 
@@ -452,15 +473,14 @@ export class VectorManager {
      * @param {number} topK
      * @param {number} threshold
      * @param {Set<number>} excludeIndices - 排除的消息索引（已在上下文中）
-     * @param {Map<number, Set<string>>} excludeReasonMap - 排除原因映射（可选）
      * @returns {Promise<Array<{messageIndex: number, similarity: number, document: string}>>}
      */
-    async search(queryText, topK = 5, threshold = 0.72, excludeIndices = new Set(), pureMode = false, excludeReasonMap = null) {
+    async search(queryText, topK = 5, threshold = 0.72, excludeIndices = new Set(), pureMode = false) {
         if (!this.isReady || !queryText || this.vectors.size === 0) return [];
 
         const prepared = this._prepareText(queryText, true);
-        console.log('[Horae Vector] 开始 embedding 查询...');
-        console.log(`[Horae Vector] 实际检索阈值: ${Number(threshold).toFixed(4)} | topK=${topK} | pureMode=${!!pureMode}`);
+        this._debug('[Horae Vector] 开始 embedding 查询...');
+        this._debug(`[Horae Vector] 实际检索阈值: ${Number(threshold).toFixed(4)} | topK=${topK} | pureMode=${!!pureMode}`);
         const result = await this._embed([prepared]);
         if (!result?.vectors?.[0]) {
             console.warn('[Horae Vector] embedding 返回空结果:', result);
@@ -468,57 +488,26 @@ export class VectorManager {
         }
 
         const queryVec = result.vectors[0];
-        console.log(`[Horae Vector] 查询向量维度: ${queryVec.length}，开始对比 ${this.vectors.size} 条...`);
+        this._debug(`[Horae Vector] 查询向量维度: ${queryVec.length}，开始对比 ${this.vectors.size} 条...`);
 
         const scored = [];
         const allScored = [];
-        const excludedByIndex = [];
-        const belowThreshold = [];
         let searchedCount = 0;
 
-        const resolveExcludeReasons = (msgIdx) => {
-            if (!(excludeReasonMap instanceof Map)) return ['unknown'];
-            const reasons = excludeReasonMap.get(msgIdx);
-            if (!reasons) return ['unknown'];
-            if (Array.isArray(reasons)) return reasons.length > 0 ? reasons : ['unknown'];
-            if (reasons instanceof Set) return reasons.size > 0 ? [...reasons] : ['unknown'];
-            return [String(reasons)];
-        };
-
         for (const [msgIdx, entry] of this.vectors) {
-            if (excludeIndices.has(msgIdx)) {
-                excludedByIndex.push({ messageIndex: msgIdx, reasons: resolveExcludeReasons(msgIdx) });
-                continue;
-            }
+            if (excludeIndices.has(msgIdx)) continue;
             searchedCount++;
             const sim = this._dotProduct(queryVec, entry.vector);
             allScored.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
             if (sim >= threshold) {
                 scored.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
-            } else {
-                belowThreshold.push({ messageIndex: msgIdx, similarity: sim, document: entry.document });
-            }
-        }
-
-        if (excludedByIndex.length > 0) {
-            excludedByIndex.sort((a, b) => a.messageIndex - b.messageIndex);
-            console.log(`[Horae Vector] 排除索引过滤: ${excludedByIndex.length} 条未参与相似度计算`);
-            for (const x of excludedByIndex) {
-                console.log(`  #${x.messageIndex} | reason=${x.reasons.join('+')}`);
             }
         }
 
         allScored.sort((a, b) => b.similarity - a.similarity);
         const bestSim = allScored.length > 0 ? allScored[0].similarity : 0;
-        console.log(`[Horae Vector] 搜索了 ${searchedCount} 条 | 最高相似度=${bestSim.toFixed(4)} | 超过阈值(${threshold}): ${scored.length} 条`);
-        if (belowThreshold.length > 0) {
-            belowThreshold.sort((a, b) => b.similarity - a.similarity);
-            console.log(`[Horae Vector] 阈值过滤: ${belowThreshold.length} 条低于阈值(${threshold})`);
-            for (const x of belowThreshold) {
-                console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=below-threshold`);
-            }
-        }
-        if (scored.length === 0 && allScored.length > 0) {
+        this._debug(`[Horae Vector] 搜索了 ${searchedCount} 条 | 最高相似度=${bestSim.toFixed(4)} | 超过阈值(${threshold}): ${scored.length} 条`);
+        if (this._debugLog && scored.length === 0 && allScored.length > 0) {
             console.log(`[Horae Vector] 阈值下 Top-5 候选:`);
             for (const c of allScored.slice(0, 5)) {
                 console.log(`  #${c.messageIndex} sim=${c.similarity.toFixed(4)} | ${c.document.substring(0, 60)}`);
@@ -528,22 +517,10 @@ export class VectorManager {
         scored.sort((a, b) => b.similarity - a.similarity);
 
         const adjusted = pureMode ? scored : this._adjustThresholdByFrequency(scored, threshold);
-        if (!pureMode) {
-            const adjustedIds = new Set(adjusted.map(x => x.messageIndex));
-            const removedByFrequency = scored.filter(x => !adjustedIds.has(x.messageIndex));
-            console.log(`[Horae Vector] 频率过滤后: ${adjusted.length} 条 | 过滤 ${removedByFrequency.length} 条`);
-            for (const x of removedByFrequency) {
-                console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=frequency-adjusted-threshold`);
-            }
-        }
+        if (!pureMode) this._debug(`[Horae Vector] 频率过滤后: ${adjusted.length} 条`);
 
         const deduped = this._deduplicateResults(adjusted);
-        const dedupedIds = new Set(deduped.map(x => x.messageIndex));
-        const removedByDedup = adjusted.filter(x => !dedupedIds.has(x.messageIndex));
-        console.log(`[Horae Vector] 去重后: ${deduped.length} 条 | 过滤 ${removedByDedup.length} 条`);
-        for (const x of removedByDedup) {
-            console.log(`  #${x.messageIndex} sim=${x.similarity.toFixed(4)} | reason=deduplicated`);
-        }
+        this._debug(`[Horae Vector] 去重后: ${deduped.length} 条`);
 
         return deduped.slice(0, topK);
     }
@@ -610,6 +587,9 @@ export class VectorManager {
      * 智能召回：结构化查询 + 向量搜索并行，合并结果
      */
     async generateRecallPrompt(horaeManager, skipLast, settings, extraExcludeIndices = new Set()) {
+        // 同步详细调试日志开关（每次召回入口刷新一次）
+        this._debugLog = !!settings?.vectorDebugLog;
+
         const chat = horaeManager.getChat();
         const state = horaeManager.getLatestState(skipLast);
         const topK = settings.vectorTopK || 5;
@@ -647,60 +627,34 @@ export class VectorManager {
 
         const EXCLUDE_RECENT = 5;
         const excludeIndices = new Set();
-        const excludeReasonMap = new Map();
-        const addExcludeReason = (idx, reason) => {
-            if (!excludeReasonMap.has(idx)) excludeReasonMap.set(idx, new Set());
-            excludeReasonMap.get(idx).add(reason);
-        };
         for (let i = Math.max(0, chat.length - EXCLUDE_RECENT); i < chat.length; i++) {
             excludeIndices.add(i);
-            addExcludeReason(i, 'recent-window');
         }
         if (extraExcludeIndices && typeof extraExcludeIndices[Symbol.iterator] === 'function') {
             for (const idx of extraExcludeIndices) {
                 if (Number.isInteger(idx) && idx >= 0 && idx < chat.length) {
                     excludeIndices.add(idx);
-                    addExcludeReason(idx, 'already-in-prompt');
                 }
             }
         }
         if (excludeIndices.size > EXCLUDE_RECENT) {
-            console.log(`[Horae Vector] 额外排除已在Prompt中的楼层: +${excludeIndices.size - EXCLUDE_RECENT}`);
-        }
-        if (excludeIndices.size > 0) {
-            const sortedExcluded = [...excludeIndices].sort((a, b) => a - b);
-            console.log(`[Horae Vector] 本次检索排除楼层明细: ${sortedExcluded.length} 条`);
-            for (const idx of sortedExcluded) {
-                const reasons = [...(excludeReasonMap.get(idx) || ['unknown'])];
-                console.log(`  #${idx} | reason=${reasons.join('+')}`);
-            }
+            this._debug(`[Horae Vector] 额外排除已在Prompt中的楼层: +${excludeIndices.size - EXCLUDE_RECENT}`);
         }
 
         const merged = new Map();
 
         const pureMode = !!settings.vectorPureMode;
-        if (pureMode) console.log('[Horae Vector] 纯向量模式已启用，跳过关键词启发式');
-        if (useRerank) console.log(`[Horae Vector] Rerank 模式：embedding 召回阈值=${recallThreshold} / 候选=${recallTopK}`);
+        if (pureMode) this._debug('[Horae Vector] 纯向量模式已启用，跳过关键词启发式');
+        if (useRerank) this._debug(`[Horae Vector] Rerank 模式：embedding 召回阈值=${recallThreshold} / 候选=${recallTopK}`);
 
         const structuredResults = this._structuredQuery(userQuery, chat, state, excludeIndices, topK, pureMode);
-        console.log(`[Horae Vector] 结构化查询: ${structuredResults.length} 条命中`);
+        this._debug(`[Horae Vector] 结构化查询: ${structuredResults.length} 条命中`);
         for (const r of structuredResults) {
             merged.set(r.messageIndex, r);
         }
 
-        const hybridResults = await this._hybridSearch(
-            userQuery,
-            state,
-            horaeManager,
-            skipLast,
-            settings,
-            excludeIndices,
-            excludeReasonMap,
-            recallTopK,
-            recallThreshold,
-            pureMode
-        );
-        console.log(`[Horae Vector] 向量混合搜索: ${hybridResults.length} 条命中`);
+        const hybridResults = await this._hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, recallTopK, recallThreshold, pureMode);
+        this._debug(`[Horae Vector] 向量混合搜索: ${hybridResults.length} 条命中`);
         for (const r of hybridResults) {
             if (!merged.has(r.messageIndex)) {
                 merged.set(r.messageIndex, r);
@@ -752,7 +706,7 @@ export class VectorManager {
                     r.source = (r.source || '') + '+char';
                 }
             }
-            console.log(`[Horae Vector] 角色相关性 RRF bonus: 相关角色=[${[...relevantChars].join(',')}]`);
+            this._debug(`[Horae Vector] 角色相关性 RRF bonus: 相关角色=[${[...relevantChars].join(',')}]`);
         }
 
         for (const r of results) r._fusionScore = fusionScore.get(r.messageIndex) || 0;
@@ -768,7 +722,7 @@ export class VectorManager {
                     const useFullText = !!settings.vectorRerankFullText;
                     const _stripTags = settings.vectorStripTags || '';
                     const currentDateForRerank = state.timestamp?.story_date;
-                    // Rerank 文档 = 时间头 + 结构化 metadata + 可选全文片段（全文模式）
+                    // Rerank 文档 = 时间头 + 结构化 metadata + 可选全文片段（全文模式下使用整段，由分批 plan 处理超长）
                     const rerankDocs = rerankCandidates.map(r => {
                         const meta = chat[r.messageIndex]?.horae_meta;
                         const timeTag = this._buildTimeTag(meta?.timestamp, currentDateForRerank);
@@ -788,6 +742,7 @@ export class VectorManager {
                     let rerankDocsForDebug = rerankDocs;
                     let reranked = [];
                     if (useFullText) {
+                        // 全文模式按估算 token 预算分批，避免超出 reranker 上下文上限
                         rerankPlan = this._buildRerankBatchPlan(rerankQuery, rerankDocs, 32768);
                         rerankDocsForDebug = rerankPlan.documents;
                         if (rerankPlan.batches.length > 1 || rerankPlan.truncatedCount > 0) {
@@ -814,6 +769,7 @@ export class VectorManager {
                             }
                         }
 
+                        // 跨批次合并：同一条候选在多批中均出现时取最高分
                         const bestByIndex = new Map();
                         for (const rr of merged) {
                             const prev = bestByIndex.get(rr.index);
@@ -893,8 +849,10 @@ export class VectorManager {
         // Fallback 机制已移除：主查询已统一为“当前情境 + 玩家输入”
 
         console.log(`[Horae Vector] === 最终合并: ${results.length} 条 ===`);
-        for (const r of results) {
-            console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(3)} [${r.source}]`);
+        if (this._debugLog) {
+            for (const r of results) {
+                console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(3)} [${r.source}]`);
+            }
         }
 
         const currentDate = state.timestamp?.story_date;
@@ -903,7 +861,7 @@ export class VectorManager {
         const recallText = results.length === 0
             ? ''
             : this._buildRecallText(results, currentDate, chat, fullTextCount, fullTextThreshold, settings.vectorStripTags || '');
-        if (recallText) console.log(`[Horae Vector] 召回文本 (${recallText.length}字):\n${recallText}`);
+        if (recallText) this._debug(`[Horae Vector] 召回文本 (${recallText.length}字):\n${recallText}`);
 
         this._lastDebugInfo = {
             timestamp: Date.now(),
@@ -955,7 +913,7 @@ export class VectorManager {
         if (N <= 50) return baseThreshold;
         const bump = Math.min(0.05, Math.log10(N / 50) * 0.04);
         const effective = Math.min(0.95, baseThreshold + bump);
-        if (bump > 0.005) console.log(`[Horae Vector] 动态阈值: ${baseThreshold} → ${effective.toFixed(3)} (已索引 ${N} 条)`);
+        if (bump > 0.005) this._debug(`[Horae Vector] 动态阈值: ${baseThreshold} → ${effective.toFixed(3)} (已索引 ${N} 条)`);
         return effective;
     }
 
@@ -1087,7 +1045,7 @@ export class VectorManager {
                 const idx = this._findFirstAppearance(chat, charName, excludeIndices);
                 if (idx !== -1) {
                     results.push({ messageIndex: idx, similarity: 1.0, document: `[Structured] First appearance of ${charName}`, source: 'structured' });
-                    console.log(`[Horae Vector] 结构化查询: "${charName}" 首次出现于 #${idx}`);
+                    this._debug(`[Horae Vector] 结构化查询: "${charName}" 首次出现于 #${idx}`);
                 }
             }
         }
@@ -1099,7 +1057,7 @@ export class VectorManager {
                     const idx = this._findLastCostume(chat, charName, costumeKw, excludeIndices);
                     if (idx !== -1) {
                         results.push({ messageIndex: idx, similarity: 1.0, document: `[Structured] ${charName} wore ${costumeKw}`, source: 'structured' });
-                        console.log(`[Horae Vector] 结构化查询: "${charName}" 上次穿 "${costumeKw}" 于 #${idx}`);
+                        this._debug(`[Horae Vector] 结构化查询: "${charName}" 上次穿 "${costumeKw}" 于 #${idx}`);
                     }
                 }
             }
@@ -1122,7 +1080,7 @@ export class VectorManager {
                 const idx = this._findLastMood(chat, targetChar, moodKw, excludeIndices);
                 if (idx !== -1) {
                     results.push({ messageIndex: idx, similarity: 1.0, document: `[Structured] Mood match: ${moodKw}`, source: 'structured' });
-                    console.log(`[Horae Vector] 结构化查询: 上次 "${moodKw}" 于 #${idx}`);
+                    this._debug(`[Horae Vector] 结构化查询: 上次 "${moodKw}" 于 #${idx}`);
                 }
             }
         }
@@ -1131,7 +1089,7 @@ export class VectorManager {
             const giftResults = this._findGiftItems(chat, mentionedChars, excludeIndices, topK);
             for (const r of giftResults) {
                 results.push(r);
-                console.log(`[Horae Vector] 结构化查询: gift #${r.messageIndex} [${r.document}]`);
+                this._debug(`[Horae Vector] 结构化查询: gift #${r.messageIndex} [${r.document}]`);
             }
         }
 
@@ -1139,7 +1097,7 @@ export class VectorManager {
             const impResults = this._findImportantItems(chat, excludeIndices, topK);
             for (const r of impResults) {
                 results.push(r);
-                console.log(`[Horae Vector] 结构化查询: important item #${r.messageIndex} [${r.document}]`);
+                this._debug(`[Horae Vector] 结构化查询: important item #${r.messageIndex} [${r.document}]`);
             }
         }
 
@@ -1147,7 +1105,7 @@ export class VectorManager {
             const evtResults = this._findImportantEvents(chat, excludeIndices, topK);
             for (const r of evtResults) {
                 results.push(r);
-                console.log(`[Horae Vector] 结构化查询: important event #${r.messageIndex} [${r.document}]`);
+                this._debug(`[Horae Vector] 结构化查询: important event #${r.messageIndex} [${r.document}]`);
             }
         }
 
@@ -1160,7 +1118,7 @@ export class VectorManager {
                 }, excludeIndices, topK);
                 for (const r of thematicResults) {
                     results.push(r);
-                    console.log(`[Horae Vector] 结构化查询: thematic #${r.messageIndex} [${r.document}]`);
+                    this._debug(`[Horae Vector] 结构化查询: thematic #${r.messageIndex} [${r.document}]`);
                 }
             }
 
@@ -1218,8 +1176,10 @@ export class VectorManager {
         }
 
         if (contextToAdd.length > 0) {
-            console.log(`[Horae Vector] 上下文扩展: +${contextToAdd.length} 条`);
-            for (const c of contextToAdd) console.log(`  #${c.messageIndex} [${c.document}]`);
+            this._debug(`[Horae Vector] 上下文扩展: +${contextToAdd.length} 条`);
+            if (this._debugLog) {
+                for (const c of contextToAdd) console.log(`  #${c.messageIndex} [${c.document}]`);
+            }
         }
 
         const all = [...results, ...contextToAdd];
@@ -1235,7 +1195,7 @@ export class VectorManager {
         if (detected.length === 0) return [];
 
         const expanded = this._expandByCategory(detected);
-        console.log(`[Horae Vector] 事件搜索: 检测到=[${detected.join(',')}] 扩展后=[${expanded.join(',')}]`);
+        this._debug(`[Horae Vector] 事件搜索: 检测到=[${detected.join(',')}] 扩展后=[${expanded.join(',')}]`);
 
         const scored = [];
         for (let i = 0; i < chat.length; i++) {
@@ -1269,8 +1229,10 @@ export class VectorManager {
         scored.sort((a, b) => b._matchCount - a._matchCount || b.similarity - a.similarity);
         const top = scored.slice(0, limit);
         if (top.length > 0) {
-            console.log(`[Horae Vector] 事件搜索命中 ${top.length} 条:`);
-            for (const r of top) console.log(`  #${r.messageIndex} matches=${r._matchCount} [${r.document}]`);
+            this._debug(`[Horae Vector] 事件搜索命中 ${top.length} 条:`);
+            if (this._debugLog) {
+                for (const r of top) console.log(`  #${r.messageIndex} matches=${r._matchCount} [${r.document}]`);
+            }
         }
         return top;
     }
@@ -1576,7 +1538,7 @@ export class VectorManager {
     // 向量+关键词混合搜索（兜底）
     // ========================================
 
-    async _hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, excludeReasonMap, topK, threshold, pureMode = false) {
+    async _hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, topK, threshold, pureMode = false) {
         if (!this.isReady || this.vectors.size === 0) return [];
 
         // 跳过 user 消息，取最近一条 AI 消息的完整 meta（含 events）
@@ -1596,16 +1558,18 @@ export class VectorManager {
         // 严格使用用户设置阈值
         const mergedThreshold = threshold;
 
-        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode, excludeReasonMap);
+        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode);
         results = results.map(r => ({ ...r, source: 'merged' }));
-        console.log(`[Horae Vector] 合并查询搜索: ${results.length} 条 | threshold=${mergedThreshold.toFixed(2)}`);
+        this._debug(`[Horae Vector] 合并查询搜索: ${results.length} 条 | threshold=${mergedThreshold.toFixed(2)}`);
 
         results.sort((a, b) => b.similarity - a.similarity);
         results = this._deduplicateResults(results).slice(0, topK);
 
-        console.log(`[Horae Vector] 混合搜索结果: ${results.length} 条`);
-        for (const r of results) {
-            console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(4)} [${r.source}] | ${r.document.substring(0, 80)}`);
+        this._debug(`[Horae Vector] 混合搜索结果: ${results.length} 条`);
+        if (this._debugLog) {
+            for (const r of results) {
+                console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(4)} [${r.source}] | ${r.document.substring(0, 80)}`);
+            }
         }
 
         return results;
@@ -1729,35 +1693,21 @@ export class VectorManager {
 
         const meta = getRelativeTimeMeta(result.days, { fromDate: result.fromDate, toDate: result.toDate });
         const WD = ['日', '一', '二', '三', '四', '五', '六'];
-
         switch (meta.key) {
             case 'today': return '(今天)';
             case 'yesterday': return '(昨天)';
             case 'day_before_yesterday': return '(前天)';
             case 'three_days_ago': return '(大前天)';
-            case 'tomorrow': return '(明天)';
-            case 'day_after_tomorrow': return '(后天)';
-            case 'in_three_days': return '(大后天)';
             case 'last_weekday': return `(上周${WD[meta.weekday]})`;
             case 'week_before_last_weekday': return `(上上周${WD[meta.weekday]})`;
-            case 'next_weekday': return `(下周${WD[meta.weekday]})`;
-            case 'week_after_next_weekday': return `(下下周${WD[meta.weekday]})`;
             case 'last_month_day': return `(上个月${meta.day}号)`;
-            case 'next_month_day': return `(下个月${meta.day}号)`;
-            case 'last_year_date': return `(去年${meta.month}月)`;
-            case 'year_before_last_date': return `(前年${meta.month}月)`;
+            case 'last_year_date': return `(去年${meta.month}月${meta.day}日)`;
+            case 'year_before_last_date': return `(前年${meta.month}月${meta.day}日)`;
             case 'days_ago': return `(${meta.value}天前)`;
-            case 'days_later': return `(${meta.value}天后)`;
-            case 'weeks_ago': return `(${meta.value}周前)`;
-            case 'weeks_later': return `(${meta.value}周后)`;
             case 'months_ago': return `(${meta.value}个月前)`;
-            case 'months_later': return `(${meta.value}个月后)`;
-            case 'years_months_ago': return `(${meta.years}年${meta.months}个月前)`;
-            case 'years_months_later': return `(${meta.years}年${meta.months}个月后)`;
             case 'years_ago': return `(${meta.years}年前)`;
-            case 'years_later': return `(${meta.years}年后)`;
-            default: return '';
         }
+        return '';
     }
 
     // ========================================
@@ -1902,6 +1852,10 @@ export class VectorManager {
         }
     }
 
+    /**
+     * 估算文本在 reranker 上的 token 数（保守估计）
+     * CJK ≈ 1.35 token / char，其余 ≈ 0.45 token / char，加 18% 安全边际。
+     */
     _estimateRerankTokens(text) {
         if (!text) return 0;
         const str = String(text);
@@ -1919,11 +1873,13 @@ export class VectorManager {
             }
         }
         const otherCount = Math.max(0, str.length - cjkCount);
-        // Conservative estimate: CJK ~= 1 token, others ~= 0.3~0.4 token/char, then add safety margin.
         const rough = (cjkCount * 1.35) + (otherCount * 0.45);
         return Math.ceil((rough + 8) * 1.18);
     }
 
+    /**
+     * 按估算 token 数截断文本（二分查找最大可保留长度）
+     */
     _truncateTextByEstimatedTokens(text, tokenLimit) {
         if (!text || tokenLimit <= 0) return '';
         const source = String(text);
@@ -1945,6 +1901,13 @@ export class VectorManager {
         return source.substring(0, best).trimEnd();
     }
 
+    /**
+     * 为全文 Rerank 构建分批方案
+     * @param {string} query
+     * @param {string[]} documents
+     * @param {number} contextLimit 模型上下文上限（默认 32K，对应 Qwen3-Reranker 系列）
+     * @returns {{ documents: string[], batches: Array<{indices:number[], documents:string[], estimatedTokens:number}>, truncatedCount:number, queryTokens:number, docBudget:number, contextLimit:number, safeUsageRatio:number, staticReserve:number }}
+     */
     _buildRerankBatchPlan(query, documents, contextLimit = 32768) {
         const safeUsageRatio = 0.68;
         const staticReserve = 1800;
@@ -2028,7 +1991,7 @@ export class VectorManager {
         if (!baseUrl || !model) throw new Error('Rerank API 地址或模型未配置');
 
         const endpoint = `${baseUrl}/rerank`;
-        console.log(`[Horae Vector] Rerank 请求: ${documents.length} 条候选 → ${endpoint}`);
+        this._debug(`[Horae Vector] Rerank 请求: ${documents.length} 条候选 → ${endpoint}`);
 
         const resp = await fetch(endpoint, {
             method: 'POST',

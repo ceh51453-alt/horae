@@ -572,14 +572,6 @@
     gap: 3px;
 }
 
-.horae-agenda-floor {
-    font-size: 11px;
-    color: var(--horae-text-muted);
-    display: flex;
-    align-items: center;
-    gap: 3px;
-}
-
 .horae-agenda-source-ai {
     font-size: 10px;
     color: var(--horae-primary);

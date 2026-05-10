@@ -18,9 +18,6 @@ const CHINESE_NUMS = {
     '三十一': 31, '卅': 30, '卅一': 31
 };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const WEEK_MS = 7 * DAY_MS;
-
 /** 从日期字符串中提取日数 */
 function extractDayNumber(dateStr) {
     if (!dateStr) return null;
@@ -211,31 +208,27 @@ export function calculateRelativeTime(fromDate, toDate) {
     return null;
 }
 
-function getWeekDiffByMonday(fromDate, toDate) {
-    if (!(fromDate instanceof Date) || Number.isNaN(fromDate.getTime())) return null;
-    if (!(toDate instanceof Date) || Number.isNaN(toDate.getTime())) return null;
-
-    const getWeekStartUtc = (d) => {
-        const weekday = d.getDay();
-        const offset = weekday === 0 ? -6 : 1 - weekday;
-        return Date.UTC(d.getFullYear(), d.getMonth(), d.getDate() + offset);
-    };
-
-    const fromWeekStart = getWeekStartUtc(fromDate);
-    const toWeekStart = getWeekStartUtc(toDate);
-    return Math.round((toWeekStart - fromWeekStart) / WEEK_MS);
-}
-
 function getCalendarMonthDiff(fromDate, toDate) {
     if (!(fromDate instanceof Date) || Number.isNaN(fromDate.getTime())) return null;
     if (!(toDate instanceof Date) || Number.isNaN(toDate.getTime())) return null;
     return (toDate.getFullYear() - fromDate.getFullYear()) * 12 + (toDate.getMonth() - fromDate.getMonth());
 }
 
-/** 获取相对时间语义标签（统一判定逻辑，供不同模块复用） */
+function getWeekDiffByMonday(fromDate, toDate) {
+    if (!(fromDate instanceof Date) || Number.isNaN(fromDate.getTime())) return null;
+    if (!(toDate instanceof Date) || Number.isNaN(toDate.getTime())) return null;
+    const DAY_MS = 86400000;
+    const WEEK_MS = DAY_MS * 7;
+    const weekStartUtc = (date) => {
+        const utc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+        const day = (date.getDay() + 6) % 7;
+        return utc - day * DAY_MS;
+    };
+    return Math.round((weekStartUtc(toDate) - weekStartUtc(fromDate)) / WEEK_MS);
+}
+
 export function getRelativeTimeMeta(days, options = {}) {
     if (days === null || days === undefined) return { key: 'unknown', days };
-
     if (days === -999) return { key: 'special_earlier', days };
     if (days === -998) return { key: 'special_after', days };
     if (days === -997) return { key: 'special_before', days };
@@ -249,50 +242,35 @@ export function getRelativeTimeMeta(days, options = {}) {
     if (days === -3) return { key: 'in_three_days', days };
 
     const { fromDate, toDate } = options;
-
     if (days > 0) {
         if (days < 7) return { key: 'days_ago', days, value: days };
 
         if (days >= 4 && days <= 13 && fromDate) {
-            if (toDate) {
-                const weekDiff = getWeekDiffByMonday(fromDate, toDate);
-                if (weekDiff === 1) return { key: 'last_weekday', days, weekday: fromDate.getDay(), weekDiff };
-                if (weekDiff === 2) return { key: 'week_before_last_weekday', days, weekday: fromDate.getDay(), weekDiff };
-            } else {
-                return { key: 'last_weekday', days, weekday: fromDate.getDay() };
-            }
+            const weekDiff = toDate ? getWeekDiffByMonday(fromDate, toDate) : 1;
+            if (weekDiff === 1) return { key: 'last_weekday', days, weekday: fromDate.getDay() };
+            if (weekDiff === 2) return { key: 'week_before_last_weekday', days, weekday: fromDate.getDay() };
         }
 
         if (days >= 7 && days < 60 && fromDate && toDate) {
             const monthDiff = getCalendarMonthDiff(fromDate, toDate);
-            if (monthDiff === 1) {
-                return { key: 'last_month_day', days, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
-            }
+            if (monthDiff === 1) return { key: 'last_month_day', days, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
         }
 
         if (days >= 300 && fromDate && toDate) {
             const yearDiff = toDate.getFullYear() - fromDate.getFullYear();
-            if (yearDiff >= 1) {
-                const month = fromDate.getMonth() + 1;
-                const day = fromDate.getDate();
-                if (yearDiff === 1) return { key: 'last_year_date', days, yearDiff, month, day };
-                if (yearDiff === 2) return { key: 'year_before_last_date', days, yearDiff, month, day };
-            }
+            if (yearDiff === 1) return { key: 'last_year_date', days, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
+            if (yearDiff === 2) return { key: 'year_before_last_date', days, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
         }
 
-        // 仅保留“上周X / 上上周X”语义；超过后改用其他表达，避免出现“3-5周前”。
         if (days < 30) return { key: 'days_ago', days, value: days };
         if (days < 365) {
             const monthDiff = fromDate && toDate ? getCalendarMonthDiff(fromDate, toDate) : null;
-            const months = monthDiff && monthDiff > 0 ? monthDiff : Math.floor(days / 30);
-            return { key: 'months_ago', days, value: months };
+            return { key: 'months_ago', days, value: Math.max(1, monthDiff && monthDiff > 0 ? monthDiff : Math.floor(days / 30)) };
         }
 
         const years = Math.floor(days / 365);
-        const remainMonths = Math.round((days % 365) / 30);
-        if (remainMonths > 0 && years < 5) {
-            return { key: 'years_months_ago', days, years, months: remainMonths };
-        }
+        const months = Math.round((days % 365) / 30);
+        if (months > 0 && years < 5) return { key: 'years_months_ago', days, years, months };
         return { key: 'years_ago', days, years };
     }
 
@@ -300,35 +278,25 @@ export function getRelativeTimeMeta(days, options = {}) {
     if (absDays < 7) return { key: 'days_later', days, absDays, value: absDays };
 
     if (absDays >= 4 && absDays <= 13 && fromDate) {
-        if (toDate) {
-            const weekDiff = getWeekDiffByMonday(fromDate, toDate);
-            if (weekDiff === -1) return { key: 'next_weekday', days, absDays, weekday: fromDate.getDay(), weekDiff };
-            if (weekDiff === -2) return { key: 'week_after_next_weekday', days, absDays, weekday: fromDate.getDay(), weekDiff };
-        } else {
-            return { key: 'next_weekday', days, absDays, weekday: fromDate.getDay() };
-        }
+        const weekDiff = toDate ? getWeekDiffByMonday(fromDate, toDate) : -1;
+        if (weekDiff === -1) return { key: 'next_weekday', days, absDays, weekday: fromDate.getDay() };
+        if (weekDiff === -2) return { key: 'week_after_next_weekday', days, absDays, weekday: fromDate.getDay() };
     }
 
     if (absDays >= 7 && absDays < 60 && fromDate && toDate) {
         const monthDiff = getCalendarMonthDiff(fromDate, toDate);
-        if (monthDiff === -1) {
-            return { key: 'next_month_day', days, absDays, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
-        }
+        if (monthDiff === -1) return { key: 'next_month_day', days, absDays, month: fromDate.getMonth() + 1, day: fromDate.getDate() };
     }
 
-    // 仅保留“下周X / 下下周X”语义；超过后改用其他表达，避免出现“3-5周后”。
     if (absDays < 30) return { key: 'days_later', days, absDays, value: absDays };
     if (absDays < 365) {
         const monthDiff = fromDate && toDate ? getCalendarMonthDiff(fromDate, toDate) : null;
-        const months = monthDiff && monthDiff < 0 ? Math.abs(monthDiff) : Math.floor(absDays / 30);
-        return { key: 'months_later', days, absDays, value: months };
+        return { key: 'months_later', days, absDays, value: Math.max(1, monthDiff && monthDiff < 0 ? Math.abs(monthDiff) : Math.floor(absDays / 30)) };
     }
 
     const years = Math.floor(absDays / 365);
-    const remainMonths = Math.round((absDays % 365) / 30);
-    if (remainMonths > 0 && years < 5) {
-        return { key: 'years_months_later', days, absDays, years, months: remainMonths };
-    }
+    const months = Math.round((absDays % 365) / 30);
+    if (months > 0 && years < 5) return { key: 'years_months_later', days, absDays, years, months };
     return { key: 'years_later', days, absDays, years };
 }
 
@@ -347,8 +315,6 @@ export function formatRelativeTime(days, options = {}) {
         case 'tomorrow': return '明天';
         case 'day_after_tomorrow': return '后天';
         case 'in_three_days': return '大后天';
-        case 'days_ago': return `${meta.value}天前`;
-        case 'days_later': return `${meta.value}天后`;
         case 'last_weekday': return `上周${WEEKDAY_NAMES[meta.weekday]}`;
         case 'week_before_last_weekday': return `上上周${WEEKDAY_NAMES[meta.weekday]}`;
         case 'next_weekday': return `下周${WEEKDAY_NAMES[meta.weekday]}`;
@@ -357,8 +323,8 @@ export function formatRelativeTime(days, options = {}) {
         case 'next_month_day': return `下个月${meta.day}号`;
         case 'last_year_date': return `去年${meta.month}月${meta.day}日`;
         case 'year_before_last_date': return `前年${meta.month}月${meta.day}日`;
-        case 'weeks_ago': return `${meta.value}周前`;
-        case 'weeks_later': return `${meta.value}周后`;
+        case 'days_ago': return `${meta.value}天前`;
+        case 'days_later': return `${meta.value}天后`;
         case 'months_ago': return `${meta.value}个月前`;
         case 'months_later': return `${meta.value}个月后`;
         case 'years_months_ago': return `${meta.years}年${meta.months}个月前`;
