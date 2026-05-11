@@ -260,7 +260,7 @@
         "triggerUnitTokens": "Token",
         "bufferLimit": "トリガー閾値",
         "bufferLimitHint": "未要約コンテンツが現在の閾値に達すると自動圧縮がトリガーされます。",
-        "autoSummaryExample": "例：保持=AI 5件、閾値=AI 10件。古い連続未要約AIが10件に達すると自動要約がトリガーされます。TokenモードではToken閾値を使用します。全文ソースは詳細重視、イベントのみはToken節約向けです。",
+        "autoSummaryExample": "💡 例：保持数が5、要約数が12の場合、AIメッセージ数が17に達した時点で要約が1回実行され、前方の12件が要約されます。\n通常のTavernチャットにはuserメッセージも含まれるため、階層数で考えると、およそ34階に到達した時に前方24階が要約されるイメージです。\nTokenモードではToken閾値でトリガーされます。",
         "batchMaxMessages": "バッチあたり最大メッセージ数",
         "batchMaxMessagesHint": "自動要約のバッチあたりの最大メッセージ数。大量のアーカイブは複数回に分けて処理されます。",
         "batchMaxTokens": "バッチあたり最大トークン数",

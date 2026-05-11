@@ -256,7 +256,7 @@
         "bufferLimitHint": "Auto-summary triggers when unsummarized content reaches the current threshold.",
         "resummaryThreshold": "Re-summary",
         "resummaryThresholdHint": "When second-level summaries reach this count, they will be merged into third-level summaries, and so on.",
-        "autoSummaryExample": "Example: Keep=5 AI and threshold=10 AI messages. Auto-summary triggers when the old continuous unsummarized AI messages reach 10. In token mode, the token threshold is used instead. Full text keeps more detail; event-only saves tokens.",
+        "autoSummaryExample": "💡 Example: if Keep is 5 and the summary threshold is 12, auto-summary runs when the AI message count reaches 17. The summary will cover the previous 12 AI messages.\nBecause regular Tavern chats also include user messages, in floor terms this roughly means that when you reach floor 34, the previous 24 floors are summarized.\nIn Token mode, the token threshold is used instead.",
         "batchMaxMessages": "Max Messages per Batch",
         "batchMaxMessagesHint": "Max messages per auto-summary batch. Large archives will be processed in multiple rounds.",
         "batchMaxTokens": "Max Tokens per Batch",

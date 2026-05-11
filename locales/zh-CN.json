@@ -256,7 +256,7 @@
         "bufferLimitHint": "未总结内容达到当前阈值后触发自动压缩。",
         "resummaryThreshold": "二次总结",
         "resummaryThresholdHint": "同层总结达到该数量后会合并为更高层总结；二次总结达到数量后继续三次总结，以此类推。设为0则关闭二次总结，推荐值为6-8。",
-        "autoSummaryExample": "示例：保留5条AI，触发阈值=10条AI 时，旧的连续未总结AI达到10条会触发；若改为Token模式，则使用Token阈值触发。全文来源细节更完整，事件来源更省Token。",
+        "autoSummaryExample": "💡 示例：假如设置的保留数量是5，总结数量是12，那么当AI消息数量达到17时，会进行一次总结，总结的数量是前面的12条\n因为一般酒馆里还会有user消息，所以按楼层数来理解的话，就是当你到34层时，会总结前面的24层；\n若改为Token模式，则使用Token阈值触发。",
         "batchMaxMessages": "每批最大消息数",
         "batchMaxMessagesHint": "AI智能补全时每批处理的最大消息数",
         "batchMaxTokens": "每批最大Token",

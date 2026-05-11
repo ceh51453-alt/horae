@@ -258,7 +258,7 @@
         "triggerUnitTokens": "Token",
         "bufferLimit": "트리거 임계값",
         "bufferLimitHint": "요약되지 않은 콘텐츠가 현재 임계값에 도달하면 자동 압축이 트리거됩니다.",
-        "autoSummaryExample": "예시: 유지=AI 5개, 임계값=AI 10개. 오래된 연속 미요약 AI가 10개에 도달하면 자동 요약이 트리거됩니다. Token 모드에서는 Token 임계값을 사용합니다. 전문 소스는 세부 정보가 풍부하고, 이벤트 전용은 Token을 절약합니다.",
+        "autoSummaryExample": "💡 예시: 보존 수가 5, 요약 수가 12라면 AI 메시지 수가 17개에 도달했을 때 한 번 요약되며, 앞의 12개 AI 메시지가 요약됩니다.\n일반 Tavern 채팅에는 user 메시지도 포함되므로 층수로 이해하면 대략 34층에 도달했을 때 앞의 24층이 요약되는 식입니다.\nToken 모드에서는 Token 임계값으로 트리거됩니다.",
         "batchMaxMessages": "배치당 최대 메시지 수",
         "batchMaxMessagesHint": "자동 요약 배치당 최대 메시지 수. 대량 아카이브는 여러 라운드에 걸쳐 처리됩니다.",
         "batchMaxTokens": "배치당 최대 토큰 수",

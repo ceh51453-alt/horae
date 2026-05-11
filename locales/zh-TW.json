@@ -242,7 +242,7 @@
         "bufferLimitHint": "未總結內容達到當前閾值後觸發自動壓縮。",
         "resummaryThreshold": "二次總結",
         "resummaryThresholdHint": "同層總結達到該數量後會合併為更高層總結；二次總結達到數量後繼續三次總結，以此類推。設為0則關閉二次總結，推薦值為6-8。",
-        "autoSummaryExample": "示例：保留5條AI，觸發閾值=10條AI 時，舊的連續未總結AI達到10條會觸發；若改為Token模式，則使用Token閾值觸發。全文來源細節更完整，事件來源更省Token。",
+        "autoSummaryExample": "💡 示例：假如設定的保留數量是5，總結數量是12，那麼當AI訊息數量達到17時，會進行一次總結，總結的數量是前面的12條\n因為一般酒館裡還會有user訊息，所以按樓層數來理解的話，就是當你到34層時，會總結前面的24層；\n若改為Token模式，則使用Token閾值觸發。",
         "batchMaxMessages": "每批最大訊息數",
         "batchMaxMessagesHint": "每次自動總結最多處理多少條訊息。舊檔案首次啟用時會分多輪逐步消化。",
         "batchMaxTokens": "每批最大Token",

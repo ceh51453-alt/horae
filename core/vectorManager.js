@@ -1643,12 +1643,24 @@ export class VectorManager {
         return lines.length > 1 ? lines.join('\n') : '';
     }
 
+    _stripVolatileHoraeLines(text) {
+        return text.replace(/<horae\b[^>]*>([\s\S]*?)<\/horae>/gi, (match, body) => {
+            const kept = String(body || '')
+                .split(/\r?\n/)
+                .filter(line => !/^\s*agenda-?\s*[:：]/i.test(line))
+                .join('\n')
+                .trim();
+            return kept ? `<horae>\n${kept}\n</horae>` : '';
+        });
+    }
+
     _extractCleanText(mes, stripTags) {
         if (!mes) return '';
         let text = mes
             .replace(/<think>[\s\S]*?<\/think>/gi, '')
             .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
             .replace(/<!--[\s\S]*?-->/g, '');
+        text = this._stripVolatileHoraeLines(text);
         if (stripTags) {
             const tags = stripTags.split(/[,，\s]+/).map(t => t.trim()).filter(Boolean);
             for (const tag of tags) {

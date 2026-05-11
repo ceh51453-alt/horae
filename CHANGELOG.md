@@ -4,6 +4,22 @@
 
 ---
 
+## v1.13.0
+
+### Horae Port
+
+- 新增 Horae Port 系统，开放 `window.Horae.registerPort()` / `unregisterPort()` / `refreshPorts()`，支持外部组件挂载到底部栏、状态页、抽屉分页、消息面板与 RPG HUD。
+- 新增 Data Provider 机制，开放 `registerDataProvider()` / `unregisterDataProvider()`，第三方脚本可按需桥接自己的状态数据；Horae 不内置任何外部变量系统依赖。
+- 端口上下文提供 Horae 聚合状态、RPG 快照、消息 meta、Provider 快照与常用 helper，支持 `render` / `update` / `dispose` 生命周期。
+- 新增 `portApiVersion`，为后续端口协议兼容提供稳定判断入口。
+
+### 文档
+
+- 新增 `Horae端口系统说明.md`，面向扩展作者说明端口 API、插槽、生命周期、Provider、主题约定与安全边界。
+- 新增 `Horae状态栏接入说明.md`，面向角色卡/正则状态栏作者说明如何通过 `window.parent.Horae` 读取 Horae 状态。
+
+---
+
 ## v1.12.0
 
 - 新增公开只读 API（`window.Horae`）：`isEnabled()`、`getLatestState()`、`getEvents()`、`getSettings()`、`version`，供其他扩展和预设脚本读取 Horae 状态；设置变更通过 `eventSource` 广播 `horae:settingsChanged` 事件。
@@ -18,9 +34,6 @@
 - 新增向量召回参数预设，可在小模型、大模型、Rerank 建议和用户自定义参数之间快速切换；默认回到小模型建议（Top-K 5 / 阈值 0.72）。
 - 新增有效召回阈值的运行日志，便于调试召回效果。
 - 修复楼层 AI 分析时会触发向量召回的问题。
-- AI 分析（手动 + 自动补全）增加上下文增强：分析时自动注入目标楼层之前的轻量状态（时间/地点/在场角色/服装/物品/情绪）、角色身份（用户名 + NPC 名单）及上一条用户行动，大幅提升角色、服装、地点等字段的提取准确性。
-- 「发送时自动补全上一条 AI 消息时间线」从仅写回 time 与事件摘要改为完整 AI 分析写回所有字段；默认关闭。
-- 分析提示词模板新增 `{{context}}`（轻量状态）和 `{{previousUserMessage}}`（上一条用户行动）变量，自定义提示词可使用这些变量获取上下文。
 - 剧情轨迹注入支持“原版合并注入”和“独立前置注入”双模式，默认保留原版合并注入。
 
 ---

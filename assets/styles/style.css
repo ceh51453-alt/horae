@@ -6,6 +6,7 @@
 /* === 变量定义 === */
 #horae_drawer,
 .horae-message-panel,
+.horae-port-bottom-bar,
 .horae-modal,
 .horae-context-menu,
 .horae-progress-overlay {
@@ -32,6 +33,7 @@
 
 /* 非#horae_drawer的容器直接应用主题色 */
 .horae-message-panel,
+.horae-port-bottom-bar,
 .horae-modal,
 .horae-context-menu,
 .horae-progress-overlay {
@@ -128,8 +130,78 @@
 
 #horae_drawer label,
 .horae-message-panel label,
+.horae-port-bottom-bar label,
 .horae-modal label {
     color: var(--horae-text-muted) !important;
+}
+
+/* === 端口容器 === */
+.horae-port-container {
+    box-sizing: border-box;
+}
+
+.horae-port-root {
+    box-sizing: border-box;
+}
+
+.horae-port-status {
+    display: grid;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.horae-port-message-panel {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.horae-port-rpg-hud {
+    display: grid;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.horae-port-bottom-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 6px auto;
+    padding: 6px 10px;
+    width: 100%;
+    max-width: min(960px, 100%);
+    background: rgba(30, 30, 40, 0.85);
+    border: 1px solid var(--horae-border);
+    border-radius: 12px;
+    color: var(--horae-text);
+}
+
+.horae-port-bottom-bar .horae-port-root {
+    min-width: 0;
+}
+
+/* 当 ST 容器容不下时，自动回退到屏幕底部固定栏样式 */
+body > .horae-port-bottom-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    width: min(960px, calc(100vw - 24px));
+    margin: 0;
+    box-shadow: var(--horae-shadow);
+    backdrop-filter: blur(8px);
+    z-index: 10000;
+}
+
+.horae-port-error {
+    padding: 6px 8px;
+    color: var(--horae-danger);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: var(--horae-radius-sm);
+    background: rgba(239, 68, 68, 0.08);
+    font-size: 12px;
 }
 
 /* 标签页/按钮隔离 */

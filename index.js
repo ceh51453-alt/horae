@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.12.14
+ * 版本: 1.13.0
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, ensurePresetPrompts, getPromp
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.12.14';
+const VERSION = '1.13.0';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -255,6 +255,7 @@ let _isSummaryGeneration = false;
 let _summaryInProgress = false;
 let _panelAiAnalyzeInProgress = false;
 let _chatFullyLoaded = false;
+let _portsReady = false;
 let _autoSummaryRanThisTurn = false;
 let _vectorEnsureIndexPromise = null;
 let _vectorEnsureIndexChatId = null;
@@ -878,6 +879,498 @@ function showToast(message, type = 'info') {
     } else {
         console.log(`[Horae] ${type}: ${message}`);
     }
+}
+
+// ============================================
+// 端口系统
+// ============================================
+
+const HORAE_PORT_SLOTS = Object.freeze([
+    'bottom-bar',
+    'status',
+    'drawer-tab',
+    'message-panel',
+    'rpg-hud',
+]);
+
+const HORAE_PORT_ERROR_LIMIT = 5;
+const HORAE_PORT_REFRESH_DEBOUNCE_MS = 30;
+const HORAE_PORT_BOTTOM_MOUNTS = ['#form_sheld', '#send_form', '#sheld'];
+
+const horaePorts = new Map();
+const horaeDataProviders = new Map();
+const horaePortErrors = new Map();
+
+let _refreshScheduled = false;
+let _refreshTimer = null;
+let _pendingScope = null;
+let _portCacheChatLength = -1;
+let _portCacheLatest = null;
+const _portCacheRpg = new Map();
+const _portCacheMeta = new Map();
+const _portCacheProviders = new Map();
+
+function _portIdToDomId(id) {
+    return String(id).trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function _sortPorts(a, b) {
+    return (a.priority || 100) - (b.priority || 100) || a.id.localeCompare(b.id);
+}
+
+function _getPortsBySlot(slot) {
+    return [...horaePorts.values()]
+        .filter(port => port.slot === slot)
+        .sort(_sortPorts);
+}
+
+function _resetPortCache() {
+    _portCacheChatLength = -1;
+    _portCacheLatest = null;
+    _portCacheRpg.clear();
+    _portCacheMeta.clear();
+    _portCacheProviders.clear();
+}
+
+function _getCachedLatestState() {
+    if (_portCacheLatest === null) {
+        _portCacheLatest = horaeManager.getLatestState(0);
+    }
+    return _portCacheLatest;
+}
+
+function _getCachedRpgState(skipLast) {
+    if (!_portCacheRpg.has(skipLast)) {
+        _portCacheRpg.set(skipLast, horaeManager.getRpgStateAt(skipLast));
+    }
+    return _portCacheRpg.get(skipLast);
+}
+
+function _getCachedMessageMeta(messageIndex) {
+    if (messageIndex == null) return null;
+    if (!_portCacheMeta.has(messageIndex)) {
+        _portCacheMeta.set(messageIndex, horaeManager.getMessageMeta(messageIndex));
+    }
+    return _portCacheMeta.get(messageIndex);
+}
+
+/** 同一刷新批次内，按楼层维度缓存 Provider 结果，避免重复调用外部数据源。 */
+function _readDataProviders(baseContext) {
+    const messageKey = baseContext.messageIndex == null ? '__global__' : `m${baseContext.messageIndex}`;
+    let bucket = _portCacheProviders.get(messageKey);
+    if (!bucket) {
+        bucket = new Map();
+        _portCacheProviders.set(messageKey, bucket);
+    }
+    const providers = {};
+    for (const [id, provider] of horaeDataProviders.entries()) {
+        if (bucket.has(id)) {
+            providers[id] = bucket.get(id);
+            continue;
+        }
+        let value = null;
+        try {
+            value = provider(baseContext);
+        } catch (error) {
+            console.warn(`[Horae] 数据源 ${id} 读取失败:`, error);
+        }
+        bucket.set(id, value);
+        providers[id] = value;
+    }
+    return providers;
+}
+
+/** 构造端口上下文。state/rpg/meta 走刷新批次内的缓存，避免重复聚合。 */
+function _createPortContext(port, extra = {}) {
+    const chat = horaeManager.getChat();
+    const messageIndex = Number.isInteger(extra.messageIndex) ? extra.messageIndex : null;
+    const skipLast = messageIndex == null ? 0 : Math.max(0, (chat?.length || 0) - messageIndex - 1);
+    const baseContext = {
+        api: window.Horae || null,
+        context: getContext(),
+        settings: { ...settings },
+        state: messageIndex == null ? _getCachedLatestState() : horaeManager.getLatestState(skipLast),
+        rpg: _getCachedRpgState(skipLast),
+        chat,
+        messageIndex,
+        meta: _getCachedMessageMeta(messageIndex),
+        slot: port?.slot || extra.slot || '',
+        portId: port?.id || null,
+        firstRender: extra.firstRender !== false && !(extra.root?.dataset.horaeMounted === '1'),
+        root: extra.root || null,
+        container: extra.container || null,
+        panelEl: extra.panelEl || null,
+        messageEl: extra.messageEl || null,
+        hudEl: extra.hudEl || null,
+        helpers: {
+            escapeHtml,
+            showToast,
+            isLightMode,
+            t,
+            eventSource,
+            event_types,
+        },
+    };
+    baseContext.providers = _readDataProviders(baseContext);
+    baseContext.getProvider = id => baseContext.providers[id] ?? null;
+    return baseContext;
+}
+
+function _disposePortRoot(root, port) {
+    if (!root) return;
+    try {
+        port?.dispose?.(root);
+    } catch (error) {
+        console.warn(`[Horae] 端口 ${port?.id || root.dataset.horaePortId} 清理失败:`, error);
+    }
+    root.remove();
+}
+
+/** 把 render() / update() 的返回值写入挂载点。返回 false 表示本次不需要保留挂载点。 */
+function _applyPortOutput(root, output) {
+    if (output === false) return false;
+    if (output == null) {
+        root.replaceChildren();
+        return true;
+    }
+    if (typeof output === 'string') {
+        root.innerHTML = output;
+        return true;
+    }
+    if (output?.jquery) {
+        root.replaceChildren(...output.toArray());
+        return true;
+    }
+    if (output instanceof Node) {
+        root.replaceChildren(output);
+        return true;
+    }
+    root.textContent = String(output);
+    return true;
+}
+
+/** 累计端口运行错误，超出阈值后自动卸载并提示。 */
+function _recordPortError(port, error) {
+    const count = (horaePortErrors.get(port.id) || 0) + 1;
+    horaePortErrors.set(port.id, count);
+    console.error(`[Horae] 端口 ${port.id} 运行出错 (${count}/${HORAE_PORT_ERROR_LIMIT})`, error);
+    if (count >= HORAE_PORT_ERROR_LIMIT) {
+        showToast(`端口 ${port.id} 多次出错，已自动卸载`, 'error');
+        unregisterHoraePort(port.id);
+    }
+}
+
+function _renderPortIntoRoot(port, root, extra = {}) {
+    const isFirst = root.dataset.horaeMounted !== '1';
+    const context = _createPortContext(port, { ...extra, root, slot: port.slot, firstRender: isFirst });
+    let output;
+    try {
+        output = (!isFirst && typeof port.update === 'function')
+            ? port.update(context, root)
+            : port.render(context);
+    } catch (error) {
+        root.innerHTML = `<div class="horae-port-error">${escapeHtml(port.id)}</div>`;
+        _recordPortError(port, error);
+        return;
+    }
+    if (output === undefined && !isFirst && typeof port.update === 'function') {
+        return;
+    }
+    const keep = _applyPortOutput(root, output);
+    if (!keep) {
+        _disposePortRoot(root, port);
+        return;
+    }
+    root.dataset.horaeMounted = '1';
+    horaePortErrors.delete(port.id);
+}
+
+function _mountPorts(slot, container, extra = {}) {
+    if (!container) return;
+    const ports = _getPortsBySlot(slot);
+    const activeIds = new Set(ports.map(port => port.id));
+    container.querySelectorAll(':scope > .horae-port-root').forEach(root => {
+        if (!activeIds.has(root.dataset.horaePortId)) {
+            _disposePortRoot(root, horaePorts.get(root.dataset.horaePortId));
+        }
+    });
+    for (const port of ports) {
+        let root = [...container.children].find(el =>
+            el.classList?.contains('horae-port-root') && el.dataset.horaePortId === port.id);
+        if (!root) {
+            root = document.createElement('div');
+            root.className = `horae-port-root horae-port-root-${slot}`;
+            root.dataset.horaePortId = port.id;
+            container.appendChild(root);
+        }
+        _renderPortIntoRoot(port, root, { ...extra, container });
+    }
+}
+
+/** 找到 ST 输入区容器，回退到 body 时只取 body 末尾节点，避免污染 #send_form */
+function _resolveBottomBarHost() {
+    for (const sel of HORAE_PORT_BOTTOM_MOUNTS) {
+        const el = document.querySelector(sel);
+        if (el?.parentNode) return el.parentNode;
+    }
+    return document.body;
+}
+
+function _refreshBottomBarPorts() {
+    const ports = _getPortsBySlot('bottom-bar');
+    let container = document.getElementById('horae-port-bottom-bar');
+    if (ports.length === 0) {
+        if (container) {
+            container.querySelectorAll(':scope > .horae-port-root').forEach(root =>
+                _disposePortRoot(root, horaePorts.get(root.dataset.horaePortId)));
+            container.remove();
+        }
+        return;
+    }
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'horae-port-bottom-bar';
+        container.className = 'horae-port-container horae-port-bottom-bar';
+    }
+    const host = _resolveBottomBarHost();
+    if (container.parentNode !== host) host.insertBefore(container, host.firstChild || null);
+    container.classList.toggle('horae-light', isLightMode());
+    _mountPorts('bottom-bar', container);
+}
+
+function _refreshStatusPorts() {
+    _mountPorts('status', document.getElementById('horae-port-status'));
+}
+
+function _refreshDrawerTabPorts() {
+    const tabBar = document.querySelector('#horae_drawer .horae-tabs');
+    const contentRoot = document.querySelector('#horae_drawer .horae-tab-contents');
+    if (!tabBar || !contentRoot) return;
+
+    const ports = _getPortsBySlot('drawer-tab');
+    const activeDomIds = new Set(ports.map(port => _portIdToDomId(port.id)));
+
+    tabBar.querySelectorAll('.horae-port-tab').forEach(tab => {
+        if (!activeDomIds.has(tab.dataset.portDomId)) tab.remove();
+    });
+    contentRoot.querySelectorAll('.horae-port-tab-content').forEach(content => {
+        if (!activeDomIds.has(content.dataset.portDomId)) {
+            const portId = content.dataset.portId;
+            _disposePortRoot(content.querySelector('.horae-port-root'), horaePorts.get(portId));
+            content.remove();
+        }
+    });
+
+    const settingsTab = tabBar.querySelector('.horae-tab[data-tab="settings"]');
+    const settingsContent = contentRoot.querySelector('#horae-tab-settings');
+    for (const port of ports) {
+        const domId = _portIdToDomId(port.id);
+        const tabId = `port-${domId}`;
+        let tab = tabBar.querySelector(`.horae-port-tab[data-port-dom-id="${domId}"]`);
+        if (!tab) {
+            tab = document.createElement('button');
+            tab.className = 'horae-tab horae-port-tab';
+            tab.dataset.tab = tabId;
+            tab.dataset.portId = port.id;
+            tab.dataset.portDomId = domId;
+            tab.innerHTML = `<i class="${escapeHtml(port.icon || 'fa-solid fa-puzzle-piece')}"></i><span>${escapeHtml(port.title || port.name || port.id)}</span>`;
+            tabBar.insertBefore(tab, settingsTab || null);
+        }
+
+        let content = contentRoot.querySelector(`.horae-port-tab-content[data-port-dom-id="${domId}"]`);
+        if (!content) {
+            content = document.createElement('div');
+            content.id = `horae-tab-${tabId}`;
+            content.className = 'horae-tab-content horae-port-tab-content';
+            content.dataset.portId = port.id;
+            content.dataset.portDomId = domId;
+            const root = document.createElement('div');
+            root.className = 'horae-port-root horae-port-root-drawer-tab';
+            root.dataset.horaePortId = port.id;
+            content.appendChild(root);
+            contentRoot.insertBefore(content, settingsContent || null);
+        }
+        _renderPortIntoRoot(port, content.querySelector('.horae-port-root'), { container: content });
+    }
+}
+
+function _refreshMessagePanelPorts(scope = document) {
+    scope.querySelectorAll?.('.horae-message-panel').forEach(panelEl => {
+        const messageIndex = parseInt(panelEl.dataset.messageId, 10);
+        const content = panelEl.querySelector('.horae-panel-content') || panelEl;
+        let container = content.querySelector(':scope > .horae-port-message-panel');
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'horae-port-container horae-port-message-panel';
+            content.appendChild(container);
+        }
+        _mountPorts('message-panel', container, {
+            messageIndex: Number.isInteger(messageIndex) ? messageIndex : null,
+            panelEl,
+            messageEl: panelEl.closest('.mes'),
+        });
+    });
+}
+
+function _refreshRpgHudPorts(scope = document) {
+    scope.querySelectorAll?.('.horae-rpg-hud').forEach(hudEl => {
+        const messageEl = hudEl.closest('.mes');
+        const rawIdx = parseInt(messageEl?.getAttribute('mesid'), 10);
+        let container = hudEl.querySelector(':scope > .horae-port-rpg-hud');
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'horae-port-container horae-port-rpg-hud';
+            hudEl.appendChild(container);
+        }
+        _mountPorts('rpg-hud', container, {
+            messageIndex: Number.isInteger(rawIdx) ? rawIdx : null,
+            hudEl,
+            messageEl,
+        });
+    });
+}
+
+function _doRefreshHoraePorts(scope) {
+    if (!_portsReady) return;
+    const chat = horaeManager.getChat();
+    const len = chat?.length ?? 0;
+    if (len !== _portCacheChatLength) {
+        _resetPortCache();
+        _portCacheChatLength = len;
+    } else {
+        _portCacheLatest = null;
+        _portCacheRpg.clear();
+        _portCacheMeta.clear();
+        _portCacheProviders.clear();
+    }
+    _refreshBottomBarPorts();
+    _refreshStatusPorts();
+    _refreshDrawerTabPorts();
+    _refreshMessagePanelPorts(scope || document);
+    _refreshRpgHudPorts(scope || document);
+}
+
+/** 短窗口防抖：合并窗口内的多次刷新请求；scope 不一致时升级为 document，避免漏刷。 */
+function refreshHoraePorts(scope = document) {
+    if (!_portsReady) return;
+    const next = scope || document;
+    if (_pendingScope === null) {
+        _pendingScope = next;
+    } else if (_pendingScope !== next) {
+        _pendingScope = document;
+    }
+    if (_refreshScheduled) return;
+    _refreshScheduled = true;
+    clearTimeout(_refreshTimer);
+    _refreshTimer = setTimeout(() => {
+        const targetScope = _pendingScope || document;
+        _refreshScheduled = false;
+        _pendingScope = null;
+        try {
+            _doRefreshHoraePorts(targetScope);
+        } catch (error) {
+            console.error('[Horae] 端口刷新失败:', error);
+        }
+    }, HORAE_PORT_REFRESH_DEBOUNCE_MS);
+}
+
+function _emitPortChange(detail) {
+    const evt = new CustomEvent('horae:portsChanged', { detail });
+    window.dispatchEvent(evt);
+    try { eventSource?.emit?.('horae:portsChanged', detail); } catch (_) { /* eventSource 可能尚未就绪 */ }
+}
+
+function registerHoraePort(definition) {
+    if (!definition || typeof definition !== 'object') {
+        throw new TypeError('Horae port definition must be an object.');
+    }
+    const id = String(definition.id || '').trim();
+    const slot = String(definition.slot || '').trim();
+    if (!id) throw new TypeError('Horae port id is required.');
+    if (!HORAE_PORT_SLOTS.includes(slot)) {
+        throw new TypeError(`Unsupported Horae port slot: ${slot}`);
+    }
+    if (typeof definition.render !== 'function') {
+        throw new TypeError('Horae port render(context) is required.');
+    }
+    _unregisterPortInternal(id, true);
+    horaePorts.set(id, {
+        ...definition,
+        id,
+        slot,
+        priority: Number.isFinite(Number(definition.priority)) ? Number(definition.priority) : 100,
+    });
+    horaePortErrors.delete(id);
+    refreshHoraePorts();
+    _emitPortChange({ type: 'register', id, slot });
+    return () => unregisterHoraePort(id);
+}
+
+function _unregisterPortInternal(id, silent) {
+    id = String(id || '').trim();
+    const port = horaePorts.get(id);
+    if (!port) return false;
+    document.querySelectorAll(`.horae-port-root[data-horae-port-id="${CSS.escape(id)}"]`).forEach(root =>
+        _disposePortRoot(root, port));
+    document.querySelectorAll(
+        `.horae-port-tab[data-port-id="${CSS.escape(id)}"], .horae-port-tab-content[data-port-id="${CSS.escape(id)}"]`
+    ).forEach(el => el.remove());
+    horaePorts.delete(id);
+    horaePortErrors.delete(id);
+    if (!silent) {
+        refreshHoraePorts();
+        _emitPortChange({ type: 'unregister', id, slot: port.slot });
+    }
+    return true;
+}
+
+function unregisterHoraePort(id) {
+    return _unregisterPortInternal(id, false);
+}
+
+function registerHoraeDataProvider(id, provider) {
+    id = String(id || '').trim();
+    if (!id) throw new TypeError('Horae data provider id is required.');
+    if (typeof provider !== 'function') throw new TypeError('Horae data provider must be a function.');
+    horaeDataProviders.set(id, provider);
+    refreshHoraePorts();
+    return () => unregisterHoraeDataProvider(id);
+}
+
+function unregisterHoraeDataProvider(id) {
+    id = String(id || '').trim();
+    const existed = horaeDataProviders.delete(id);
+    if (existed) refreshHoraePorts();
+    return existed;
+}
+
+function _publishHoraeApi() {
+    const api = Object.freeze({
+        version: VERSION,
+        portApiVersion: 1,
+        isEnabled: () => !!settings.enabled,
+        getSettings: () => ({ ...settings }),
+        getLatestState: (skipLast) => horaeManager.getLatestState(skipLast),
+        getRpgState: (skipLast) => horaeManager.getRpgStateAt(skipLast),
+        getEvents: (limit, filterLevel) => horaeManager.getEvents(limit, filterLevel),
+        getChat: () => horaeManager.getChat(),
+        registerPort: registerHoraePort,
+        unregisterPort: unregisterHoraePort,
+        getPorts: () => [...horaePorts.values()].map(port => Object.freeze({
+            id: port.id,
+            slot: port.slot,
+            title: port.title || port.name || null,
+            icon: port.icon || null,
+            priority: port.priority,
+        })),
+        refreshPorts: refreshHoraePorts,
+        registerDataProvider: registerHoraeDataProvider,
+        unregisterDataProvider: unregisterHoraeDataProvider,
+        getDataProviderIds: () => [...horaeDataProviders.keys()],
+        slots: [...HORAE_PORT_SLOTS],
+    });
+    window.Horae = api;
+    return api;
 }
 
 /** 获取当前对话的自定义表格 */
@@ -8580,6 +9073,7 @@ function refreshAllDisplays() {
     updateLocationMemoryDisplay();
     updateRpgDisplay();
     updateTokenCounter();
+    refreshHoraePorts();
 }
 
 /** chat[0] 上的全局键——无法由 rebuild 系列函数重建，需在 meta 重置时保留 */
@@ -9336,7 +9830,8 @@ function applyThemeMode() {
         document.getElementById('horae_drawer'),
         ...document.querySelectorAll('.horae-message-panel'),
         ...document.querySelectorAll('.horae-modal'),
-        ...document.querySelectorAll('.horae-rpg-hud')
+        ...document.querySelectorAll('.horae-rpg-hud'),
+        ...document.querySelectorAll('.horae-port-bottom-bar')
     ].filter(Boolean);
     targets.forEach(el => el.classList.toggle('horae-light', isLight));
 
@@ -9354,8 +9849,8 @@ function applyThemeMode() {
         // 日间自定义主题：必须追加 .horae-light 选择器以覆盖 style.css 中同名类的默认变量
         const needsLightOverride = isLight && mode !== 'light';
         const selectors = needsLightOverride
-            ? '#horae_drawer,\n#horae_drawer.horae-light,\n.horae-message-panel,\n.horae-message-panel.horae-light,\n.horae-modal,\n.horae-modal.horae-light,\n.horae-context-menu,\n.horae-context-menu.horae-light,\n.horae-rpg-hud,\n.horae-rpg-hud.horae-light,\n.horae-rpg-dice-panel,\n.horae-rpg-dice-panel.horae-light,\n.horae-progress-overlay,\n.horae-progress-overlay.horae-light'
-            : '#horae_drawer,\n.horae-message-panel,\n.horae-modal,\n.horae-context-menu,\n.horae-rpg-hud,\n.horae-rpg-dice-panel,\n.horae-progress-overlay';
+            ? '#horae_drawer,\n#horae_drawer.horae-light,\n.horae-message-panel,\n.horae-message-panel.horae-light,\n.horae-modal,\n.horae-modal.horae-light,\n.horae-context-menu,\n.horae-context-menu.horae-light,\n.horae-rpg-hud,\n.horae-rpg-hud.horae-light,\n.horae-port-bottom-bar,\n.horae-port-bottom-bar.horae-light,\n.horae-rpg-dice-panel,\n.horae-rpg-dice-panel.horae-light,\n.horae-progress-overlay,\n.horae-progress-overlay.horae-light'
+            : '#horae_drawer,\n.horae-message-panel,\n.horae-modal,\n.horae-context-menu,\n.horae-rpg-hud,\n.horae-port-bottom-bar,\n.horae-rpg-dice-panel,\n.horae-progress-overlay';
         themeStyleEl.textContent = `${selectors} {\n${vars}\n}`;
     } else {
         if (themeStyleEl) themeStyleEl.remove();
@@ -9912,13 +10407,14 @@ function openThemeDesigner() {
         let previewEl = document.getElementById('horae-designer-preview');
         if (!previewEl) { previewEl = document.createElement('style'); previewEl.id = 'horae-designer-preview'; document.head.appendChild(previewEl); }
         const cssLines = Object.entries(vars).map(([k, v]) => `  ${k}: ${v} !important;`).join('\n');
-        previewEl.textContent = `#horae_drawer, .horae-message-panel, .horae-modal, .horae-context-menu, .horae-rpg-hud, .horae-rpg-dice-panel, .horae-progress-overlay {\n${cssLines}\n}`;
+        previewEl.textContent = `#horae_drawer, .horae-message-panel, .horae-modal, .horae-context-menu, .horae-rpg-hud, .horae-port-bottom-bar, .horae-rpg-dice-panel, .horae-progress-overlay {\n${cssLines}\n}`;
 
         const isLight = st.bright > 50;
         drawer?.classList.toggle('horae-light', isLight);
         modal.classList.toggle('horae-light', isLight);
         document.querySelectorAll('.horae-message-panel').forEach(p => p.classList.toggle('horae-light', isLight));
         document.querySelectorAll('.horae-rpg-hud').forEach(h => h.classList.toggle('horae-light', isLight));
+        document.querySelectorAll('.horae-port-bottom-bar').forEach(b => b.classList.toggle('horae-light', isLight));
         document.querySelectorAll('.horae-rpg-dice-panel').forEach(d => d.classList.toggle('horae-light', isLight));
 
         let imgEl = document.getElementById('horae-designer-images');
@@ -10335,6 +10831,7 @@ function addMessagePanel(messageEl, messageIndex) {
                 panelEl.classList.add('horae-light');
             }
             renderRpgHud(messageEl, messageIndex);
+            refreshHoraePorts(messageEl);
         }
     } catch (err) {
         console.error(`[Horae] addMessagePanel #${messageIndex} 失败:`, err);
@@ -11525,11 +12022,12 @@ async function initDrawer() {
  * 初始化标签页切换
  */
 function initTabs() {
-    $('.horae-tab').on('click', function () {
-        const tabId = $(this).data('tab');
+    $('#horae_drawer').off('click.horaeTabs', '.horae-tab').on('click.horaeTabs', '.horae-tab', function () {
+        const $tab = $(this);
+        const tabId = $tab.data('tab');
 
         $('.horae-tab').removeClass('active');
-        $(this).addClass('active');
+        $tab.addClass('active');
 
         $('.horae-tab-content').removeClass('active');
         $(`#horae-tab-${tabId}`).addClass('active');
@@ -11548,6 +12046,16 @@ function initTabs() {
             case 'items':
                 updateItemsDisplay();
                 break;
+            default: {
+                if ($tab.hasClass('horae-port-tab')) {
+                    const portId = $tab.attr('data-port-id');
+                    const port = portId ? horaePorts.get(portId) : null;
+                    const root = document.querySelector(
+                        `.horae-port-tab-content[data-port-id="${CSS.escape(portId || '')}"] .horae-port-root`);
+                    if (port && root) _renderPortIntoRoot(port, root, { container: root.parentElement });
+                }
+                break;
+            }
         }
     });
 }
@@ -18565,6 +19073,8 @@ function showTutorialStep(step, current, total, isLast) {
 jQuery(async () => {
     console.log(`[Horae] 开始加载 v${VERSION}...`);
 
+    _publishHoraeApi();
+
     await initNavbarFunction();
     loadSettings();
     ensureRegexRules();
@@ -18611,6 +19121,8 @@ jQuery(async () => {
     syncSettingsToUI();
 
     horaeManager.init(getContext(), settings);
+    _publishHoraeApi();
+    _portsReady = true;
 
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onMessageReceived);
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
@@ -18656,15 +19168,6 @@ jQuery(async () => {
     if (_isFirstTimeUser) {
         setTimeout(() => startTutorial(), 800);
     }
-
-    window.Horae = Object.freeze({
-        version: VERSION,
-        isEnabled: () => !!settings.enabled,
-        getSettings: () => ({ ...settings }),
-        getLatestState: (skipLast) => horaeManager.getLatestState(skipLast),
-        getEvents: (limit, filterLevel) => horaeManager.getEvents(limit, filterLevel),
-        getChat: () => horaeManager.getChat(),
-    });
 
     isInitialized = true;
     _chatFullyLoaded = true;
