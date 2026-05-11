@@ -13,7 +13,7 @@
 <horae>
 time:日付と時刻（必須。明示がなければ文脈に合う具体的な時刻を補う。「不明」「ある日」は使わない）
 location:現在地（必須）
-atmosphere:場面の雰囲気
+atmosphere:場面の雰囲気${sceneDescLine}
 characters:その場にいる人物をカンマ区切りで書く（必須）
 costume:人物名=服装の完全な描写（必須。人物ごとに1行）
 item:絵文字物品名(数量)|説明=持ち主@正確な位置
@@ -21,7 +21,7 @@ item!:絵文字物品名(数量)|説明=持ち主@正確な位置
 item!!:絵文字物品名(数量)|説明=持ち主@正確な位置
 item-:物品名
 affection:人物名=好感度数値
-npc:人物名|外見=性格@{{user}}との関係~gender:value~age:value~race:value~job:value~birthday:value
+npc:人物名|外見=性格@{{user}}との関係~gender:value~age:value~race:value~job:value~birthday:value${relLine}${moodLine}
 agenda:作成日|予定や約束の内容
 agenda-:予定のキーワード
 </horae>

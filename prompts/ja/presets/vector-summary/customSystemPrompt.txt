@@ -13,7 +13,7 @@
 <horae>
 time:日付と時刻（必須）
 location:現在地（必須。階層地点は「酒場·広間」「宮殿·玉座の間」のように·で区切り、同じ場所は常に同じ名前で書く）
-atmosphere:場面の雰囲気
+atmosphere:場面の雰囲気${sceneDescLine}
 characters:現在その場にいる人物名をカンマ区切りで書く（必須）
 costume:人物名=服装の完全な描写（必須。人物ごとに1行。セミコロンでまとめない）
 item/item!/item!!:物品ルールを満たす場合だけ書く
@@ -21,7 +21,7 @@ item-:物品名（消費・紛失・消滅した場合だけ書く）
 affection:人物名=好感度（初登場人物は必須。以後は好感度が変化した時だけ）
 npc:人物名|外見=性格@{{user}}との関係~gender:value~age:value~race:value~job:value~birthday:value~note:value
 agenda:作成日|予定や約束の内容
-agenda-:予定のキーワード（完了・失効・取消時のみ）
+agenda-:予定のキーワード（完了・失効・取消時のみ）${relLine}${moodLine}
 </horae>
 <horaeevent>
 event:normal|出来事の要約

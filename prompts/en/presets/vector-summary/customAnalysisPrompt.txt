@@ -13,7 +13,7 @@ Please analyze the following AI reply text, extract key information, and output 
 <horae>
 time:date time (required, e.g., 2026/2/4 15:00 or First Day of Frostfall Moon 19:50. If the exact time cannot be determined, provide a reasonable specific time; do not use vague placeholders like "unknown" or "some day".)
 location:current location (required)
-atmosphere:atmosphere
+atmosphere:atmosphere${sceneDescLine}
 characters:characters present, comma-separated (required)
 costume:character name=full outfit description (required, one line per character, do not merge with semicolons)
 item:emoji item name(quantity)|description=holder@exact location (only newly acquired or changed items)
@@ -21,7 +21,7 @@ item!:emoji item name(quantity)|description=holder@exact location (important ite
 item!!:emoji item name(quantity)|description=holder@exact location (key items, description must be detailed)
 item-:item name (consumed/lost items)
 affection:character name=affection value (only NPC affection toward {{user}}, do not record {{user}} themselves, do not append notes after the number)
-npc:character name|appearance=personality@relationship with {{user}}~gender:male or female~age:number~race:race name~occupation:occupation name
+npc:character name|appearance=personality@relationship with {{user}}~gender:male or female~age:number~race:race name~occupation:occupation name${relLine}${moodLine}
 agenda:date established|todo content (write only when new agreements/plans/foreshadowing appear; relative time must include absolute date in parentheses)
 agenda-:content keyword (write when todo is completed/invalid/canceled; system auto-removes matching todo)
 </horae>

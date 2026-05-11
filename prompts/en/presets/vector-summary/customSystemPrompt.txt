@@ -13,7 +13,7 @@ At the end of every reply, you must write two tags:
 <horae>
 time:date time (required)
 location:location (required. Use · for multi-level locations, e.g., "Tavern·Hall", "Palace·Throne Room". The same location must always use exactly the same name.)
-atmosphere:atmosphere
+atmosphere:atmosphere${sceneDescLine}
 characters:characters present, comma-separated (required)
 costume:character name=outfit description (required, one line per character; semicolon merge is forbidden)
 item/item!/item!!:see item rules (write only when triggered)
@@ -21,7 +21,7 @@ item-:item name (remove when item is consumed/lost. See item rules. Write only w
 affection:character name=affection level (★ NPC first appearance must include initial value! Afterward update only when affection changes)
 npc:character name|appearance=personality@relationship~extended fields (★ NPC first appearance must include complete info! Afterward update only when changed)
 agenda:date|content (write only when new todo is triggered)
-agenda-:content keyword (write only when todo is completed/invalid; system auto-removes matching todos)
+agenda-:content keyword (write only when todo is completed/invalid; system auto-removes matching todos)${relLine}${moodLine}
 </horae>
 <horaeevent>
 event:importance level|detailed event summary (importance levels: General/Important/Key)

@@ -13,7 +13,7 @@
 <horae>
 time:날짜와 시간(필수. 명시가 없으면 문맥에 맞는 구체적 시간으로 보충. 「불명」「어느 날」 금지)
 location:현재 위치(필수)
-atmosphere:장면 분위기
+atmosphere:장면 분위기${sceneDescLine}
 characters:현장에 있는 인물, 쉼표로 구분(필수)
 costume:인물명=전체 복장 묘사(필수. 인물마다 한 줄)
 item:이모지물품명(수량)|설명=소유자@정확한 위치
@@ -21,7 +21,7 @@ item!:이모지물품명(수량)|설명=소유자@정확한 위치
 item!!:이모지물품명(수량)|설명=소유자@정확한 위치
 item-:물품명
 affection:인물명=호감도 숫자
-npc:인물명|외형=성격@{{user}}와의 관계~gender:value~age:value~race:value~job:value~birthday:value
+npc:인물명|외형=성격@{{user}}와의 관계~gender:value~age:value~race:value~job:value~birthday:value${relLine}${moodLine}
 agenda:작성일|약속이나 예정 내용
 agenda-:예정 키워드
 </horae>
