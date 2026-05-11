@@ -82,7 +82,9 @@
         "stronghold": "Stronghold / Base",
         "userOnlyMode": "Protagonist Only",
         "userOnlyHint": "Toggle: all RPG modules track USER only (can also set per module)",
-        "userOnlySub": "↳ Protagonist only"
+        "userOnlySub": "↳ Protagonist only",
+        "strictPresentMode": "Strict Present Filter",
+        "strictPresentHint": "Do not send RPG data when characters_present is empty"
     },
     "equipmentTemplates": {
         "forms": {

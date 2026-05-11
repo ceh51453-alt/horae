@@ -1,4 +1,4 @@
-# Horae - 時光記憶 v1.13.1 | SillyTavern 記憶增強插件
+# Horae - 時光記憶 v1.13.2 | SillyTavern 記憶增強插件
 
 [English](README.md) | [简体中文](README.zh-CN.md) | **繁體中文**
 
@@ -80,7 +80,7 @@ window.Horae?.getEvents(10)      // → 最近 10 筆事件
 window.Horae?.getSettings()
 
 // 版本號
-window.Horae?.version            // → "1.13.1"
+window.Horae?.version            // → "1.13.2"
 ```
 
 設定變更事件透過酒館的 `eventSource` 廣播：

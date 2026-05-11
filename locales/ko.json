@@ -86,7 +86,9 @@
         "stronghold": "거점 / 기지",
         "userOnlyMode": "주인공 전용",
         "userOnlyHint": "전환: 모든 RPG 모듈이 USER만 추적 (모듈별로도 설정 가능)",
-        "userOnlySub": "↳ 주인공 전용"
+        "userOnlySub": "↳ 주인공 전용",
+        "strictPresentMode": "등장 인물만 전송",
+        "strictPresentHint": "characters_present가 비어 있으면 RPG 데이터를 보내지 않음"
     },
     "equipmentTemplates": {
         "forms": {

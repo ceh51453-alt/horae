@@ -82,7 +82,9 @@
         "stronghold": "據點 / 基地",
         "userOnlyMode": "僅限主角模式",
         "userOnlyHint": "一鍵切換：所有RPG模組只追蹤USER（也可單獨設置各模組）",
-        "userOnlySub": "↳ 僅限主角"
+        "userOnlySub": "↳ 僅限主角",
+        "strictPresentMode": "嚴格在場過濾",
+        "strictPresentHint": "無 characters_present 時不發送 RPG 數據"
     },
     "equipmentTemplates": {
         "forms": {

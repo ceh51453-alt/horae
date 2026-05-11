@@ -82,7 +82,9 @@
         "stronghold": "Опорный пункт / База",
         "userOnlyMode": "Только протагонист",
         "userOnlyHint": "Переключить: все RPG-модули отслеживают только USER (можно настроить для каждого модуля)",
-        "userOnlySub": "↳ Только протагонист"
+        "userOnlySub": "↳ Только протагонист",
+        "strictPresentMode": "Фильтр присутствующих",
+        "strictPresentHint": "Не отправлять RPG-данные, если characters_present пуст"
     },
     "equipmentTemplates": {
         "forms": {

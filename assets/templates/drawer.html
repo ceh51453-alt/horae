@@ -10,7 +10,7 @@
                 <i class="fa-regular fa-clock"></i>
                 Horae 时光记忆
             </div>
-            <span class="horae-version">1.13.1</span>
+            <span class="horae-version">1.13.2</span>
         </div>
         
         <!-- 标签页导航 -->
@@ -794,6 +794,11 @@
                                 <strong data-i18n="rpg.userOnlyMode">仅限主角模式</strong>
                                 <span data-i18n="rpg.userOnlyHint" style="font-size:0.85em;opacity:0.8;">— 一键切换：所有RPG模块只追踪USER（也可单独设置各模块）</span>
                             </label>
+                            <label style="display:block;margin-bottom:8px;padding:4px 8px;background:rgba(59,130,246,0.08);border-radius:6px;border:1px solid rgba(59,130,246,0.2);">
+                                <input type="checkbox" id="horae-setting-rpg-strict-present">
+                                <strong data-i18n="rpg.strictPresentMode">严格在场过滤</strong>
+                                <span data-i18n="rpg.strictPresentHint" style="font-size:0.85em;opacity:0.8;">— 无 characters_present 时不发送 RPG 数据</span>
+                            </label>
                             <label data-i18n="settings.rpgBars" style="display:block;margin-bottom:4px;">
                                 <input type="checkbox" id="horae-setting-rpg-bars" checked>
                                 发送属性条（HP/MP/SP/状态异常）
@@ -1533,7 +1538,7 @@
                 </div>
                 
                 <div class="horae-about">
-                    <p>Horae v1.13.1 | 作者: SenriYuki</p>
+                    <p>Horae v1.13.2 | 作者: SenriYuki</p>
                     <p>基于时间锚点的AI记忆增强系统</p>
                 </div>
             </div>

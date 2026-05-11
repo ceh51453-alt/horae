@@ -88,7 +88,9 @@
         "stronghold": "拠点 / ベース",
         "userOnlyMode": "主人公のみ",
         "userOnlyHint": "切替：すべてのRPGモジュールをUSERのみ追跡（モジュールごとに個別設定も可）",
-        "userOnlySub": "↳ 主人公のみ"
+        "userOnlySub": "↳ 主人公のみ",
+        "strictPresentMode": "在場者のみ送信",
+        "strictPresentHint": "characters_present が空の場合は RPG データを送信しません"
     },
     "equipmentTemplates": {
         "forms": {
