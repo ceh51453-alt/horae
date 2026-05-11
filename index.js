@@ -3,7 +3,7 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.13.0
+ * 版本: 1.13.1
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
@@ -22,7 +22,7 @@ import { initPromptDefaults, ensurePromptDefaults, ensurePresetPrompts, getPromp
 const EXTENSION_NAME = 'horae';
 const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.13.0';
+const VERSION = '1.13.1';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -11117,7 +11117,9 @@ function bindPanelEvents(panelEl) {
         });
         rescanBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
-            rescanMessageMeta(messageId, panelEl);
+            rescanMessageMeta(messageId, panelEl).catch(err => {
+                console.error(`[Horae] 重扫消息失败 #${messageId}:`, err);
+            });
         });
         sideplayBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
@@ -11133,7 +11135,9 @@ function bindPanelEvents(panelEl) {
     contentEl?.addEventListener('change', () => { panelDirty = true; });
 
     panelEl.querySelector('.horae-btn-save')?.addEventListener('click', () => {
-        savePanelData(panelEl, messageId);
+        savePanelData(panelEl, messageId).catch(err => {
+            console.error(`[Horae] 保存面板失败 #${messageId}:`, err);
+        });
         panelDirty = false;
     });
 
@@ -11294,7 +11298,7 @@ function bindPanelEvents(panelEl) {
                 bindPanelEvents(panelEl);
             }
 
-            getContext().saveChat();
+            await getContext().saveChat();
             refreshAllDisplays();
             showToast(t('toast.saveSuccess'), 'success');
         } else {
@@ -11378,7 +11382,7 @@ async function runPanelAiAnalyze(messageId, panelEl, message) {
             bindPanelEvents(panelEl);
         }
 
-        getContext().saveChat();
+        await getContext().saveChat();
         refreshAllDisplays();
         showToast(t('toast.saveSuccess'), 'success');
     } catch (error) {
@@ -11474,7 +11478,7 @@ async function toggleSideplay(messageId, panelEl) {
 }
 
 /** 重新扫描消息并更新面板（完全替换） */
-function rescanMessageMeta(messageId, panelEl) {
+async function rescanMessageMeta(messageId, panelEl) {
     // 从DOM获取最新的消息内容（用户可能已编辑）
     const messageEl = panelEl.closest('.mes');
     if (!messageEl) {
@@ -11543,7 +11547,7 @@ function rescanMessageMeta(messageId, panelEl) {
 
         horaeManager.setMessageMeta(messageId, newMeta);
         injectHoraeTagToMessage(messageId, newMeta);
-        getContext().saveChat();
+        await getContext().saveChat();
 
         panelEl.remove();
         addMessagePanel(messageEl, messageId);
@@ -11572,7 +11576,7 @@ function rescanMessageMeta(messageId, panelEl) {
 /**
  * 保存面板数据
  */
-function savePanelData(panelEl, messageId) {
+async function savePanelData(panelEl, messageId) {
     // 获取现有的 meta，保留面板中没有编辑区的数据（如 NPC）
     const existingMeta = horaeManager.getMessageMeta(messageId);
     const meta = createEmptyMeta();
@@ -11748,7 +11752,7 @@ function savePanelData(panelEl, messageId) {
     // 同步写入正文标签
     injectHoraeTagToMessage(messageId, meta);
 
-    getContext().saveChat();
+    await getContext().saveChat();
 
     showToast(t('toast.saveSuccess'), 'success');
     refreshAllDisplays();
@@ -17876,11 +17880,15 @@ async function analyzeMessageWithAI(messageContent, opts = {}) {
     }
 
     const template = settings.customAnalysisPrompt || getDefaultAnalysisPrompt();
-    const analysisPrompt = template
+    let analysisPrompt = template
         .replace(/\{\{user\}\}/gi, userName)
         .replace(/\{\{context\}\}/gi, contextText)
         .replace(/\{\{previousUserMessage\}\}/gi, previousUserMessage)
         .replace(/\{\{content\}\}/gi, messageContent);
+    const fieldLines = horaeManager.getPromptFieldLines?.() || {};
+    for (const [key, value] of Object.entries(fieldLines)) {
+        analysisPrompt = analysisPrompt.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), value);
+    }
 
     try {
         const shouldMarkNoRecall = !!(

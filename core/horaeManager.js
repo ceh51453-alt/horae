@@ -3358,11 +3358,15 @@ class HoraeManager {
         const subs = this.generateLocationMemoryPrompt() + this.generateCustomTablesPrompt() +
                      this.generateRelationshipPrompt() + this.generateMoodPrompt() +
                      this.generateRpgPrompt() + this._generateAntiParaphrasePrompt();
+        const fieldLines = this.getPromptFieldLines();
 
         if (this.settings?.customSystemPrompt) {
-            const custom = this.settings.customSystemPrompt
+            let custom = this.settings.customSystemPrompt
                 .replace(/\{\{user\}\}/gi, userName)
                 .replace(/\{\{char\}\}/gi, charName);
+            for (const [key, value] of Object.entries(fieldLines)) {
+                custom = custom.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), value);
+            }
             return custom + subs;
         }
 
@@ -3373,8 +3377,53 @@ class HoraeManager {
     }
 
     getDefaultSystemPrompt(vars = null) {
-        const mergedVars = { systemPromptAddition: '', ...(vars || {}) };
+        const mergedVars = { systemPromptAddition: '', ...this.getPromptFieldLines(), ...(vars || {}) };
         return this._getPromptDefaultFromResource('customSystemPrompt', mergedVars);
+    }
+
+    /** 依 sendLocationMemory / sendRelationships / sendMood 开关返回 horae 标签中可选字段行 */
+    getPromptFieldLines() {
+        const lang = this._getAiOutputLang();
+        const tr = (zh, tw, en, ja, ko, ru) => {
+            if (lang === 'zh-CN') return zh;
+            if (lang === 'zh-TW') return tw;
+            if (lang === 'ja') return ja;
+            if (lang === 'ko') return ko;
+            if (lang === 'ru') return ru;
+            return en;
+        };
+        return {
+            sceneDescLine: this.settings?.sendLocationMemory
+                ? '\nscene_desc:' + tr(
+                    '地点固定物理特征（仅首次到达或发生永久变化时写）',
+                    '地點固定物理特徵（僅首次到達或發生永久變化時寫）',
+                    'fixed physical features of the location (write only on first arrival or permanent change)',
+                    '場所の固定的な物理特徴（初到達または恒久的な変化があった時のみ記入）',
+                    '장소의 고정 물리적 특징(첫 도착 또는 영구적인 변화가 있을 때만 작성)',
+                    'постоянные физические особенности места (писать только при первом посещении или необратимом изменении)',
+                )
+                : '',
+            relLine: this.settings?.sendRelationships
+                ? '\nrel:' + tr(
+                    '角色A>角色B=关系类型|备注（角色间关系新建或变化时写）',
+                    '角色A>角色B=關係類型|備註（角色間關係新建或變化時寫）',
+                    'Character A>Character B=relationship type|note (write only when a relationship is established or changes)',
+                    'キャラA>キャラB=関係種別|備考（関係が新たに発生または変化した時のみ記入）',
+                    '캐릭터A>캐릭터B=관계 유형|비고(관계가 새로 생기거나 변할 때만 작성)',
+                    'Персонаж A>Персонаж B=тип отношений|примечание (писать только при появлении или изменении отношений)',
+                )
+                : '',
+            moodLine: this.settings?.sendMood
+                ? '\nmood:' + tr(
+                    '角色名=情绪/心理状态（在场角色情绪明显变化时写）',
+                    '角色名=情緒/心理狀態（在場角色情緒明顯變化時寫）',
+                    'character name=emotion/mental state (write only when present characters show clear emotional shifts)',
+                    'キャラ名=感情/心理状態（その場のキャラの感情が明確に変化した時のみ記入）',
+                    '캐릭터명=감정/심리 상태(현장 캐릭터의 감정이 뚜렷이 변할 때만 작성)',
+                    'имя персонажа=эмоция/состояние (писать только при явных эмоциональных изменениях присутствующих)',
+                )
+                : '',
+        };
     }
 
     getDefaultTablesPrompt() {
