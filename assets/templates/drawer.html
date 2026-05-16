@@ -589,7 +589,7 @@
                             <label data-i18n="settings.auxApiModel">模型</label>
                             <div style="display:flex; gap:4px; align-items:center;">
                                 <select id="horae-setting-aux-api-model" class="horae-edit-field" style="flex:1; min-width:0;">
-                                    <option value="">-- 请先拉取模型列表 --</option>
+                                    <option value="" data-i18n="settings.selectModelPlaceholder">-- 请先拉取模型列表 --</option>
                                 </select>
                                 <button id="horae-btn-fetch-models" class="horae-btn" style="white-space:nowrap; padding:4px 8px;" data-i18n-title="tooltip.fetchModels" title="">
                                     <i class="fa-solid fa-arrows-rotate"></i>
@@ -1122,7 +1122,7 @@
                                     <label data-i18n="vector.embeddingModelLabel">Embedding 模型</label>
                                     <div style="display:flex; gap:4px; align-items:center;">
                                         <select id="horae-setting-vector-api-model" class="horae-edit-field" style="flex:1; min-width:0;">
-                                            <option value="">-- 请先拉取模型列表 --</option>
+                                            <option value="" data-i18n="settings.selectModelPlaceholder">-- 请先拉取模型列表 --</option>
                                         </select>
                                         <button id="horae-btn-fetch-embed-models" class="horae-btn" style="white-space:nowrap; padding:4px 8px;" data-i18n-title="tooltip.fetchModels" title="">
                                             <i class="fa-solid fa-arrows-rotate"></i>
@@ -1262,7 +1262,7 @@
                                         <label data-i18n="vector.rerankModel">Rerank 模型</label>
                                         <div style="display:flex; gap:4px; align-items:center;">
                                             <select id="horae-setting-vector-rerank-model" class="horae-edit-field" style="flex:1; min-width:0;">
-                                                <option value="">-- 请先拉取模型列表 --</option>
+                                                <option value="" data-i18n="settings.selectModelPlaceholder">-- 请先拉取模型列表 --</option>
                                             </select>
                                             <button id="horae-btn-fetch-rerank-models" class="horae-btn" style="white-space:nowrap; padding:4px 8px;" data-i18n-title="tooltip.fetchModels" title="">
                                                 <i class="fa-solid fa-arrows-rotate"></i>
@@ -1540,9 +1540,9 @@
                             <i class="fa-solid fa-wand-magic-sparkles"></i>
                             <span data-i18n="settings.aiSmartSummary">AI智能补全</span>
                         </button>
-                        <button id="horae-btn-carry-new-chat" class="horae-data-btn primary" title="带着记忆创建新对话">
+                        <button id="horae-btn-carry-new-chat" class="horae-data-btn primary" data-i18n-title="settings.carryNewChatHint" title="带着记忆创建新对话">
                             <i class="fa-solid fa-code-branch"></i>
-                            <span>带着记忆创建新对话</span>
+                            <span data-i18n="settings.carryNewChat">带着记忆创建新对话</span>
                         </button>
                         <button id="horae-btn-export" class="horae-data-btn">
                             <i class="fa-solid fa-file-export"></i>
