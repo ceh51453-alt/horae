@@ -1,0 +1,29 @@
+═══ [Ký ức Cảnh vật] Điều kiện Kích hoạt ═══
+Định dạng: scene_desc:Nằm ở .... Mô tả các đặc điểm vật lý cố định của vị trí này (50-150 từ)
+Ký ức cảnh vật ghi lại bố cục cốt lõi và các đặc điểm cố định của một vị trí (cấu trúc kiến trúc, đồ nội thất cố định, đặc điểm không gian) để giữ cho các mô tả cảnh vật nhất quán qua các lượt.
+
+[Định dạng Vị trí/"Nằm ở"] ★★★ Tuân thủ nghiêm ngặt các quy tắc phân cấp ★★★
+  · Bắt đầu bằng "Nằm ở" để chỉ vị trí của nơi này so với nơi chứa trực tiếp nó, sau đó mô tả các đặc điểm vật lý của chính nơi này
+  · Vị trí con (tên chứa dấu phân cách "·"): trong "Nằm ở", chỉ ghi vị trí bên trong tòa nhà cha (ví dụ: tầng nào, hướng nào); tuyệt đối không bao gồm địa lý bên ngoài của vị trí cha
+  · Vị trí cha/cấp cao nhất: chỉ ở đây "Nằm ở" mới bao gồm địa lý bên ngoài (ví dụ: lục địa nào, bên cạnh khu rừng nào)
+  · Hệ thống tự động gửi các mô tả của vị trí cha cho AI, do đó các mục con không cần và không nên lặp lại thông tin của vị trí cha
+    ✓ Quán rượu Vô danh·Phòng 203 → scene_desc:Nằm ở phía đông của tầng 2. Phòng góc có ánh sáng ban ngày tốt, một chiếc giường gỗ đơn kê sát tường, cửa sổ hướng đông
+    ✓ Quán rượu Vô danh·Sảnh → scene_desc:Nằm ở tầng 1. Không gian bằng gỗ có trần cao, quầy bar dài ở trung tâm, một vài chiếc bàn tròn nằm rải rác
+    ✓ Quán rượu Vô danh → scene_desc:Nằm ở rìa phía bắc của Rừng XX trên Lục địa OO. Cấu trúc gỗ và đá hai tầng, sảnh và quầy bar ở tầng trệt, các phòng khách ở tầng hai
+    ✗ Quán rượu Vô danh·Phòng 203 → scene_desc:Nằm trên tầng 2 của Quán rượu Vô danh cạnh Rừng XX ở phía bắc Lục địa OO... (❌ các mục con không được bao gồm địa lý bên ngoài của vị trí cha)
+    ✗ Quán rượu Vô danh·Sảnh → scene_desc:Nằm trên tầng 1 của Quán rượu Vô danh cạnh khu rừng... (❌ tương tự)
+[Quy tắc Tên Địa điểm]
+  · Sử dụng "·" cho các vị trí nhiều cấp độ: Tòa nhà·Khu vực (ví dụ: "Quán rượu Vô danh·Sảnh", "Cung điện·Ngục tối")
+  · Cùng một vị trí phải luôn sử dụng tên chính xác như trong [Scene|...] ở trên; không viết tắt hoặc viết lại
+  · Các khu vực có cùng tên trong các tòa nhà khác nhau được theo dõi độc lập (ví dụ: "Quán rượu Vô danh·Sảnh" và "Cung điện·Sảnh" là các vị trí khác nhau)
+[Khi nào cần viết]
+  ✦ Lần đầu tiên đến một vị trí mới → phải viết scene_desc mô tả các đặc điểm vật lý cố định của nó
+  ✦ Những thay đổi vật lý vĩnh viễn tại một vị trí (ví dụ: bị phá hủy, được cải tạo) → viết scene_desc được cập nhật
+[Khi nào không viết]
+  ✗ Trở lại một vị trí đã được ghi lại trước đó mà không có thay đổi vật lý nào → không viết
+  ✗ Bầu không khí/thời tiết/mùa thay đổi → không viết (đây là những tạm thời và không phải là đặc điểm cố định)
+[Quy tắc Mô tả]
+  · Chỉ viết các đặc điểm vật lý cố định/vĩnh viễn: cấu trúc không gian, vật liệu xây dựng, đồ nội thất cố định, hướng cửa sổ, đồ trang trí mang tính biểu tượng
+  · Không viết các trạng thái tạm thời: ánh sáng hiện tại, thời tiết, đám đông, đồ trang trí theo mùa, vật phẩm được đặt tạm thời
+  · Không sao chép nguyên văn văn bản ký ức cảnh vật vào phần thân chính; hãy sử dụng nó làm tài liệu tham khảo bối cảnh và viết lại dựa trên góc nhìn của nhân vật/thời gian/thời tiết/ánh sáng hiện tại
+  · [Scene Memory|...] ở trên chứa các đặc điểm được hệ thống ghi lại cho vị trí này; giữ nguyên những yếu tố cốt lõi này trong khi tự do thay đổi các chi tiết tùy theo thời gian/mùa/cốt truyện

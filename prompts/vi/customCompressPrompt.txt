@@ -1,0 +1,42 @@
+=====[Nén sự kiện]=====
+Bạn là trợ lý nén cốt truyện. Nén {{count}} sự kiện cốt truyện sau đây thành một bản tóm tắt mạch lạc với mật độ thông tin cực cao (200-350 từ).
+
+{{events}}
+
+[Trọng số giữ lại chi tiết (Không được bỏ sót)]
+1. Ưu tiên tuyệt đối cao nhất (neo thời gian): phải giữ lại chính xác ngày/giờ cụ thể của từng sự kiện và sử dụng nó làm hướng dẫn kể chuyện (ví dụ: "Vào [ngày X tháng X], U và..."). Không sử dụng các trạng từ mơ hồ như "sau đó/hôm sau" để xóa đi tọa độ thời gian thực.
+2. Ưu tiên hàng đầu (phải giữ): các cam kết/công việc rõ ràng, sự chuyển giao và vị trí của các vật phẩm quan trọng, và những thay đổi về trạng thái sống chết của NPC.
+3. Ưu tiên cao (phải giữ): các hành động cốt lõi trong các sự kiện "Then chốt" và "Quan trọng", cùng những đảo ngược cảm xúc thực chất (ví dụ: tình yêu biến thành thù hận, sự tin tưởng được thiết lập).
+4. Ưu tiên trung bình (gộp lại): đối với các sự kiện "Bình thường", trích xuất chức năng bối cảnh của chúng (ví dụ: "trong khi đi du lịch") và loại bỏ những câu chào hỏi vô nghĩa.
+
+[Yêu cầu đầu ra]
+- Phải tuân thủ nghiêm ngặt trình tự thời gian sự kiện, liên kết các mối quan hệ nhân quả thành một câu chuyện vi mô mạch lạc.
+- Không trừu tượng hóa các hành động cụ thể (❌ "Hai người đã thực hiện một cuộc giao dịch" ✅ "U đã trao đổi 50 đồng tiền vàng để lấy bản đồ của Allen").
+- Các ngày tháng cụ thể, tên người, tên địa điểm và tên vật phẩm phải được giữ nguyên chính xác.
+- Chỉ xuất văn bản thuần túy tóm tắt. Không thêm bất kỳ Markdown nào (không in đậm, không danh sách), ngắt dòng, hoặc định dạng thừa. Nó phải là một đoạn văn đặc với nội dung thông tin cao.
+- {{user}} là tên nhân vật chính. Văn phong phải là lời kể khách quan và chính xác.
+- [Quan trọng]: toàn bộ văn bản tóm tắt cuối cùng phải được bọc hoàn toàn bằng <horaesummary> ở đầu và </horaesummary> ở cuối.
+
+
+=====[Tóm tắt toàn văn]=====
+Bạn là chuyên gia trích xuất thông tin cốt truyện. Vui lòng đọc hồ sơ đối thoại thô sau đây và chắt lọc nó thành một bản tóm tắt cốt truyện có mật độ thông tin cao, được nén chặt (300-500 từ).
+
+{{fulltext}}
+
+[Nguyên tắc trích xuất: Chắt lọc tinh hoa với mốc thời gian]
+- Khóa thời gian: nếu các điểm ngày/giờ rõ ràng hoặc ngầm định xuất hiện trong văn bản gốc (chẳng hạn như các ngày hoặc ngày lễ cụ thể), chúng phải được trích xuất chính xác và tích hợp vào đầu câu như các điểm neo kể chuyện; không bao giờ để mất tọa độ thời gian.
+- Lược bỏ chi tiết thừa: loại bỏ các câu chào hỏi, các mô tả hành động vô nghĩa và các cuộc trao đổi lặp đi lặp lại.
+- Tập trung vào thực chất: chỉ giữ lại những yếu tố thúc đẩy cốt truyện một cách vật chất:
+  ① ai đã đưa ra quyết định cụ thể nào
+  ② thông tin/bí mật mới nào đã được tiết lộ
+  ③ vật phẩm quan trọng nào đã được nhận hoặc tiêu thụ
+  ④ sự hồi hộp/điềm báo mới nào đã bị bỏ lại
+- Quy tắc nén đối thoại: không ghi lại "được nói như thế nào"; ghi lại "nội dung cốt lõi nào đã được nói". (ví dụ: rút gọn một cuộc tranh cãi dài thành: "Cả hai bên đã nổ ra một cuộc cãi vã gay gắt về việc phân chia chiến lợi phẩm không đều, và U cuối cùng đã dùng vũ lực buộc phía bên kia phải lùi bước.")
+
+[Yêu cầu đầu ra]
+- Kể chuyện theo dòng thời gian (tiến trình ngày tháng) và nhân quả, trình bày rõ ràng: thời gian/nguyên nhân → xung đột hoặc tương tác cốt lõi → kết quả cuối cùng.
+- Phải nắm bắt được những chuyển biến tâm lý sâu sắc và sự chuyển đổi mối quan hệ của các nhân vật (ví dụ: bề ngoài tuân theo nhưng ẩn chứa sát ý).
+- Các ngày tháng cụ thể, tên người, tên địa điểm và danh từ riêng phải được giữ nguyên chính xác.
+- Chỉ xuất văn bản thuần túy tóm tắt. Không thêm bất kỳ tiêu đề, đánh số hoặc dấu in đậm nào; viết thành một đoạn văn mạch lạc.
+- {{user}} là tên nhân vật chính. Văn phong phải lạnh lùng, khách quan và dày đặc thông tin.
+- [Quan trọng]: toàn bộ văn bản tóm tắt cuối cùng phải được bọc hoàn toàn bằng <horaesummary> ở đầu và </horaesummary> ở cuối.

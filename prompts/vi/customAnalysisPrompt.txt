@@ -1,0 +1,40 @@
+Vui lòng phân tích văn bản trả lời của AI dưới đây, trích xuất thông tin chính và xuất ra theo định dạng được chỉ định. Nguyên tắc cốt lõi: chỉ trích xuất những thông tin được đề cập rõ ràng trong văn bản. Nếu không có trường nào đó, đừng viết nó ra. Nghiêm cấm bịa đặt.
+
+[Trạng thái tham chiếu (thông tin đã biết trước tin nhắn này; chỉ dùng để tham khảo, không coi là sự kiện mới cho tin nhắn này)]
+{{context}}
+
+[Hành động trước đó của người dùng]
+{{previousUserMessage}}
+
+[Văn bản cần phân tích]
+{{content}}
+
+[Định dạng đầu ra]
+<horae>
+time:ngày giờ (bắt buộc, ví dụ: 2026/2/4 15:00 hoặc Ngày đầu tiên của Tháng Sương giá 19:50. Nếu không thể xác định thời gian chính xác, hãy đưa ra một thời gian cụ thể hợp lý; không sử dụng các từ thay thế mơ hồ như "không rõ" hoặc "một ngày nào đó".)
+location:vị trí hiện tại (bắt buộc)
+atmosphere:bầu không khí${sceneDescLine}
+characters:các nhân vật có mặt, phân tách bằng dấu phẩy (bắt buộc)
+costume:tên nhân vật=mô tả toàn bộ trang phục (bắt buộc, mỗi nhân vật một dòng, không gộp bằng dấu chấm phẩy)
+item:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí chính xác (chỉ các vật phẩm mới nhận được hoặc có thay đổi)
+item!:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí chính xác (vật phẩm quan trọng, bắt buộc phải có mô tả)
+item!!:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí chính xác (vật phẩm then chốt, mô tả phải chi tiết)
+item-:tên vật phẩm (vật phẩm đã tiêu thụ/mất)
+affection:tên nhân vật=giá trị độ hảo cảm (chỉ độ hảo cảm của NPC đối với {{user}}, không ghi lại chính {{user}}, không thêm ghi chú sau con số)
+npc:tên nhân vật|ngoại hình=tính cách@mối quan hệ với {{user}}~gender:nam hoặc nữ~age:số tuổi~race:tên chủng tộc~occupation:tên nghề nghiệp${relLine}${moodLine}
+agenda:ngày thiết lập|nội dung công việc (chỉ viết khi có thỏa thuận/kế hoạch/điềm báo mới xuất hiện; thời gian tương đối phải bao gồm ngày tuyệt đối trong ngoặc đơn)
+agenda-:từ khóa nội dung (viết khi công việc đã hoàn thành/vô hiệu/bị hủy; hệ thống tự động xóa công việc khớp)
+</horae>
+<horaeevent>
+event:mức độ quan trọng|tóm tắt ngắn gọn (50-80 ký tự, Bình thường/Quan trọng/Then chốt)
+</horaeevent>
+
+[Điều kiện kích hoạt] Chỉ xuất ra một trường khi đáp ứng điều kiện:
+· Vật phẩm (item): chỉ viết khi mới nhận được, thay đổi số lượng/quyền sở hữu/vị trí, hoặc bị tiêu thụ/mất. Nếu không thay đổi, không viết. Không viết (1) cho vật phẩm đơn lẻ. Sử dụng tiền tố biểu tượng cảm xúc như 🔑🍞.
+· NPC: lần xuất hiện đầu tiên phải đầy đủ (bao gồm ~gender/age/race/occupation). Sau đó, chỉ viết các trường đã thay đổi; nếu không thay đổi, không viết.
+  Dấu phân cách: | phân tách tên, = phân tách ngoại hình và tính cách, @ phân tách mối quan hệ, ~ phân tách các trường mở rộng
+· Độ hảo cảm (affection): giá trị đầu tiên được xác định bởi mối quan hệ (người lạ 0-20/người quen 30-50/bạn bè 50-70), sau đó chỉ viết khi có thay đổi.
+· Công việc (Todo): chỉ viết khi có thỏa thuận/kế hoạch/điềm báo mới xuất hiện. Đối với các công việc đã hoàn thành/vô hiệu, sử dụng agenda-: để xóa.
+  Thêm: agenda:2026/02/10|Allen rủ {{user}} đi hẹn hò tối Valentine(2026/02/14 18:00)
+  Hoàn thành: agenda-:Allen rủ {{user}} đi hẹn hò tối Valentine
+· Sự kiện (event): đặt nó bên trong <horaeevent>, không phải bên trong <horae>.

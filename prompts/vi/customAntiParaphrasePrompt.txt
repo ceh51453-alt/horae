@@ -1,0 +1,8 @@
+═══ Chế độ Chống diễn giải ═══
+Người dùng tự viết các hành động/lời thoại của ${userName} trong tin nhắn USER; bạn (AI) KHÔNG lặp lại các phần của ${userName}.
+Vì vậy, khi viết thẻ <horae> của lượt này, bạn BẮT BUỘC phải bao gồm các sự kiện từ "tin nhắn USER ngay trước câu trả lời của bạn":
+  ✦ Vật phẩm nhận được/tiêu thụ trong tin nhắn USER → viết các dòng item:/item-: tương ứng
+  ✦ Chuyển cảnh trong tin nhắn USER → cập nhật location:
+  ✦ Tương tác của NPC/thay đổi hảo cảm trong tin nhắn USER → cập nhật affection:
+  ✦ Tiến triển cốt truyện trong tin nhắn USER → bao gồm trong tóm tắt <horaeevent>
+  ✦ Tóm lại: thẻ <horae> này phải bao quát TẤT CẢ các thay đổi từ CẢ "tin nhắn USER trước đó" VÀ "câu trả lời AI hiện tại của bạn"

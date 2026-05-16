@@ -525,7 +525,7 @@
         "anonymous": "Ẩn danh",
         "skillName": "Tên kỹ năng",
         "skillLevel": "Cấp (tùy chọn)",
-        "skillDesc": "Mô tả (tùy chọn)",
+        "skillDesc": "Mô tả hiệu ứng (tùy chọn)",
         "equipName": "Nhập tên trang bị",
         "equipAttrs": "Phòng thủ vật lý=10, Phòng thủ phép=5...",
         "currencyName": "Tên tiền tệ",
@@ -555,10 +555,7 @@
         "moodState": "Trạng thái tâm trạng",
         "affectionDelta": "±Thay đổi",
         "affectionTotal": "Tổng",
-        "agendaContentHint": "Nội dung lịch trình (dùng ngày tuyệt đối cho tính thời gian tương đối)",
-        "skillName": "Tên kỹ năng",
-        "skillLevel": "Cấp (tùy chọn)",
-        "skillDesc": "Mô tả hiệu ứng (tùy chọn)"
+        "agendaContentHint": "Nội dung lịch trình (dùng ngày tuyệt đối cho tính thời gian tương đối)"
     },
     "modal": {
         "compressTitle": "Chế độ nén",
@@ -738,7 +735,15 @@
         "lastYearMonth": "năm ngoái tháng {{month}}",
         "daysAgo": "{{n}} ngày trước",
         "monthsAgo": "{{n}} tháng trước",
-        "weekdays": ["CN", "T2", "T3", "T4", "T5", "T6", "T7"]
+        "weekdays": [
+            "CN",
+            "T2",
+            "T3",
+            "T4",
+            "T5",
+            "T6",
+            "T7"
+        ]
     },
     "rpgPrompts": {
         "plotTrajectory": "Quỹ đạo cốt truyện",
@@ -1019,5 +1024,665 @@
         "tailGuard": "Hộ đuôi",
         "wingGuard": "Hộ cánh",
         "backMount": "Giá lưng"
+    },
+    "equipmentTemplates": {
+        "forms": {
+            "default": "Mặc định",
+            "human": "Dạng Người",
+            "hybridFox": "Dạng Bán Hồ Ly",
+            "fox": "Dạng Hồ Ly",
+            "hybridBeast": "Dạng Bán Thú",
+            "animal": "Dạng Thú"
+        },
+        "slots": {
+            "head": {
+                "name": "Đầu"
+            },
+            "torso": {
+                "name": "Thân"
+            },
+            "hands": {
+                "name": "Tay"
+            },
+            "belt": {
+                "name": "Thắt lưng"
+            },
+            "legs": {
+                "name": "Chân"
+            },
+            "feet": {
+                "name": "Bàn chân"
+            },
+            "neck": {
+                "name": "Dây chuyền"
+            },
+            "amulet": {
+                "name": "Bùa hộ mệnh"
+            },
+            "ring": {
+                "name": "Nhẫn"
+            },
+            "tail": {
+                "name": "Đuôi",
+                "desc": "Trang bị hoặc đồ trang trí ở đuôi; không phù hợp cho các dạng không có đuôi"
+            },
+            "wings": {
+                "name": "Cánh",
+                "desc": "Bảo vệ cánh, đồ trang trí lông vũ hoặc công cụ hỗ trợ bay"
+            },
+            "collar": {
+                "name": "Vòng cổ"
+            },
+            "clawGuard": {
+                "name": "Bảo vệ móng vuốt"
+            },
+            "tailOrnament": {
+                "name": "Trang sức đuôi",
+                "desc": "Thường dùng một đồ trang sức cho mỗi đuôi có thể trang bị"
+            },
+            "serpentTailOrnament": {
+                "name": "Trang sức đuôi rắn",
+                "desc": "Bảo vệ đuôi rắn, vòng hoặc đồ trang bị phù hợp với đuôi rắn"
+            },
+            "barding": {
+                "name": "Giáp thú cưỡi"
+            },
+            "horseshoe": {
+                "name": "Móng ngựa"
+            },
+            "hornOrnament": {
+                "name": "Trang sức sừng"
+            }
+        },
+        "templates": {
+            "human": {
+                "name": "Người"
+            },
+            "orc": {
+                "name": "Orc / Thú nhân"
+            },
+            "pigman": {
+                "name": "Người lợn"
+            },
+            "winged": {
+                "name": "Người có cánh"
+            },
+            "centaur": {
+                "name": "Nhân mã"
+            },
+            "lamia": {
+                "name": "Lamia / Người rắn"
+            },
+            "demon": {
+                "name": "Ác quỷ"
+            },
+            "kitsune": {
+                "name": "Kitsune / Hồ ly tinh"
+            },
+            "shapeshifter": {
+                "name": "Yokai / Người biến hình"
+            },
+            "feathered_serpent": {
+                "name": "Rắn lông vũ"
+            }
+        }
+    },
+    "rpgDefaults": {
+        "bars": {
+            "hp": {
+                "name": "HP",
+                "desc": "Sinh lực; thay đổi do chấn thương, trúng độc, chữa trị và nghỉ ngơi"
+            },
+            "mp": {
+                "name": "MP",
+                "desc": "Năng lượng; thay đổi do dùng phép, tiêu hao năng lượng, thiền định hoặc dùng vật phẩm phục hồi"
+            },
+            "sp": {
+                "name": "SP",
+                "desc": "Thể lực; thay đổi do chạy bộ, né tránh, tấn công cận chiến, mệt mỏi và nghỉ ngơi"
+            }
+        },
+        "attributes": {
+            "str": {
+                "name": "Sức mạnh (STR)",
+                "desc": "Tấn công vật lý, sức mang vác và sát thương cận chiến"
+            },
+            "dex": {
+                "name": "Nhanh nhẹn (DEX)",
+                "desc": "Phản xạ, né tránh và độ chính xác tầm xa"
+            },
+            "con": {
+                "name": "Thể chất (CON)",
+                "desc": "Sinh lực, sức chịu đựng và khả năng kháng độc"
+            },
+            "int": {
+                "name": "Trí tuệ (INT)",
+                "desc": "Kiến thức, phép thuật và khả năng suy luận"
+            },
+            "wis": {
+                "name": "Thông thái (WIS)",
+                "desc": "Hiểu biết, trực giác và ý chí"
+            },
+            "cha": {
+                "name": "Sức hút (CHA)",
+                "desc": "Khả năng thuyết phục, lãnh đạo và sức hấp dẫn cá nhân"
+            }
+        }
+    },
+    "themes": {
+        "builtin": {
+            "sakura": "Hồng hoa anh đào",
+            "forest": "Xanh rừng cây",
+            "ocean": "Xanh đại dương"
+        },
+        "defaultExportName": "Chủ đề Horae của tôi"
+    },
+    "vectorKeywords": {
+        "intent": {
+            "first": [
+                "lần đầu tiên",
+                "lần đầu",
+                "ban đầu",
+                "mới đầu",
+                "lần đầu gặp",
+                "sớm nhất",
+                "từ đầu",
+                "lúc đầu",
+                "cuộc gặp đầu tiên"
+            ],
+            "last": [
+                "lần cuối",
+                "trước đó",
+                "trước kia",
+                "lần trước",
+                "mới nhất",
+                "gần đây nhất",
+                "lần gần nhất"
+            ]
+        },
+        "patterns": {
+            "costume": [
+                "mặc",
+                "đã mặc",
+                "đang mặc",
+                "diện",
+                "trang phục",
+                "quần áo",
+                "váy",
+                "quần",
+                "áo choàng",
+                "áo sơ mi",
+                "áo khoác",
+                "giày",
+                "y phục",
+                "đồng phục"
+            ],
+            "mood": [
+                "tức giận",
+                "cơn giận",
+                "điên tiết",
+                "phẫn nộ",
+                "vui vẻ",
+                "hạnh phúc",
+                "niềm vui",
+                "buồn",
+                "nỗi buồn",
+                "đang khóc",
+                "khóc",
+                "sợ hãi",
+                "lo sợ",
+                "nỗi sợ",
+                "nhút nhát",
+                "xấu hổ",
+                "tủi thẹn",
+                "tự hào",
+                "thỏa mãn",
+                "ghen tuông",
+                "lo âu",
+                "lo lắng",
+                "hào hứng",
+                "cảm động",
+                "dịu dàng",
+                "thờ ơ"
+            ],
+            "gift": [
+                "món quà",
+                "quà tặng",
+                "đã tặng quà",
+                "đã cho",
+                "vật đính ước",
+                "vật kỷ niệm",
+                "quà lưu niệm",
+                "đã nhận",
+                "trao lại",
+                "sính lễ",
+                "của hồi môn"
+            ],
+            "importantItem": [
+                "vật phẩm quan trọng",
+                "đồ vật quan trọng",
+                "thứ quan trọng",
+                "vật phẩm chính",
+                "bảo vật",
+                "quý giá",
+                "kho báu",
+                "thánh tích",
+                "vật thiêng",
+                "đồ thánh"
+            ],
+            "importantEvent": [
+                "sự kiện quan trọng",
+                "sự kiện chính",
+                "cột mốc",
+                "bước ngoặt",
+                "sự kiện lớn",
+                "khoảnh khắc quan trọng",
+                "trọng đại"
+            ],
+            "ceremony": [
+                "đám cưới",
+                "đám tang",
+                "buổi lễ",
+                "nghi thức",
+                "lễ kỷ niệm",
+                "lễ hội",
+                "nghi lễ",
+                "lễ đăng quang",
+                "lễ sắc phong",
+                "lễ tuyên thệ",
+                "lễ rửa tội",
+                "lễ trưởng thành",
+                "yến tiệc",
+                "vũ hội",
+                "lễ tưởng niệm"
+            ],
+            "promise": [
+                "lời hứa",
+                "lời thề",
+                "thề nguyền",
+                "tuyên thệ",
+                "thề",
+                "đã thề",
+                "giao ước",
+                "liên minh",
+                "hiệp ước",
+                "đã hứa"
+            ],
+            "loss": [
+                "cái chết",
+                "đã chết",
+                "qua đời",
+                "sự hy sinh",
+                "đã hy sinh",
+                "lời chia tay",
+                "chia tay",
+                "đánh mất",
+                "biến mất",
+                "ngã xuống",
+                "bị giết",
+                "tử trận",
+                "tạm biệt"
+            ],
+            "revelation": [
+                "bí mật",
+                "sự thật",
+                "bị lộ",
+                "tiết lộ",
+                "thú nhận",
+                "vạch trần",
+                "đã vạch trần",
+                "thân phận thật",
+                "danh tính thật",
+                "bị che giấu",
+                "lời nói dối",
+                "dối trá",
+                "lừa đảo",
+                "cải trang",
+                "kẻ mạo danh",
+                "tên thật",
+                "huyết thống",
+                "nguồn gốc"
+            ],
+            "power": [
+                "thức tỉnh",
+                "đã thức tỉnh",
+                "thăng cấp",
+                "đã thăng cấp",
+                "tiến hóa",
+                "đã tiến hóa",
+                "đột phá",
+                "suy giảm",
+                "mất sức mạnh",
+                "mở ấn",
+                "phong ấn",
+                "biến hình",
+                "đã biến hình",
+                "đột biến",
+                "đạt được sức mạnh",
+                "huyết mạch",
+                "kế thừa",
+                "huyết thống",
+                "thăng thiên"
+            ]
+        },
+        "categories": {
+            "medical": [
+                "băng bó",
+                "vết thương",
+                "chữa trị",
+                "điều trị",
+                "chữa lành",
+                "thuốc",
+                "bị thương",
+                "sơ cứu",
+                "cầm máu",
+                "khâu",
+                "mũi khâu",
+                "chất độc",
+                "thuốc giải độc",
+                "bất tỉnh",
+                "tỉnh dậy",
+                "bình phục"
+            ],
+            "combat": [
+                "đánh nhau",
+                "trận chiến",
+                "xung đột",
+                "tấn công",
+                "đòn đánh",
+                "đánh bại",
+                "tiêu diệt",
+                "đấu tay đôi",
+                "phục kích",
+                "vây hãm",
+                "phòng thủ",
+                "rút lui",
+                "bỏ chạy",
+                "truy đuổi",
+                "đụng độ"
+            ],
+            "cooking": [
+                "nấu",
+                "nấu ăn",
+                "luộc",
+                "chiên",
+                "nướng",
+                "cho ăn",
+                "ăn",
+                "bữa ăn",
+                "món ăn",
+                "nhà bếp",
+                "nguyên liệu",
+                "ẩm thực",
+                "bánh mì"
+            ],
+            "clothing": [
+                "thay đồ",
+                "cởi đồ",
+                "áo choàng",
+                "đồ lót",
+                "váy",
+                "áo sơ mi"
+            ],
+            "emotion_positive": [
+                "vui vẻ",
+                "niềm vui",
+                "vui mừng",
+                "hân hoan",
+                "hài lòng",
+                "thỏa mãn",
+                "cảm động",
+                "ấm áp",
+                "hạnh phúc"
+            ],
+            "emotion_negative": [
+                "tức giận",
+                "phẫn nộ",
+                "cơn giận",
+                "buồn",
+                "nỗi buồn",
+                "đang khóc",
+                "nước mắt",
+                "sợ hãi",
+                "nỗi sợ",
+                "xấu hổ",
+                "lo lắng",
+                "tủi thẹn",
+                "tội lỗi",
+                "tan vỡ"
+            ],
+            "movement": [
+                "kéo",
+                "mang",
+                "ôm",
+                "nâng",
+                "đẩy",
+                "lôi",
+                "đỡ",
+                "sắp xếp"
+            ],
+            "social": [
+                "thú nhận",
+                "xin lỗi",
+                "ôm",
+                "hôn",
+                "bắt tay",
+                "lần đầu gặp",
+                "đoàn tụ",
+                "cầu hôn",
+                "đính hôn",
+                "kết hôn"
+            ],
+            "gift": [
+                "món quà",
+                "quà tặng",
+                "vật đính ước",
+                "nhẫn",
+                "dây chuyền",
+                "vòng tay",
+                "bó hoa",
+                "socola",
+                "thẻ",
+                "quà lưu niệm",
+                "của hồi môn",
+                "sính lễ",
+                "huy hiệu",
+                "huy chương",
+                "đá quý"
+            ],
+            "ceremony": [
+                "đám cưới",
+                "đám tang",
+                "nghi thức",
+                "buổi lễ",
+                "lễ hội",
+                "nghi lễ",
+                "lễ đăng quang",
+                "lễ rửa tội",
+                "lễ tốt nghiệp",
+                "kỷ niệm",
+                "sinh nhật",
+                "yến tiệc",
+                "vũ hội"
+            ],
+            "revelation": [
+                "bí mật",
+                "sự thật",
+                "tiết lộ",
+                "thú nhận",
+                "vạch trần",
+                "khám phá",
+                "danh tính thật",
+                "che giấu",
+                "nói dối",
+                "lừa dối",
+                "cải trang",
+                "kẻ mạo danh",
+                "tên thật",
+                "huyết thống",
+                "nguồn gốc",
+                "gián điệp"
+            ],
+            "promise": [
+                "lời hứa",
+                "lời thề",
+                "thề nguyền",
+                "tuyên thệ",
+                "thề",
+                "giao ước",
+                "liên minh",
+                "hiệp ước",
+                "lòng trung thành",
+                "bảo vệ"
+            ],
+            "loss": [
+                "cái chết",
+                "chết",
+                "qua đời",
+                "sự hy sinh",
+                "lời chia tay",
+                "chia tay",
+                "đánh mất",
+                "biến mất",
+                "ngã xuống",
+                "gục ngã",
+                "tạm biệt"
+            ],
+            "power": [
+                "thức tỉnh",
+                "thăng cấp",
+                "tiến hóa",
+                "đột phá",
+                "mất sức mạnh",
+                "mở ấn",
+                "phong ấn",
+                "biến hình",
+                "đột biến",
+                "phép thuật",
+                "khả năng",
+                "tài năng",
+                "huyết mạch",
+                "kế thừa",
+                "huấn luyện",
+                "lĩnh hội"
+            ],
+            "intimate": [
+                "thân mật",
+                "dịu dàng",
+                "đam mê",
+                "mãnh liệt",
+                "làm tình",
+                "ôm ấp",
+                "ngủ chung",
+                "chạm da thịt",
+                "gần gũi",
+                "mơ hồ",
+                "trêu chọc",
+                "quyến rũ",
+                "tán tỉnh",
+                "khao khát",
+                "mong mỏi",
+                "dục vọng",
+                "rên rỉ",
+                "run rẩy",
+                "thở dốc",
+                "nỉ non",
+                "mất kiểm soát",
+                "đắm chìm"
+            ],
+            "body_contact": [
+                "vuốt ve",
+                "chạm",
+                "tiến lại gần",
+                "dựa vào",
+                "ôm",
+                "hôn",
+                "cắn",
+                "liếm",
+                "cọ xát",
+                "nhào nặn",
+                "ép",
+                "giữ",
+                "nắm tay",
+                "cầm tay",
+                "đan ngón tay",
+                "đỏ mặt",
+                "da thịt",
+                "xương quai xanh",
+                "cổ",
+                "tai",
+                "môi",
+                "bờ môi",
+                "eo",
+                "lưng",
+                "tóc"
+            ]
+        },
+        "moodWords": [
+            "tức giận",
+            "điên tiết",
+            "vui vẻ",
+            "hạnh phúc",
+            "buồn",
+            "nỗi buồn",
+            "đang khóc",
+            "sợ hãi",
+            "nỗi sợ",
+            "nhút nhát",
+            "xấu hổ",
+            "tự hào",
+            "thỏa mãn",
+            "ghen tuông",
+            "lo âu",
+            "lo lắng",
+            "hào hứng",
+            "cảm động",
+            "dịu dàng",
+            "thờ ơ"
+        ],
+        "giftKws": [
+            "món quà",
+            "quà tặng",
+            "đã tặng",
+            "cho",
+            "đã nhận",
+            "vật đính ước",
+            "quà lưu niệm",
+            "sính lễ",
+            "của hồi môn"
+        ],
+        "costumeFiller": [
+            "lần cuối",
+            "trước đó",
+            "trước kia",
+            "mặc",
+            "đã mặc",
+            "đang mặc",
+            "chiếc",
+            "một",
+            "kia",
+            "đó"
+        ],
+        "eventLevels": {
+            "important": [
+                "quan trọng",
+                "Quan trọng",
+                "Sự kiện quan trọng"
+            ],
+            "key": [
+                "chính",
+                "chủ chốt",
+                "Chính",
+                "Chủ chốt",
+                "Sự kiện chính",
+                "Sự kiện then chốt"
+            ]
+        }
+    },
+    "vectorRecall": {
+        "header": "[Trích xuất ký ức — các đoạn lịch sử liên quan đến cảnh hiện tại, chỉ dùng để tham khảo, không phải là một phần của bối cảnh hiện tại]",
+        "fullText": "[Trích xuất toàn văn]",
+        "scene": "Cảnh",
+        "npc": "NPC"
     }
 }

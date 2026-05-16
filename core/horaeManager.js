@@ -136,6 +136,7 @@ class HoraeManager {
         if (lang === 'ko') return '50-80자';
         if (lang === 'ja') return '40-70文字';
         if (lang === 'ru') return '80-150 символов';
+        if (lang === 'vi') return '80-150 ký tự';
         return '80-130 chars';
     }
 
@@ -148,6 +149,7 @@ class HoraeManager {
             'zh-CN': ['主角', '角色'], 'zh-TW': ['主角', '角色'],
             'ja': ['主人公', 'キャラ'], 'ko': ['주인공', '캐릭터'],
             'ru': ['протагонист', 'персонаж'],
+            'vi': ['nhân vật chính', 'nhân vật'],
         };
         const [du, dc] = defaults[lang] || ['protagonist', 'character'];
         return [userName || du, charName || dc];
@@ -4209,6 +4211,10 @@ class HoraeManager {
         }
         if (lang === 'ru') {
             return `Ваш ответ ДОЛЖЕН заканчиваться ${joined} (всего ${tags.length} тегов).\nОтсутствие любого тега = недопустимо.`;
+        }
+        if (lang === 'vi') {
+            const joinedVi = tags.join(' và ');
+            return `Câu trả lời của bạn PHẢI kết thúc bằng ${joinedVi} (tổng cộng ${tags.length} thẻ).\nThiếu bất kỳ thẻ nào = không đạt yêu cầu.`;
         }
         return `Your reply MUST end with ${joined} (${tags.length} tags total).\nMissing any tag = unacceptable.`;
     }

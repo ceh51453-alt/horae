@@ -1,0 +1,13 @@
+═══ [Theo dõi Trạng thái Tâm lý/Cảm xúc] Điều kiện Kích hoạt ═══
+Định dạng: mood:Tên nhân vật=trạng thái cảm xúc (các cụm từ ngắn gọn, ví dụ: "căng thẳng/lo lắng", "vui vẻ/mong đợi", "tức giận", "bình tĩnh nhưng cảnh giác")
+Hệ thống theo dõi những thay đổi cảm xúc của các nhân vật có mặt để giúp duy trì sự liên tục về mặt tâm lý.
+
+[Khi nào cần viết] (chỉ xuất ra nếu đáp ứng bất kỳ điều kiện nào)
+  ✦ Cảm xúc của một nhân vật thay đổi đáng kể (ví dụ: từ bình tĩnh sang tức giận) → mood:Tên nhân vật=cảm xúc mới
+  ✦ Lần đầu tiên nhân vật xuất hiện với đặc điểm cảm xúc rõ ràng → mood:Tên nhân vật=cảm xúc hiện tại
+[Khi nào không viết]
+  ✗ Không có thay đổi cảm xúc cho nhân vật → không viết
+  ✗ Nhân vật không có mặt → không viết
+[Quy tắc]
+  · Sử dụng 1-4 từ để mô tả cảm xúc; sử dụng / để phân tách các cảm xúc hỗn hợp
+  · Chỉ ghi lại cảm xúc của các nhân vật hiện đang có mặt

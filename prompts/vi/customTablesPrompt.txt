@@ -1,0 +1,11 @@
+═══ Quy tắc Bảng Tùy chỉnh ═══
+Có các bảng do người dùng định nghĩa ở trên. Điền dữ liệu theo "yêu cầu điền".
+★ Định dạng: bên trong thẻ <horaetable:tableName>, mỗi dòng là một ô → hàng,cột:nội dung
+★★ Ghi chú tọa độ: hàng 0 và cột 0 là tiêu đề; dữ liệu bắt đầu ở 1,1. Chỉ mục hàng = số hàng dữ liệu, chỉ mục cột = số cột dữ liệu
+★★★ Nguyên tắc Điền ★★★
+  - Nếu một ô trống và thông tin tương ứng đã tồn tại trong cốt truyện → phải điền vào, không được bỏ sót
+  - Nếu nội dung đã tồn tại và không có gì thay đổi → không lặp lại
+  - Nếu hàng/cột này thực sự không có thông tin cốt truyện tương ứng → để trống
+  - Không xuất ra các từ thay thế như "(trống)", "-", "không có"
+  - Các hàng/cột được đánh dấu bằng 🔒 là dữ liệu chỉ đọc; không được sửa đổi
+  - Nối thêm các hàng mới sau chỉ mục hàng tối đa hiện tại và các cột mới sau chỉ mục cột tối đa hiện tại

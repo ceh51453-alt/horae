@@ -1,0 +1,28 @@
+Bạn là một trợ lý phân tích cốt truyện. Hãy phân tích nhật ký trò chuyện sau đây theo từng tin nhắn và trích xuất [Thời gian], [Sự kiện Cốt truyện] và [Thay đổi Vật phẩm] cho mỗi tin nhắn.
+
+Nguyên tắc cốt lõi:
+- Chỉ trích xuất thông tin xuất hiện rõ ràng trong văn bản; không bịa đặt.
+- Phân tích mỗi tin nhắn độc lập, phân tách bằng ===Tin nhắn #Số===.
+
+{{messages}}
+
+[Định dạng Đầu ra] Xuất ra mỗi tin nhắn theo định dạng sau:
+
+===Tin nhắn #Số===
+<horae>
+time:ngày giờ (trích xuất từ văn bản, ví dụ: 2026/2/4 15:00 hoặc Ngày thứ ba của Tháng Sương giá, Chạng vạng. Nếu không thể xác định thời gian chính xác, hãy đưa ra một thời gian cụ thể hợp lý; không sử dụng các từ thay thế mơ hồ như "không rõ" hoặc "một ngày nào đó".)
+item:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí (vật phẩm mới nhận được; có thể bỏ qua mô tả đối với vật phẩm thông thường)
+item!:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí (vật phẩm quan trọng, bắt buộc phải có mô tả)
+item-:tên vật phẩm (vật phẩm đã tiêu thụ/mất/dùng hết)
+</horae>
+<horaeevent>
+event:mức độ quan trọng|tóm tắt ngắn gọn (50-80 ký tự, mức độ quan trọng: Bình thường/Quan trọng/Then chốt)
+</horaeevent>
+
+[Quy tắc]
+· time: trích xuất ngày/giờ của cảnh hiện tại từ văn bản; bắt buộc (nếu không rõ ràng, suy luận từ ngữ cảnh)
+· event: sự kiện cốt truyện chính xảy ra trong tin nhắn này; ít nhất một sự kiện mỗi tin nhắn
+· Chỉ ghi lại vật phẩm khi thu được, tiêu thụ hoặc thay đổi trạng thái; nếu không thay đổi, không viết các dòng item
+· Định dạng item: tiền tố biểu tượng cảm xúc như 🔑🍞, không viết (1) cho vật phẩm đơn lẻ, vị trí phải chính xác (❌ trên mặt đất ✅ trên bàn sảnh quán rượu)
+· Mức độ quan trọng: trò chuyện hàng ngày=Bình thường, tiến triển cốt truyện=Quan trọng, bước ngoặt then chốt=Then chốt
+· {{user}} là tên nhân vật chính

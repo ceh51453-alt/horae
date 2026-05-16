@@ -1,0 +1,23 @@
+=====[Nén cốt truyện toàn diện]=====
+Bạn là chuyên gia tổng hợp thông tin cốt truyện cấp cao. Hãy kết hợp các [Tóm tắt sự kiện hiện có] sau đây và chắt lọc chúng thành một bản tóm tắt cốt truyện toàn diện có mật độ thông tin cao (300-500 từ).
+
+[Tóm tắt sự kiện hiện có] (chỉ để tham khảo mạch truyện chính; nghiêm cấm sao chép hoặc chắp vá lười biếng):
+{{events}}
+
+[Chiến lược chắt lọc: Xương và Thịt (Cực kỳ quan trọng!)]
+- Xây dựng bộ xương: sử dụng dòng thời gian ngày-giờ và các cấp độ sự kiện trong "Tóm tắt sự kiện hiện có" làm khuôn khổ, đảm bảo sự tiến triển của mạch truyện chính và tính nhân quả không bao giờ bị đứt đoạn.
+- Đắp thịt: bạn phải đi sâu vào "Kỷ lục đối thoại đầy đủ", trích xuất các hành động cụ thể, ý chính của các lời thoại quan trọng, biểu cảm vi mô và sự thay đổi thái độ, sau đó "lấp đầy" những chi tiết này vào bộ xương.
+
+[Ranh giới đỏ tuyệt đối cho việc giữ lại chi tiết (Không được bỏ sót)]
+1. Neo mốc thời gian (then chốt): bạn phải giữ lại chính xác ngày/giờ của mọi sự kiện. Trong lời kể, sử dụng ngày tháng làm điểm neo ở đầu câu (❌ "Sau đó U đã gặp..." ✅ "Vào [ngày X tháng X năm X], U đã gặp..."). Nghiêm cấm sử dụng các thuật ngữ mơ hồ như "ngày hôm sau/ngay sau đó" để xóa ngày tháng thực.
+2. Cụ thể hóa các tương tác: nghiêm cấm sử dụng từ ngữ trừu tượng (❌ "Hai người đã có một cuộc trao đổi sâu sắc" ✅ "U thú nhận danh tính của mình với Allen; bị sốc, Allen nắm chặt tay U để báo hiệu một liên minh").
+3. Thông tin cốt lõi: các manh mối chính, thời gian và địa điểm chính xác của các thỏa thuận, và việc chuyển giao/tiêu thụ vật phẩm phải được trích xuất chính xác.
+4. Tâm lý và cảm xúc: bạn phải nêu chính xác những thay đổi thực chất trong thái độ của NPC đối với {{user}} (ví dụ: từ cảnh giác sang tin tưởng, nảy sinh tình cảm thầm kín, bề ngoài tuân theo nhưng ẩn chứa sát ý).
+
+[Yêu cầu đầu ra]
+- Kể lại nghiêm ngặt theo [dòng thời gian (trình tự thời gian)], tích hợp tất cả thông tin thành một dàn ý câu chuyện mạch lạc, phong phú.
+- Các ngày tháng cụ thể, tên, tên địa điểm, tên vật phẩm cụ thể và các giá trị số quan trọng phải giữ nguyên từ ngữ ban đầu.
+- Chỉ xuất văn bản thuần túy. Không có các ký hiệu Markdown trong phần thân (không có tiêu đề phụ, danh sách hoặc in đậm) và không có định dạng thừa. Ngoài các thẻ bọc bắt buộc ở đầu và cuối, không được xuất hiện thẻ XML nào khác trong phần thân.
+- {{user}} là tên của nhân vật chính.
+- Văn phong: lạnh lùng và khách quan, với dòng thời gian rõ ràng và thông tin được cô đọng cao.
+- [Quan trọng]: toàn bộ văn bản tóm tắt cuối cùng phải được bọc hoàn toàn bằng <horaesummary> ở đầu và </horaesummary> ở cuối.

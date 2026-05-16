@@ -1,0 +1,21 @@
+═══ [Mạng lưới Mối quan hệ] Điều kiện Kích hoạt ═══
+Định dạng: rel:Nhân vật A>Nhân vật B=loại mối quan hệ|ghi chú
+Hệ thống tự động ghi lại và hiển thị các mạng lưới mối quan hệ giữa các nhân vật và xuất ra các bản cập nhật khi mối quan hệ thay đổi.
+
+[Khi nào cần viết] (chỉ xuất ra nếu đáp ứng bất kỳ điều kiện nào)
+  ✦ Một mối quan hệ mới được thiết lập/xác định giữa hai nhân vật → rel:Nhân vật A>Nhân vật B=loại mối quan hệ
+  ✦ Một mối quan hệ hiện có thay đổi (ví dụ: từ đồng nghiệp thành bạn bè) → rel:Nhân vật A>Nhân vật B=loại mối quan hệ mới
+  ✦ Các chi tiết quan trọng về mối quan hệ cần được chú thích → thêm |ghi chú
+[Khi nào không viết]
+  ✗ Mối quan hệ không thay đổi → không viết
+  ✗ Mối quan hệ đã được ghi lại và không được cập nhật → không viết
+
+[Quy tắc]
+  · Nhân vật A và Nhân vật B đều phải sử dụng tên đầy đủ chính xác
+  · Sử dụng các từ ngắn gọn cho loại mối quan hệ: bạn bè, người yêu, cấp trên-cấp dưới, sư phụ-đệ tử, kẻ thù, đối tác, v.v.
+  · Trường ghi chú là tùy chọn, dành cho các chi tiết đặc biệt của mối quan hệ
+  · Các mối quan hệ liên quan đến ${userName} cũng phải được ghi lại
+  Ví dụ:
+    rel:${userName}>Vol=việc làm|${userName} điều hành quán rượu, Vol là khách quen
+    rel:Vol>Eira=cảm nắng|Vol có tình cảm với Eira nhưng chưa tỏ tình
+    rel:${userName}>Eira=bạn thân

@@ -1,0 +1,153 @@
+[Hệ thống Ký ức Horae] (Các ví dụ dưới đây chỉ mang tính minh họa. Không sử dụng trực tiếp các câu ví dụ ban đầu vào văn bản chính!)
+
+═══ Nguyên tắc Cốt lõi: Dựa trên Thay đổi ═══
+★★★ Trước khi viết thẻ <horae>, trước tiên hãy xác định thông tin nào đã thay đổi đáng kể trong lượt này ★★★
+  ① Cơ bản về bối cảnh (thời gian/địa điểm/nhân vật/trang phục) → bắt buộc mỗi lượt
+  ② Tất cả các trường khác → tuân thủ nghiêm ngặt [Điều kiện Kích hoạt] của từng trường; nếu không thay đổi, tuyệt đối không viết dòng đó
+  ③ Nếu dữ liệu NPC/vật phẩm đã được ghi lại không có thông tin mới → nghiêm cấm xuất ra! Lặp lại dữ liệu không thay đổi = lãng phí token
+  ④ Nếu chỉ một số trường thay đổi → sử dụng cập nhật tăng dần và chỉ viết các phần đã thay đổi
+  ⑤ Lần đầu tiên NPC xuất hiện → phải viết cả hai dòng npc: và affection:!
+
+═══ Định dạng Thẻ ═══
+Ở cuối mỗi câu trả lời, bạn phải viết hai thẻ:
+<horae>
+time:ngày giờ (bắt buộc)
+location:vị trí (bắt buộc. Sử dụng · cho các vị trí nhiều cấp độ, ví dụ: "Quán rượu·Sảnh", "Cung điện·Phòng ngai vàng". Cùng một vị trí phải luôn sử dụng tên chính xác giống hệt nhau.)
+atmosphere:bầu không khí${sceneDescLine}
+characters:các nhân vật có mặt, phân tách bằng dấu phẩy (bắt buộc)
+costume:tên nhân vật=mô tả trang phục (bắt buộc, mỗi nhân vật một dòng; nghiêm cấm gộp bằng dấu chấm phẩy)
+item/item!/item!!:xem quy tắc vật phẩm (chỉ viết khi được kích hoạt)
+item-:tên vật phẩm (xóa khi vật phẩm bị tiêu thụ/mất. Xem quy tắc vật phẩm. Chỉ viết khi được kích hoạt)
+affection:tên nhân vật=mức độ hảo cảm (★ Lần đầu NPC xuất hiện phải bao gồm giá trị ban đầu! Sau đó chỉ cập nhật khi hảo cảm thay đổi)
+npc:tên nhân vật|ngoại hình=tính cách@mối quan hệ~các trường mở rộng (★ Lần đầu NPC xuất hiện phải bao gồm thông tin đầy đủ! Sau đó chỉ cập nhật khi thay đổi)
+agenda:ngày|nội dung (chỉ viết khi công việc mới được kích hoạt)
+agenda-:từ khóa nội dung (chỉ viết khi công việc hoàn thành/vô hiệu; hệ thống tự động xóa các công việc khớp)${relLine}${moodLine}
+</horae>
+<horaeevent>
+event:mức độ quan trọng|tóm tắt ngắn gọn (80-130 ký tự, mức độ quan trọng: Bình thường/Quan trọng/Then chốt, tóm tắt các sự kiện trong tin nhắn này để theo dõi cốt truyện)
+</horaeevent>
+
+═══ [Vật phẩm] Điều kiện Kích hoạt và Quy tắc ═══
+Tham khảo ID (#ID) trong [Danh sách Vật phẩm] và quyết định nghiêm ngặt xem có xuất ra dựa trên các điều kiện dưới đây hay không.
+
+[Khi nào cần viết] (xuất ra nếu đáp ứng bất kỳ điều kiện nào)
+  ✦ Nhận được vật phẩm mới → item:/item!:/item!!:
+  ✦ Vật phẩm hiện có bị thay đổi số lượng/quyền sở hữu/vị trí/thuộc tính → item: (chỉ viết các phần thay đổi)
+  ✦ Vật phẩm bị tiêu thụ/mất/dùng hết → item-:tên vật phẩm
+[Khi nào không viết]
+  ✗ Vật phẩm không có thay đổi nào → không xuất ra bất kỳ dòng item nào
+  ✗ Vật phẩm chỉ được nhắc đến nhưng trạng thái không thay đổi → không viết
+
+[Định dạng]
+  Mới nhận được: item:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí chính xác (mô tả có thể được bỏ qua. Nhưng nếu vật phẩm có ý nghĩa đặc biệt, chẳng hạn như quà tặng hoặc kỷ vật, hãy thêm mô tả.)
+  Mới nhận được (quan trọng): item!:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí chính xác (vật phẩm quan trọng; bắt buộc phải có mô tả: ngoại hình + chức năng + nguồn gốc)
+  Mới nhận được (then chốt): item!!:biểu tượng cảm xúc tên vật phẩm(số lượng)|mô tả=người giữ@vị trí chính xác (vật phẩm then chốt; mô tả phải chi tiết)
+  Vật phẩm hiện có thay đổi: item:biểu tượng cảm xúc tên vật phẩm(số lượng mới)=người giữ mới@vị trí mới (chỉ cập nhật các phần thay đổi; nếu bỏ qua "|", mô tả ban đầu sẽ được giữ lại)
+  Bị tiêu thụ/mất: item-:tên vật phẩm
+
+[Quy tắc cấp Trường]
+  · Mô tả: ghi lại các thuộc tính cốt lõi của vật phẩm (ngoại hình/chức năng/nguồn gốc). Có thể bỏ qua đối với các vật phẩm thông thường; bắt buộc ở lần nhập đầu tiên đối với vật phẩm quan trọng/then chốt
+    ★ Đặc điểm ngoại hình (màu sắc, chất liệu, kích thước, v.v., để nhất quán sau này)
+    ★ Chức năng/công dụng
+    ★ Nguồn gốc (ai tặng/làm thế nào nhận được)
+       - Ví dụ (nếu các ví dụ xuất hiện bên dưới, chúng chỉ mang tính minh họa; không sử dụng trực tiếp các câu ví dụ ban đầu vào văn bản chính):
+         - Ví dụ 1: item!:🌹Bó hồng Vĩnh cửu|những bông hồng bảo quản màu đỏ thẫm được buộc bằng dải ruy băng đen, quà Valentine C tặng U=U@trên bàn phòng của U
+         - Ví dụ 2: item!:🎫Phiếu Rút Mười May Mắn|một vé giấy phát sáng màu vàng, phúc lợi cho người mới để rút mười lần trong vòng quay giải thưởng của hệ thống=U@nhẫn không gian
+         - Ví dụ 3: item!!:🏧Máy Đổi Tiền Tự Động Xuyên Không Gian|trông giống một máy ATM nhỏ và có thể đổi các loại tiền tệ giữa các chiều không gian theo tỷ giá thực=U@quầy bar quán rượu
+  · Số lượng: không viết (1)/(1 cái)/(1 thanh kiếm), v.v. Chỉ viết dấu ngoặc đơn khi có đơn vị đo lường, ví dụ: (5 cân)(1L)(1 hộp)
+  · Vị trí: phải là một vị trí cố định chính xác
+    ❌ trước mặt ai đó trên mặt đất, dưới chân ai đó, bên cạnh ai đó, sàn nhà, trên bàn
+    ✅ trên sàn sảnh quán rượu, trên quầy bar nhà hàng, bếp nhà, trong ba lô, trên bàn phòng của U
+  · Không tính đồ nội thất cố định hoặc cơ sở vật chất của tòa nhà là vật phẩm
+  · Mượn tạm thời ≠ chuyển giao quyền sở hữu
+
+
+Ví dụ (Vòng đời của Bia Ale):
+  Nhận được: item:🍺Bia Ale Ủ Lâu Năm(50L)|bia ale tìm thấy trong phòng kho, có vị chua=U@tủ nguyên liệu bếp sau quán rượu
+  Thay đổi số lượng: item:🍺Bia Ale Ủ Lâu Năm(25L)=U@tủ nguyên liệu bếp sau quán rượu
+  Dùng hết: item-:Bia Ale Ủ Lâu Năm
+
+═══ [NPC] Điều kiện Kích hoạt và Quy tắc ═══
+Định dạng: npc:tên|ngoại hình=tính cách@mối quan hệ với {{user}}~gender:giá trị~age:giá trị~race:giá trị~occupation:giá trị~birthday:giá trị
+Dấu phân cách: | phân tách tên, = phân tách ngoại hình và tính cách, @ phân tách mối quan hệ, ~ phân tách các trường mở rộng (khóa:giá trị)
+
+[Khi nào cần viết] (xuất ra dòng npc: của NPC này nếu đáp ứng bất kỳ điều kiện nào)
+  ✦ Lần xuất hiện đầu tiên → định dạng đầy đủ, tất cả các trường + tất cả các trường ~mở rộng (gender/age/race/occupation), không được thiếu trường nào
+  ✦ Thay đổi ngoại hình vĩnh viễn (ví dụ: vết sẹo do chấn thương, thay đổi kiểu tóc, thay đổi trang phục) → chỉ viết trường ngoại hình
+  ✦ Thay đổi tính cách (ví dụ: tính cách thay đổi sau một sự kiện lớn) → chỉ viết trường tính cách
+  ✦ Mối quan hệ với {{user}} thay đổi (ví dụ: từ khách hàng thành bạn bè) → chỉ viết trường mối quan hệ
+  ✦ Nhận được thông tin mới về NPC này (chiều cao/cân nặng chưa biết trước đó, v.v.) → nối thêm vào trường tương ứng
+  ✦ Bản thân trường ~mở rộng bị thay đổi (ví dụ: nghề nghiệp bị thay đổi) → chỉ viết trường ~mở rộng bị thay đổi
+[Khi nào không viết]
+  ✗ NPC có mặt nhưng không có thông tin mới → không viết dòng npc:
+  ✗ NPC rời đi tạm thời và quay lại với thông tin không thay đổi → không viết lại
+  ✗ Nghiêm cấm viết lại mô tả hiện có bằng các từ đồng nghĩa/viết tắt!
+    ❌ "cơ bắp/đầy sẹo chiến đấu" → "cơ bắp cường tráng/vết sẹo" (thay đổi từ ngữ ≠ cập nhật)
+    ✅ "cơ bắp/đầy sẹo chiến đấu/bị thương nặng" → "cơ bắp/đầy sẹo chiến đấu" (vết thương đã lành; trạng thái lỗi thời bị xóa)
+
+[Ví dụ Cập nhật Tăng dần] (sử dụng NPC Vol làm ví dụ)
+  Lần đầu: npc:Vol|lông xám bạc/mắt xanh lá/cao 220cm/đầy sẹo chiến đấu=lính đánh thuê mặc giáp nặng ít nói@khách hàng đầu tiên của {{user}}~gender:nam~age:khoảng 35~race:người thú sói~occupation:lính đánh thuê
+  Chỉ Mối quan hệ: npc:Vol|=@bạn trai của {{user}}
+  Chỉ nối thêm Ngoại hình: npc:Vol|lông xám bạc/mắt xanh lá/cao 220cm/đầy sẹo chiến đấu/băng bó tay trái
+  Chỉ Tính cách: npc:Vol|=không còn im lặng/thỉnh thoảng mỉm cười
+  Chỉ Nghề nghiệp: npc:Vol|~occupation:lính đánh thuê đã nghỉ hưu
+(Lưu ý: tuyệt đối không được viết các trường không thay đổi và các trường ~mở rộng không thay đổi! Hệ thống tự động giữ lại dữ liệu gốc!)
+
+[Trường Sinh nhật (Trường Mở rộng Tùy chọn)]
+  Định dạng: ~birthday:yyyy/mm/dd hoặc ~birthday:mm/dd (nếu không biết năm, chỉ viết tháng/ngày)
+  ⚠ Chỉ viết khi sinh nhật được nêu rõ ràng trong cài đặt/mô tả nhân vật. Nghiêm cấm đoán hoặc bịa đặt.
+  ⚠ Nếu không có nguồn rõ ràng, hoàn toàn không viết trường này. Để trống cho người dùng tự nhập.
+
+[Quy tắc Mô tả Mối quan hệ]
+  Phải bao gồm tên mục tiêu chính xác: ❌ khách hàng ✅ vị khách mới của {{user}} / ❌ chủ nợ ✅ người giữ giấy ghi nợ của {{user}} / ❌ chủ nhà ✅ chủ nhà của {{user}} / ❌ bạn trai ✅ bạn trai của {{user}} / ❌ ân nhân ✅ người đã cứu mạng {{user}} / ❌ kẻ bắt nạt ✅ người bắt nạt {{user}} / ❌ người yêu thầm ✅ người yêu thầm {{user}} / ❌ kẻ thù ✅ người mà cha ruột đã bị {{user}} giết
+  Đối với các mối quan hệ phụ thuộc, bao gồm tên của NPC chủ sở hữu: ✅ chó săn của Ivan; thú cưng của vị khách của {{user}} / bạn gái của Ivan; vị khách của {{user}} / bạn thân của {{user}}; vợ của Ivan / cha dượng của {{user}}; cha của Ivan / người tình của {{user}}; em trai của Ivan / bạn thân của {{user}}; tình nhân của chồng {{user}}; người thứ ba xen vào cuộc hôn nhân của {{user}} và Ivan
+
+═══ [Độ hảo cảm] Điều kiện Kích hoạt ═══
+Chỉ ghi lại độ hảo cảm của NPC đối với {{user}} (không ghi lại bản thân {{user}}). Mỗi nhân vật một dòng; không nối thêm ghi chú sau các giá trị số.
+
+[Khi nào cần viết]
+  ✦ Lần đầu tiên NPC xuất hiện → gán giá trị ban đầu theo mối quan hệ (người lạ 0-20/người quen 30-50/bạn bè 50-70/người yêu 70-90)
+  ✦ Tương tác gây ra thay đổi đáng kể về độ hảo cảm → affection:tên=tổng giá trị mới
+[Khi nào không viết]
+  ✗ Độ hảo cảm không thay đổi → không viết
+
+═══ [Công việc cần làm (To-Do)] Điều kiện Kích hoạt ═══
+[Khi nào cần viết (mới)]
+  ✦ Thỏa thuận/kế hoạch/hành trình/nhiệm vụ/điềm báo mới xuất hiện trong cốt truyện → agenda:ngày|nội dung
+  Định dạng: agenda:ngày thiết lập|nội dung (thời gian tương đối phải bao gồm ngày tuyệt đối trong ngoặc đơn)
+  Ví dụ: agenda:2026/02/10|Allen rủ {{user}} đi hẹn hò tối Valentine(2026/02/14 18:00)
+[Khi nào cần viết (hoàn thành xóa bỏ) — cực kỳ quan trọng!]
+  ✦ Công việc hoàn thành/hết hạn/bị hủy → phải đánh dấu việc xóa bỏ bằng agenda-:
+  Định dạng: agenda-:nội dung công việc (chỉ cần viết từ khóa nội dung là đủ để tự động xóa)
+  Ví dụ: agenda-:Allen rủ {{user}} đi hẹn hò tối Valentine
+  ⚠ Không sử dụng agenda:nội dung(đã hoàn thành)! Phải sử dụng tiền tố agenda-:.
+  ⚠ Không sao chép lặp lại nội dung công việc đã tồn tại.
+[Khi nào không viết]
+  ✗ Các công việc hiện tại không thay đổi → không lặp lại các công việc hiện tại mỗi lượt
+  ✗ Công việc đã hoàn thành → không đánh dấu hoàn thành bằng agenda: cộng với ngoặc đơn; phải sử dụng agenda-:
+
+═══ Quy tắc Định dạng Thời gian ═══
+Không sử dụng các định dạng mơ hồ như "Ngày 1" / "Ngày X". Bạn phải sử dụng ngày theo lịch cụ thể.
+- Hiện đại: năm/tháng/ngày giờ:phút (ví dụ: 2026/2/4 15:00)
+- Lịch sử: định dạng ngày của thời đại đó (ví dụ: 1920/3/15 14:00)
+- Giả tưởng/thế giới khác: lịch trong thế giới (ví dụ: Ngày thứ ba của Tháng Sương giá, Chạng vạng)
+- Nếu không thể xác định thời gian chính xác, hãy đưa ra một thời gian cụ thể hợp lý; không sử dụng các từ thay thế mơ hồ như "không rõ" hoặc "một ngày nào đó".
+
+${systemPromptAddition}
+═══ Nhắc nhở Bắt buộc Cuối cùng ═══
+Câu trả lời của bạn phải kết thúc bằng cả hai thẻ <horae>...</horae> và <horaeevent>...</horaeevent>.
+Thiếu một trong hai thẻ = không hợp lệ.
+
+[Các trường Bắt buộc Mỗi Lượt — thiếu bất kỳ trường nào = không hợp lệ!]
+  ✅ time: ← ngày và giờ hiện tại
+  ✅ location: ← vị trí hiện tại
+  ✅ atmosphere: ← bầu không khí
+  ✅ characters: ← tất cả tên các nhân vật hiện đang có mặt, phân tách bằng dấu phẩy (không được bỏ qua)
+  ✅ costume: ← một dòng mô tả trang phục cho mỗi nhân vật có mặt
+  ✅ event: ← mức độ quan trọng|tóm tắt sự kiện
+
+[Bắt buộc Bổ sung ở Lần đầu NPC Xuất hiện — tất cả đều bắt buộc!]
+  ✅ npc:tên|ngoại hình=tính cách@mối quan hệ~gender:giá trị~age:giá trị~race:giá trị~occupation:giá trị~birthday:giá trị (chỉ viết sinh nhật nếu đã biết; không viết nếu không biết)
+  ✅ affection:tên NPC này=độ hảo cảm ban đầu (người lạ 0-20/người quen 30-50/bạn bè 50-70/người yêu 70-90)
+
+Không có khái niệm "tùy chọn viết hay không" đối với các trường trên; chúng là bắt buộc.

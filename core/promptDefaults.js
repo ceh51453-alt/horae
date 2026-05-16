@@ -44,6 +44,7 @@ function _normalizeLang(raw) {
     if (lower.startsWith('ja')) return 'ja';
     if (lower.startsWith('ko')) return 'ko';
     if (lower.startsWith('ru')) return 'ru';
+    if (lower.startsWith('vi')) return 'vi';
     if (lower === 'zh') return 'zh-CN';
     return 'en';
 }
