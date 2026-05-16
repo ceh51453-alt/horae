@@ -3,38 +3,26 @@
  * 基于时间锚点的AI记忆增强系统
  * 
  * 作者: SenriYuki
- * 版本: 1.11.13
+ * 版本: 1.14.0
  */
 
 import { renderExtensionTemplateAsync, getContext, extension_settings } from '/scripts/extensions.js';
-import { getSlideToggleOptions, saveSettingsDebounced, eventSource, event_types } from '/script.js';
+import { getSlideToggleOptions, saveSettingsDebounced, eventSource, event_types, doNewChat } from '/script.js';
 import { slideToggle } from '/lib.js';
 
 import { horaeManager, createEmptyMeta, getItemBaseName } from './core/horaeManager.js';
 import { vectorManager } from './core/vectorManager.js';
 import { calculateRelativeTime, calculateDetailedRelativeTime, formatRelativeTime, generateTimeReference, getCurrentSystemTime, formatStoryDate, formatFullDateTime, parseStoryDate } from './utils/timeUtils.js';
-import { t, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './core/i18n.js';
+import { t, tForLang, initI18n, getLanguage, isZhLocale, setLanguage, detectEffectiveAiLangIsZh, detectEffectiveAiLang } from './core/i18n.js';
+import { initPromptDefaults, ensurePromptDefaults, ensurePresetPrompts, getPromptDefaultSync, getPresetPromptsSync, BUILTIN_PRESET_IDS } from './core/promptDefaults.js';
 
 // ============================================
 // 常量定义
 // ============================================
 const EXTENSION_NAME = 'horae';
-
-// Dynamically determine the extension folder name regardless of what the user named it
-let extFolder = 'SillyTavern-Horae';
-try {
-    const url = new URL(import.meta.url);
-    const parts = url.pathname.split('/').filter(Boolean);
-    if (parts.length >= 2) {
-        extFolder = parts[parts.length - 2];
-    }
-} catch (e) {
-    console.warn('[Horae] Could not dynamically get extension folder, falling back to default', e);
-}
-
-const EXTENSION_FOLDER = `third-party/${extFolder}`;
+const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
-const VERSION = '1.11.13';
+const VERSION = '1.14.0';
 
 // 配套正则规则（自动注入ST原生正则系统）
 const HORAE_REGEX_RULES = [
@@ -128,16 +116,20 @@ const DEFAULT_SETTINGS = {
     aiOutputLanguage: 'auto',
     enabled: true,
     autoParse: true,
+    autoFillPrevTimelineOnSend: false, // 发送前自动补全上一条AI消息的时间线（默认关闭，避免静默误写历史）
     injectContext: true,
+    useMainPresetForAiTasks: false, // AI分析/批量扫描/手动压缩是否使用酒馆主预设（generate）
     showMessagePanel: true,
-    contextDepth: 15,
-    injectionPosition: 1,
+    injectionDepthSource: 'system', // 注入深度来源: system(原逻辑) / preset(按完整提示词末尾偏移)
+    injectionPosition: 0,
+    timelineInjectionMode: 'inline', // inline(原逻辑合并注入) / separate(剧情轨迹独立前置)
     lastStoryDate: '',
     lastStoryTime: '',
     favoriteNpcs: [],  // 用户标记的星标NPC列表
     pinnedNpcs: [],    // 用户手动标记的重要角色列表（特殊边框）
     // 发送给AI的内容控制
     sendTimeline: true,    // 发送剧情轨迹（关闭则无法计算相对时间）
+    contextDepth: 15,      // 一般级别剧情轨迹数量
     sendCharacters: true,  // 发送角色信息（服装、好感度）
     sendItems: true,       // 发送物品栏
     customTables: [],      // 自定义表格 [{id, name, rows, cols, data, prompt}]
@@ -146,6 +138,7 @@ const DEFAULT_SETTINGS = {
     customAnalysisPrompt: '',    // 自定义AI分析提示词（空=使用默认）
     customCompressPrompt: '',    // 自定义剧情压缩提示词（空=使用默认）
     customAutoSummaryPrompt: '', // 自定义自动摘要提示词（空=使用默认；独立于手动压缩）
+    customAutoResummaryPrompt: '', // 自定义二次总结提示词（空=使用默认）
     aiScanIncludeNpc: false,     // AI摘要是否提取NPC
     aiScanIncludeAffection: false, // AI摘要是否提取好感度
     aiScanIncludeScene: false,    // AI摘要是否提取场景记忆
@@ -165,20 +158,33 @@ const DEFAULT_SETTINGS = {
     customRelationshipPrompt: '',  // 自定义关系网络提示词（空=使用默认）
     customMoodPrompt: '',          // 自定义情绪追踪提示词（空=使用默认）
     // 自动摘要
-    autoSummaryEnabled: false,      // 自动摘要开关
-    autoSummaryKeepRecent: 10,      // 保留最近N条消息不压缩
-    autoSummaryBufferMode: 'messages', // 'messages' | 'tokens'
-    autoSummaryBufferLimit: 20,     // 缓冲阈值（楼层数或Token数）
+    autoSummaryEnabled: false,     // 自动摘要开关
+    autoSummaryKeepRecent: 5,      // 保留最近N条AI消息不压缩（中间用户消息会随全文一起发送）
+    autoSummarySourceMode: 'fulltext', // 'fulltext'(全文+时间线) | 'events'(仅时间线事件)
+    autoSummaryBufferMode: 'messages', // 'messages'(按AI条数) | 'tokens'
+    autoSummaryBufferLimit: 10,     // 旧版缓冲阈值（迁移用）
+    autoSummaryBufferMsgLimit: 10,  // 按AI条数触发的阈值
+    autoSummaryBufferTokenLimit: 30000, // 按Token数触发的阈值
+    autoSummaryResummaryThreshold: 7, // <=0 关闭二次总结；>0 时同层摘要达到此值触发更高层摘要（2->3->4...）
     autoSummaryBatchMaxMsgs: 50,    // 单次摘要最大消息条数
     autoSummaryBatchMaxTokens: 80000, // 单次摘要最大Token数
     autoSummaryUseCustomApi: false, // 是否使用独立API端点
     autoSummaryApiUrl: '',          // 独立API端点地址（OpenAI兼容）
     autoSummaryApiKey: '',          // 独立API密钥
     autoSummaryModel: '',           // 独立API模型名称
+    auxApiEnabled: false,            // 辅助API总开关
+    auxApiUrl: '',                   // 辅助API端点地址
+    auxApiKey: '',                   // 辅助API密钥
+    auxApiModel: '',                 // 辅助API模型名称
+    auxApiUseForAnalysis: true,      // AI分析/魔术棒/发送前补全
+    auxApiUseForSummary: true,       // 自动总结/AI智能补全
+    auxApiUseForManualCompress: false, // 手动多选压缩
+    auxApiFallbackToMain: false,     // 辅助API失败后回退主API
     antiParaphraseMode: false,      // 反转述模式：AI回复时结算上一条USER的内容
     sideplayMode: false,            // 番外/小剧场模式：启用后可标记消息跳过Horae
     // RPG 模式
     rpgMode: false,                 // RPG 模式总开关
+    rpgStrictPresentOnly: false,     // 无在场角色时不发送RPG数据
     sendRpgBars: true,              // 发送属性条（HP/MP/SP/状态）
     rpgBarsUserOnly: false,         // 属性条仅限主角
     sendRpgSkills: true,            // 发送技能列表
@@ -195,55 +201,12 @@ const DEFAULT_SETTINGS = {
     rpgCurrencyUserOnly: false,     // 货币仅限主角
     rpgUserOnly: false,             // RPG全局仅限主角（总开关，联动所有子模块）
     sendRpgStronghold: false,       // 发送据点/基地系统
-    rpgBarConfig: [
-        { key: 'hp', name: 'HP', color: '#22c55e' },
-        { key: 'mp', name: 'MP', color: '#6366f1' },
-        { key: 'sp', name: 'SP', color: '#f59e0b' },
-    ],
-    rpgAttributeConfig: [
-        { key: 'str', name: '力量', desc: '物理攻击、负重与近战伤害' },
-        { key: 'dex', name: '敏捷', desc: '反射、闪避与远程精准' },
-        { key: 'con', name: '体质', desc: '生命力、耐久与抗毒' },
-        { key: 'int', name: '智力', desc: '学识、魔法与推理能力' },
-        { key: 'wis', name: '感知', desc: '洞察、直觉与意志力' },
-        { key: 'cha', name: '魅力', desc: '说服、领导与人格魅力' },
-    ],
+    rpgBarConfig: [],
+    rpgAttributeConfig: [],
     rpgAttrViewMode: 'radar',       // 'radar' 或 'text'
     customRpgPrompt: '',            // 自定义RPG提示词（空=默认）
     promptPresets: [],              // 提示词预设存档 [{name, prompts:{system,batch,...}}]
-    equipmentTemplates: [           // 装备格位模板
-        { name: '人类', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-            { name: '项链', maxCount: 1 }, { name: '护身符', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '兽人', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-            { name: '尾部', maxCount: 1 }, { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '翼族', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 }, { name: '足部', maxCount: 1 },
-            { name: '翅膀', maxCount: 1 }, { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '人马', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '马甲', maxCount: 1 }, { name: '马蹄铁', maxCount: 4 },
-            { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '拉弥亚', slots: [
-            { name: '头部', maxCount: 1 }, { name: '躯干', maxCount: 1 }, { name: '手部', maxCount: 1 },
-            { name: '腰带', maxCount: 1 }, { name: '蛇尾饰', maxCount: 1 },
-            { name: '项链', maxCount: 1 }, { name: '护身符', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-        { name: '恶魔', slots: [
-            { name: '头部', maxCount: 1 }, { name: '角饰', maxCount: 1 }, { name: '躯干', maxCount: 1 },
-            { name: '手部', maxCount: 1 }, { name: '腰带', maxCount: 1 }, { name: '下身', maxCount: 1 },
-            { name: '足部', maxCount: 1 }, { name: '翅膀', maxCount: 1 }, { name: '尾部', maxCount: 1 },
-            { name: '项链', maxCount: 1 }, { name: '戒指', maxCount: 2 },
-        ]},
-    ],
+    equipmentTemplates: [],          // 装备格位模板（i18n 初始化后生成）
     rpgDiceEnabled: false,          // RPG骰子面板
     dicePosX: null,                 // 骰子面板拖拽位置X（null=默认右下角）
     dicePosY: null,                 // 骰子面板拖拽位置Y
@@ -263,6 +226,12 @@ const DEFAULT_SETTINGS = {
     vectorRerankModel: '',             // Rerank 模型名称
     vectorRerankUrl: '',               // Rerank API 地址（留空则复用 embedding 地址）
     vectorRerankKey: '',               // Rerank API 密钥（留空则复用 embedding 密钥）
+    vectorRerankCandidates: 25,        // Rerank 候选条数（embedding 召回上限）
+    vectorRerankRecallThreshold: 0.3,  // Rerank 路径的 embedding 召回阈值
+    vectorRerankMinScore: 0.5,         // Rerank 最低分；低于此分丢弃
+    vectorDebugLog: false,             // 向量召回详细调试日志（默认关闭，开启后输出阈值/频率/去重等明细）
+    vectorRecallPresets: [],           // 用户自定义召回参数预设
+    vectorRecallPresetSelected: 'builtin:small',
     vectorTopK: 5,
     vectorThreshold: 0.72,
     vectorFullTextCount: 3,
@@ -270,18 +239,37 @@ const DEFAULT_SETTINGS = {
     vectorStripTags: '',
 };
 
+const PROMPT_SETTING_KEYS = [
+    'customSystemPrompt',
+    'customBatchPrompt',
+    'customAnalysisPrompt',
+    'customCompressPrompt',
+    'customAutoSummaryPrompt',
+    'customAutoResummaryPrompt',
+    'customTablesPrompt',
+    'customLocationPrompt',
+    'customRelationshipPrompt',
+    'customMoodPrompt',
+    'customRpgPrompt',
+];
+
 // ============================================
 // 全局变量
 // ============================================
 let settings = { ...DEFAULT_SETTINGS };
 let doNavbarIconClick = null;
 let isInitialized = false;
+let _i18nReady = false;
 let _isSummaryGeneration = false;
 let _summaryInProgress = false;
+let _panelAiAnalyzeInProgress = false;
 let _chatFullyLoaded = false;
+let _portsReady = false;
+let _autoSummaryRanThisTurn = false;
+let _vectorEnsureIndexPromise = null;
+let _vectorEnsureIndexChatId = null;
 let itemsMultiSelectMode = false;  // 物品多选模式
 let selectedItems = new Set();     // 选中的物品名称
-let longPressTimer = null;         // 长按计时器
 let agendaMultiSelectMode = false; // 待办多选模式
 let selectedAgendaIndices = new Set(); // 选中的待办索引
 let agendaLongPressTimer = null;   // 待办长按计时器
@@ -290,6 +278,13 @@ let selectedNpcs = new Set();       // 选中的NPC名称
 let timelineMultiSelectMode = false; // 时间线多选模式
 let selectedTimelineEvents = new Set(); // 选中的事件（"msgIndex-eventIndex"格式）
 let timelineLongPressTimer = null;  // 时间线长按计时器
+const _hideUnhideDebugStats = {
+    hide: 0,
+    unhide: 0,
+    hideMsgs: 0,
+    unhideMsgs: 0,
+    batches: 0,
+}; // debug stats
 
 // ============================================
 // 工具函数
@@ -328,66 +323,87 @@ async function getTemplate(name) {
 
 function _getDefaultRpgAttrConfig() {
     const lang = detectEffectiveAiLang(settings);
-    const L = (zh, en, ja, ko, ru, vi) => {
-        if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
-        if (lang === 'ja') return ja;
-        if (lang === 'ko') return ko;
-        if (lang === 'ru') return ru;
-        if (lang === 'vi') return vi || en;
-        return en;
-    };
-    return [
-        { key: 'str', name: L('力量','Strength','筋力','힘','Сила','Sức mạnh'), desc: L('物理攻击、负重与近战伤害','Physical attack, carrying capacity & melee damage','物理攻撃、積載量、近接ダメージ','물리 공격, 적재량, 근접 피해','Физическая атака, грузоподъёмность и урон в ближнем бою','Tấn công vật lý, sức chứa & sát thương cận chiến') },
-        { key: 'dex', name: L('敏捷','Dexterity','器用','민첩','Ловкость','Nhanh nhẹn'), desc: L('反射、闪避与远程精准','Reflexes, evasion & ranged accuracy','反射、回避、遠距離命中','반사, 회피, 원거리 정확도','Рефлексы, уклонение и точность дальнего боя','Phản xạ, né tránh & độ chính xác tầm xa') },
-        { key: 'con', name: L('体质','Constitution','耐久','체력','Выносливость','Thể chất'), desc: L('生命力、耐久与抗毒','Vitality, endurance & poison resistance','生命力、持久力、毒耐性','생명력, 지구력, 독 저항','Жизненная сила, выносливость и сопротивление ядам','Sinh lực, sức bền & kháng độc') },
-        { key: 'int', name: L('智力','Intelligence','知力','지능','Интеллект','Trí tuệ'), desc: L('学识、魔法与推理能力','Knowledge, magic & reasoning ability','学識、魔法、推理能力','지식, 마법, 추리 능력','Знания, магия и аналитические способности','Kiến thức, phép thuật & khả năng suy luận') },
-        { key: 'wis', name: L('感知','Wisdom','感知','지혜','Мудрость','Cảm nhận'), desc: L('洞察、直觉与意志力','Insight, intuition & willpower','洞察、直感、意志力','통찰, 직감, 의지력','Проницательность, интуиция и сила воли','Sáng suốt, trực giác & ý chí') },
-        { key: 'cha', name: L('魅力','Charisma','魅力','매력','Харизма','Sức hút'), desc: L('说服、领导与人格魅力','Persuasion, leadership & personal charm','説得、統率、人格的魅力','설득, 리더십, 인격적 매력','Убеждение, лидерство и обаяние','Thuyết phục, lãnh đạo & sức hấp dẫn cá nhân') },
-    ];
+    const attrKeys = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+    return attrKeys.map(key => ({
+        key,
+        name: tForLang(lang, `rpgDefaults.attributes.${key}.name`),
+        desc: tForLang(lang, `rpgDefaults.attributes.${key}.desc`),
+    }));
 }
+
+function _getDefaultRpgBarConfig() {
+    const lang = detectEffectiveAiLang(settings);
+    return [
+        { key: 'hp', color: '#22c55e' },
+        { key: 'mp', color: '#6366f1' },
+        { key: 'sp', color: '#f59e0b' },
+    ].map(bar => ({
+        ...bar,
+        name: tForLang(lang, `rpgDefaults.bars.${bar.key}.name`),
+        min: 0,
+        max: 100,
+        defaultMax: 100,
+        required: true,
+        desc: tForLang(lang, `rpgDefaults.bars.${bar.key}.desc`),
+    }));
+}
+
+const HORAEEQ_TEMPLATE_ALIAS_MAP = {
+    human: ['人类', '人類', 'Human', 'human', '人間', '인간', 'Человек'],
+    orc: ['兽人', '獸人', '兽化人形', '獸化人形', 'ORC', 'orc', '欧克', '歐克', '奥克', '奧克', 'オーク', '오크', 'орк'],
+    pigman: ['猪人', '豬人', '豚人', 'Pigfolk', 'pigfolk', 'Pigman', 'pigman', '돼지 수인', 'свинолюд'],
+    winged: ['翼族', '翼人', '有翼种', '有翼種', 'winged', 'Winged', '날개족', 'крылатый'],
+    centaur: ['人马', '人馬', 'Centaur', 'centaur', 'ケンタウロス', '켄타우로스', 'кентавр'],
+    lamia: ['拉弥亚', '拉彌亞', 'lamia', 'Lamia', 'ラミア', '라미아', 'ламия', '蛇尾人', 'serpentine', 'Serpentine', '뱀꼬리족', 'змеинохвостый'],
+    demon: ['恶魔', '惡魔', 'Demon', 'demon', '悪魔', '악마', 'демон'],
+    kitsune: ['九尾狐', '狐妖', 'Kitsune', 'kitsune', 'Fox Spirit', 'fox spirit', '구미호', '여우 요괴', 'кицунэ', 'лисий дух'],
+    shapeshifter: ['妖怪', '變身者', '变身者', 'Yokai', 'yokai', 'Youkai', 'youkai', 'Shapeshifter', 'shapeshifter', '変身者', '요괴', '변신자', 'ёкай', 'оборотень'],
+    feathered_serpent: ['羽蛇人', 'Feathered Serpent', 'feathered serpent', '깃털뱀족', 'пернатый змей'],
+};
+
+const HORAEEQ_AMBIGUOUS_TEMPLATE_ALIASES = new Set([
+    '兽人', '獸人', '獣人', 'beastfolk', 'beastman', 'beastwoman', '수인',
+    '妖怪', 'yokai', 'youkai', 'monster', 'shapeshifter', '變身者', '变身者', '変身者',
+]);
 
 function _getDefaultEquipTemplates() {
     const lang = detectEffectiveAiLang(settings);
-    const L = (zh, en, ja, ko, ru, vi) => {
-        if (lang === 'zh-CN' || lang === 'zh-TW') return zh;
-        if (lang === 'ja') return ja;
-        if (lang === 'ko') return ko;
-        if (lang === 'ru') return ru;
-        if (lang === 'vi') return vi || en;
-        return en;
+    const T = (key) => tForLang(lang, `equipmentTemplates.${key}`);
+    const S = (key, { maxCount = 1, desc = false, nameKey = key } = {}) => {
+        const slot = { name: T(`slots.${nameKey}.name`), maxCount };
+        if (desc) slot.desc = T(`slots.${nameKey}.desc`);
+        return slot;
     };
-    const S = (zh, en, ja, ko, ru, vi) => ({ name: L(zh, en, ja, ko, ru, vi), maxCount: 1 });
-    const head = S('头部','Head','頭部','머리','Голова','Đầu');
-    const torso = S('躯干','Torso','胴体','상체','Торс','Thân');
-    const hands = S('手部','Hands','手','손','Руки','Tay');
-    const belt = S('腰带','Belt','腰','허리띠','Пояс','Thắt lưng');
-    const legs = S('下身','Legs','脚部','하체','Ноги','Chân');
-    const feet = S('足部','Feet','足','발','Обувь','Bàn chân');
-    const neck = S('项链','Necklace','ネックレス','목걸이','Ожерелье','Dây chuyền');
-    const amulet = S('护身符','Amulet','お守り','부적','Амулет','Bùa hộ mệnh');
-    const ring = { name: L('戒指','Ring','指輪','반지','Кольцо','Nhẫn'), maxCount: 2 };
-    const tail = S('尾部','Tail','尾','꼬리','Хвост','Đuôi');
-    const wings = S('翅膀','Wings','翼','날개','Крылья','Cánh');
+    const humanoid = () => [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('neck'), S('amulet'), S('ring', { maxCount: 2 })];
+    const tpl = (id, slots, forms = null, parts = []) => ({
+        id,
+        name: T(`templates.${id}.name`),
+        aliases: HORAEEQ_TEMPLATE_ALIAS_MAP[id] || [],
+        parts,
+        slots,
+        forms: forms || [{ id: 'default', name: T('forms.default'), slots }],
+    });
+    const serpentTailOrnament = () => S('serpentTailOrnament', { desc: true });
+    const tailOrnament = (maxCount = 1) => S('tailOrnament', { maxCount, desc: true });
     return [
-        { name: L('人类','Human','人間','인간','Человек','Con người'), slots: [head, torso, hands, belt, legs, feet, neck, amulet, ring] },
-        { name: L('兽人','Orc','獣人','수인','Орк','Thú nhân'), slots: [head, torso, hands, belt, legs, feet, tail, neck, ring] },
-        { name: L('翼族','Winged','翼族','날개족','Крылатый','Dực tộc (có cánh)'), slots: [head, torso, hands, belt, legs, feet, wings, neck, ring] },
-        { name: L('人马','Centaur','ケンタウロス','켄타우로스','Кентавр','Nhân mã'), slots: [
-            head, torso, hands, belt,
-            { name: L('马甲','Barding','馬鎧','마갑','Конская броня','Giáp ngựa'), maxCount: 1 },
-            { name: L('马蹄铁','Horseshoe','蹄鉄','말굽','Подкова','Móng ngựa'), maxCount: 4 },
-            neck, ring,
-        ]},
-        { name: L('拉弥亚','Lamia','ラミア','라미아','Ламия','Lamia'), slots: [
-            head, torso, hands, belt,
-            { name: L('蛇尾饰','Tail Ornament','尾飾り','꼬리 장식','Украшение хвоста','Trang sức đuôi rắn'), maxCount: 1 },
-            neck, amulet, ring,
-        ]},
-        { name: L('恶魔','Demon','悪魔','악마','Демон','Ác quỷ'), slots: [
-            head,
-            { name: L('角饰','Horn Ornament','角飾り','뿔 장식','Украшение рогов','Trang sức sừng'), maxCount: 1 },
-            torso, hands, belt, legs, feet, wings, tail, neck, ring,
-        ]},
+        tpl('human', humanoid(), null, ['humanoid']),
+        tpl('orc', [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid']),
+        tpl('pigman', [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'tail_unwearable']),
+        tpl('winged', [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('wings', { desc: true }), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'winged']),
+        tpl('centaur', [S('head'), S('torso'), S('hands'), S('belt'), S('barding'), S('horseshoe', { maxCount: 4 }), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'quadruped']),
+        tpl('lamia', [S('head'), S('torso'), S('hands'), S('belt'), serpentTailOrnament(), S('neck'), S('amulet'), S('ring', { maxCount: 2 })], null, ['humanoid', 'serpentine']),
+        tpl('demon', [S('head'), S('hornOrnament'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('wings', { desc: true }), S('tail', { desc: true }), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'winged', 'tail']),
+        tpl('kitsune', humanoid(), [
+            { id: 'human', name: T('forms.human'), slots: humanoid() },
+            { id: 'hybrid', name: T('forms.hybridFox'), slots: [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), tailOrnament(9), S('neck'), S('ring', { maxCount: 2 })] },
+            { id: 'fox', name: T('forms.fox'), slots: [S('collar'), tailOrnament(9), S('clawGuard', { maxCount: 4 })] },
+        ], ['humanoid', 'shapeshifter', 'tail']),
+        tpl('shapeshifter', humanoid(), [
+            { id: 'human', name: T('forms.human'), slots: humanoid() },
+            { id: 'hybrid', name: T('forms.hybridBeast'), slots: [S('head'), S('torso'), S('hands'), S('belt'), S('legs'), S('feet'), S('tail', { desc: true }), S('neck'), S('ring', { maxCount: 2 })] },
+            { id: 'animal', name: T('forms.animal'), slots: [S('collar'), S('tail', { desc: true }), S('clawGuard', { maxCount: 4 })] },
+        ], ['humanoid', 'shapeshifter']),
+        tpl('feathered_serpent', [S('head'), S('torso'), S('hands'), S('belt'), S('wings', { desc: true }), serpentTailOrnament(), S('neck'), S('ring', { maxCount: 2 })], null, ['humanoid', 'winged', 'serpentine']),
     ];
 }
 
@@ -490,7 +506,343 @@ async function initNavbarFunction() {
  * 加载设置
  */
 let _isFirstTimeUser = false;
+
+function _normalizeLf(text) {
+    return typeof text === 'string' ? text.replace(/\r\n?/g, '\n') : text;
+}
+
+function _normalizePromptTextFields(obj, keys = PROMPT_SETTING_KEYS) {
+    if (!obj || typeof obj !== 'object') return false;
+    let changed = false;
+    for (const key of keys) {
+        const val = obj[key];
+        if (typeof val !== 'string') continue;
+        const normalized = _normalizeLf(val);
+        if (normalized !== val) {
+            obj[key] = normalized;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+function _normalizePromptSettingsInPlace() {
+    let changed = _normalizePromptTextFields(settings, PROMPT_SETTING_KEYS);
+    if (Array.isArray(settings.promptPresets)) {
+        for (const preset of settings.promptPresets) {
+            if (!preset || typeof preset !== 'object') continue;
+            if (!preset.prompts || typeof preset.prompts !== 'object') continue;
+            changed = _normalizePromptTextFields(preset.prompts, PROMPT_SETTING_KEYS) || changed;
+        }
+    }
+    return changed;
+}
+
+const VECTOR_RECALL_PRESET_FIELDS = [
+    'vectorPureMode',
+    'vectorRerankEnabled',
+    'vectorRerankFullText',
+    'vectorRerankCandidates',
+    'vectorRerankRecallThreshold',
+    'vectorRerankMinScore',
+    'vectorTopK',
+    'vectorThreshold',
+    'vectorFullTextCount',
+    'vectorFullTextThreshold',
+];
+
+const BUILTIN_VECTOR_RECALL_PRESETS = [
+    {
+        id: 'small',
+        labelKey: 'vector.presetSmall',
+        values: {
+            vectorPureMode: false,
+            vectorRerankEnabled: false,
+            vectorRerankFullText: false,
+            vectorRerankCandidates: 25,
+            vectorRerankRecallThreshold: 0.3,
+            vectorRerankMinScore: 0.5,
+            vectorTopK: 5,
+            vectorThreshold: 0.72,
+            vectorFullTextCount: 3,
+            vectorFullTextThreshold: 0.9,
+        },
+    },
+    {
+        id: 'large',
+        labelKey: 'vector.presetLarge',
+        values: {
+            vectorPureMode: true,
+            vectorRerankEnabled: false,
+            vectorRerankFullText: false,
+            vectorRerankCandidates: 25,
+            vectorRerankRecallThreshold: 0.3,
+            vectorRerankMinScore: 0.5,
+            vectorTopK: 8,
+            vectorThreshold: 0.8,
+            vectorFullTextCount: 3,
+            vectorFullTextThreshold: 0.9,
+        },
+    },
+    {
+        id: 'rerank',
+        labelKey: 'vector.presetRerank',
+        values: {
+            vectorPureMode: true,
+            vectorRerankEnabled: true,
+            vectorRerankFullText: false,
+            vectorRerankCandidates: 25,
+            vectorRerankRecallThreshold: 0.3,
+            vectorRerankMinScore: 0.85,
+            vectorTopK: 5,
+            vectorThreshold: 0.85,
+            vectorFullTextCount: 3,
+            vectorFullTextThreshold: 0.9,
+        },
+    },
+];
+
+function _sanitizeVectorRecallPresetValues(values = {}) {
+    const out = {};
+    out.vectorPureMode = !!values.vectorPureMode;
+    out.vectorRerankEnabled = !!values.vectorRerankEnabled;
+    out.vectorRerankFullText = !!values.vectorRerankFullText;
+    out.vectorRerankCandidates = Math.max(5, parseInt(values.vectorRerankCandidates, 10) || 25);
+    const recallThreshold = parseFloat(values.vectorRerankRecallThreshold);
+    out.vectorRerankRecallThreshold = Number.isFinite(recallThreshold) ? Math.min(0.8, Math.max(0, recallThreshold)) : 0.3;
+    const minScore = parseFloat(values.vectorRerankMinScore);
+    out.vectorRerankMinScore = Number.isFinite(minScore) ? Math.min(1, Math.max(0, minScore)) : 0.5;
+    out.vectorTopK = Math.min(10, Math.max(1, parseInt(values.vectorTopK, 10) || 5));
+    const threshold = parseFloat(values.vectorThreshold);
+    out.vectorThreshold = Number.isFinite(threshold) ? Math.min(0.95, Math.max(0.3, threshold)) : 0.72;
+    out.vectorFullTextCount = Math.min(5, Math.max(0, parseInt(values.vectorFullTextCount, 10) || 0));
+    const fullTextThreshold = parseFloat(values.vectorFullTextThreshold);
+    out.vectorFullTextThreshold = Number.isFinite(fullTextThreshold) ? Math.min(1, Math.max(0.6, fullTextThreshold)) : 0.9;
+    return out;
+}
+
+// 清理已废弃的 vectorFallback* 字段
+function _migrateLegacyVectorSettings(saved) {
+    if (!saved || typeof saved !== 'object') return false;
+    let changed = false;
+    if ('vectorFallbackEnabled' in saved) { delete saved.vectorFallbackEnabled; changed = true; }
+    if ('vectorFallbackMinScore' in saved) { delete saved.vectorFallbackMinScore; changed = true; }
+    if ('vectorRerankScoreMode' in saved) { delete saved.vectorRerankScoreMode; changed = true; }
+    return changed;
+}
+
+function _collectCurrentVectorRecallPresetValues() {
+    const values = {};
+    for (const key of VECTOR_RECALL_PRESET_FIELDS) values[key] = settings[key];
+    return _sanitizeVectorRecallPresetValues(values);
+}
+
+function _applyVectorRecallPresetValues(values) {
+    const sanitized = _sanitizeVectorRecallPresetValues(values);
+    for (const key of VECTOR_RECALL_PRESET_FIELDS) settings[key] = sanitized[key];
+}
+
+function _normalizeVectorRecallPresetsInPlace() {
+    let changed = false;
+    if (!Array.isArray(settings.vectorRecallPresets)) {
+        settings.vectorRecallPresets = [];
+        changed = true;
+    }
+    const normalized = [];
+    for (const preset of settings.vectorRecallPresets) {
+        if (!preset || typeof preset !== 'object' || !preset.name || !preset.values) {
+            changed = true;
+            continue;
+        }
+        const clean = {
+            name: String(preset.name).trim(),
+            values: _sanitizeVectorRecallPresetValues(preset.values),
+        };
+        if (!clean.name) {
+            changed = true;
+            continue;
+        }
+        normalized.push(clean);
+        if (JSON.stringify(clean) !== JSON.stringify(preset)) changed = true;
+    }
+    settings.vectorRecallPresets = normalized;
+    return changed;
+}
+
+function _normalizeRpgBarConfigInPlace() {
+    if (!Array.isArray(settings.rpgBarConfig)) {
+        settings.rpgBarConfig = [];
+        return true;
+    }
+    let changed = false;
+    settings.rpgBarConfig = settings.rpgBarConfig.map((bar, idx) => {
+        const fallback = DEFAULT_SETTINGS.rpgBarConfig[idx] || {};
+        const clean = {
+            key: String(bar?.key || fallback.key || `bar${idx + 1}`).trim().toLowerCase().replace(/[^a-z0-9_]/g, '') || `bar${idx + 1}`,
+            name: String(bar?.name || fallback.name || bar?.key || `BAR${idx + 1}`).trim(),
+            color: bar?.color || fallback.color || '#a78bfa',
+            min: Number.isFinite(parseInt(bar?.min, 10)) ? parseInt(bar.min, 10) : (fallback.min ?? 0),
+            max: Number.isFinite(parseInt(bar?.max, 10)) ? parseInt(bar.max, 10) : (fallback.max ?? 100),
+            defaultMax: Number.isFinite(parseInt(bar?.defaultMax, 10)) ? parseInt(bar.defaultMax, 10) : (fallback.defaultMax ?? 100),
+            required: bar?.required !== false,
+            desc: String(bar?.desc || fallback.desc || '').trim(),
+        };
+        if (clean.max <= clean.min) clean.max = clean.min + 1;
+        clean.defaultMax = Math.min(clean.max, Math.max(clean.min + 1, clean.defaultMax));
+        if (JSON.stringify(clean) !== JSON.stringify(bar)) changed = true;
+        return clean;
+    });
+    return changed;
+}
+
+function _ensureLocalizedRpgDefaults({ force = false } = {}) {
+    if (!_i18nReady) return false;
+    let changed = false;
+    if (force || !Array.isArray(settings.rpgBarConfig) || !settings.rpgBarConfig.length) {
+        settings.rpgBarConfig = _getDefaultRpgBarConfig();
+        changed = true;
+    }
+    if (force || !Array.isArray(settings.rpgAttributeConfig) || !settings.rpgAttributeConfig.length) {
+        settings.rpgAttributeConfig = _getDefaultRpgAttrConfig();
+        changed = true;
+    }
+    if (force || !Array.isArray(settings.equipmentTemplates) || !settings.equipmentTemplates.length) {
+        settings.equipmentTemplates = _getDefaultEquipTemplates();
+        settings._equipmentTemplateV2Migrated = true;
+        changed = true;
+    }
+    return changed;
+}
+
+function _normalizeEquipSlot(slot, idx = 0) {
+    const name = String(slot?.name || '').trim();
+    if (!name) return null;
+    const maxCount = Math.max(1, parseInt(slot?.maxCount, 10) || 1);
+    const clean = { name, maxCount };
+    const desc = String(slot?.desc || '').trim();
+    if (desc) clean.desc = desc;
+    if (slot?.forms && Array.isArray(slot.forms)) clean.forms = slot.forms.map(String).filter(Boolean);
+    return clean;
+}
+
+function _normalizeEquipTemplate(tpl, idx = 0) {
+    if (!tpl || typeof tpl !== 'object') return null;
+    const name = String(tpl.name || `Template ${idx + 1}`).trim();
+    if (!name) return null;
+    const baseSlots = (Array.isArray(tpl.slots) ? tpl.slots : []).map(_normalizeEquipSlot).filter(Boolean);
+    let forms = Array.isArray(tpl.forms) ? tpl.forms.map((form, formIdx) => {
+        const formSlots = (Array.isArray(form?.slots) ? form.slots : []).map(_normalizeEquipSlot).filter(Boolean);
+        if (!formSlots.length) return null;
+        return {
+            id: String(form.id || `form_${formIdx + 1}`).trim() || `form_${formIdx + 1}`,
+            name: String(form.name || form.id || `Form ${formIdx + 1}`).trim(),
+            slots: formSlots,
+        };
+    }).filter(Boolean) : [];
+    if (!forms.length && baseSlots.length) {
+        const defaultFormName = _i18nReady ? tForLang(detectEffectiveAiLang(settings), 'equipmentTemplates.forms.default') : 'default';
+        forms = [{ id: 'default', name: defaultFormName, slots: baseSlots }];
+    }
+    if (!baseSlots.length && forms.length) baseSlots.push(...forms[0].slots);
+    if (!baseSlots.length) return null;
+    const clean = {
+        id: String(tpl.id || name).trim().toLowerCase().replace(/\s+/g, '_'),
+        name,
+        aliases: Array.isArray(tpl.aliases) ? tpl.aliases.map(a => String(a).trim()).filter(Boolean) : [name],
+        parts: Array.isArray(tpl.parts) ? tpl.parts.map(p => String(p).trim()).filter(Boolean) : [],
+        slots: baseSlots,
+        forms,
+    };
+    return clean;
+}
+
+function _normalizeRpgEquipmentTemplatesInPlace() {
+    if (!Array.isArray(settings.equipmentTemplates)) {
+        settings.equipmentTemplates = [];
+        return true;
+    }
+    let normalized = settings.equipmentTemplates.map(_normalizeEquipTemplate).filter(Boolean);
+    let changed = JSON.stringify(normalized) !== JSON.stringify(settings.equipmentTemplates);
+    if (_i18nReady && !settings._equipmentTemplateV2Migrated) {
+        const hasOverlap = (tpl, list) => {
+            const keys = new Set(_getEquipTemplateMatchAliases(tpl));
+            return list.some(existing => _getEquipTemplateMatchAliases(existing).some(k => keys.has(k)));
+        };
+        for (const tpl of _getDefaultEquipTemplates().map(_normalizeEquipTemplate).filter(Boolean)) {
+            if (!hasOverlap(tpl, normalized)) {
+                normalized.push(tpl);
+                changed = true;
+            }
+        }
+        settings._equipmentTemplateV2Migrated = true;
+        changed = true;
+    }
+    settings.equipmentTemplates = normalized;
+    return changed;
+}
+
+function _normalizeRpgSettingsInPlace() {
+    let changed = false;
+    if (_normalizeRpgBarConfigInPlace()) changed = true;
+    if (_normalizeRpgEquipmentTemplatesInPlace()) changed = true;
+    if (typeof settings.rpgStrictPresentOnly !== 'boolean') {
+        settings.rpgStrictPresentOnly = false;
+        changed = true;
+    }
+    return changed;
+}
+
+function _normalizeAutoSummarySettingsInPlace(saved = {}) {
+    let changed = false;
+    const legacyLimit = parseInt(saved.autoSummaryBufferLimit, 10);
+    const mode = settings.autoSummaryBufferMode === 'tokens' ? 'tokens' : 'messages';
+    if (settings.autoSummaryBufferMode !== mode) {
+        settings.autoSummaryBufferMode = mode;
+        changed = true;
+    }
+
+    if (settings.autoSummarySourceMode !== 'events' && settings.autoSummarySourceMode !== 'fulltext') {
+        settings.autoSummarySourceMode = DEFAULT_SETTINGS.autoSummarySourceMode;
+        changed = true;
+    }
+
+    if (saved.autoSummaryBufferMsgLimit === undefined) {
+        const migrated = mode === 'messages' && Number.isFinite(legacyLimit) ? legacyLimit : DEFAULT_SETTINGS.autoSummaryBufferMsgLimit;
+        settings.autoSummaryBufferMsgLimit = Math.max(5, parseInt(migrated, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+        changed = true;
+    } else {
+        const msgLimit = Math.max(5, parseInt(settings.autoSummaryBufferMsgLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+        if (settings.autoSummaryBufferMsgLimit !== msgLimit) {
+            settings.autoSummaryBufferMsgLimit = msgLimit;
+            changed = true;
+        }
+    }
+
+    if (saved.autoSummaryBufferTokenLimit === undefined) {
+        const migrated = mode === 'tokens' && Number.isFinite(legacyLimit) && legacyLimit >= 1000
+            ? legacyLimit
+            : DEFAULT_SETTINGS.autoSummaryBufferTokenLimit;
+        settings.autoSummaryBufferTokenLimit = Math.max(1000, parseInt(migrated, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+        changed = true;
+    } else {
+        const tokenLimit = Math.max(1000, parseInt(settings.autoSummaryBufferTokenLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+        if (settings.autoSummaryBufferTokenLimit !== tokenLimit) {
+            settings.autoSummaryBufferTokenLimit = tokenLimit;
+            changed = true;
+        }
+    }
+
+    const activeLimit = mode === 'tokens' ? settings.autoSummaryBufferTokenLimit : settings.autoSummaryBufferMsgLimit;
+    if (settings.autoSummaryBufferLimit !== activeLimit) {
+        settings.autoSummaryBufferLimit = activeLimit;
+        changed = true;
+    }
+    return changed;
+}
+
 function loadSettings() {
+    let changed = false;
+    const saved = extension_settings[EXTENSION_NAME] || null;
     if (extension_settings[EXTENSION_NAME]) {
         settings = { ...DEFAULT_SETTINGS, ...extension_settings[EXTENSION_NAME] };
     } else {
@@ -498,6 +850,38 @@ function loadSettings() {
         extension_settings[EXTENSION_NAME] = { ...DEFAULT_SETTINGS };
         settings = { ...DEFAULT_SETTINGS };
     }
+    if (!settings._autoFillPrevTimelineDefaultOffMigrated) {
+        settings.autoFillPrevTimelineOnSend = false;
+        settings._autoFillPrevTimelineDefaultOffMigrated = true;
+        changed = true;
+    }
+    if (_migrateAuxApiSettings(saved || {})) changed = true;
+    if (_normalizeAutoSummarySettingsInPlace(saved || {}) || _normalizePromptSettingsInPlace() || _normalizeVectorRecallPresetsInPlace() || _normalizeRpgSettingsInPlace()) changed = true;
+    if (_migrateLegacyVectorSettings(settings)) changed = true;
+    if (changed) saveSettings();
+}
+
+function _migrateAuxApiSettings(saved = {}) {
+    if (settings._auxApiSettingsMigrated) return false;
+    let changed = true;
+    const hasAux = !!(settings.auxApiUrl || settings.auxApiKey || settings.auxApiModel);
+    const hasLegacy = !!(saved.autoSummaryApiUrl || saved.autoSummaryApiKey || saved.autoSummaryModel);
+    if (!hasAux && hasLegacy) {
+        settings.auxApiEnabled = !!saved.autoSummaryUseCustomApi;
+        settings.auxApiUrl = saved.autoSummaryApiUrl || '';
+        settings.auxApiKey = saved.autoSummaryApiKey || '';
+        settings.auxApiModel = saved.autoSummaryModel || '';
+        settings.auxApiUseForSummary = !!saved.autoSummaryUseCustomApi;
+        settings.auxApiUseForAnalysis = true;
+        settings.auxApiUseForManualCompress = false;
+        changed = true;
+    }
+    settings.autoSummaryUseCustomApi = false;
+    settings.autoSummaryApiUrl = '';
+    settings.autoSummaryApiKey = '';
+    settings.autoSummaryModel = '';
+    settings._auxApiSettingsMigrated = true;
+    return changed;
 }
 
 /** 迁移旧版属性配置到 DND 六维 */
@@ -517,8 +901,10 @@ function _migrateAttrConfig() {
  * 保存设置
  */
 function saveSettings() {
+    _normalizePromptTextFields(settings, PROMPT_SETTING_KEYS);
     extension_settings[EXTENSION_NAME] = settings;
     saveSettingsDebounced();
+    eventSource.emit('horae:settingsChanged', { enabled: !!settings.enabled });
 }
 
 /**
@@ -532,21 +918,513 @@ function showToast(message, type = 'info') {
     }
 }
 
+// ============================================
+// 端口系统
+// ============================================
+
+const HORAE_PORT_SLOTS = Object.freeze([
+    'bottom-bar',
+    'status',
+    'drawer-tab',
+    'message-panel',
+    'rpg-hud',
+]);
+
+const HORAE_PORT_ERROR_LIMIT = 5;
+const HORAE_PORT_REFRESH_DEBOUNCE_MS = 30;
+const HORAE_PORT_BOTTOM_MOUNTS = ['#form_sheld', '#send_form', '#sheld'];
+
+const horaePorts = new Map();
+const horaeDataProviders = new Map();
+const horaePortErrors = new Map();
+
+let _refreshScheduled = false;
+let _refreshTimer = null;
+let _pendingScope = null;
+let _portCacheChatLength = -1;
+let _portCacheLatest = null;
+const _portCacheRpg = new Map();
+const _portCacheMeta = new Map();
+const _portCacheProviders = new Map();
+
+function _portIdToDomId(id) {
+    return String(id).trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function _sortPorts(a, b) {
+    return (a.priority || 100) - (b.priority || 100) || a.id.localeCompare(b.id);
+}
+
+function _getPortsBySlot(slot) {
+    return [...horaePorts.values()]
+        .filter(port => port.slot === slot)
+        .sort(_sortPorts);
+}
+
+function _resetPortCache() {
+    _portCacheChatLength = -1;
+    _portCacheLatest = null;
+    _portCacheRpg.clear();
+    _portCacheMeta.clear();
+    _portCacheProviders.clear();
+}
+
+function _getCachedLatestState() {
+    if (_portCacheLatest === null) {
+        _portCacheLatest = horaeManager.getLatestState(0);
+    }
+    return _portCacheLatest;
+}
+
+function _getCachedRpgState(skipLast) {
+    if (!_portCacheRpg.has(skipLast)) {
+        _portCacheRpg.set(skipLast, horaeManager.getRpgStateAt(skipLast));
+    }
+    return _portCacheRpg.get(skipLast);
+}
+
+function _getCachedMessageMeta(messageIndex) {
+    if (messageIndex == null) return null;
+    if (!_portCacheMeta.has(messageIndex)) {
+        _portCacheMeta.set(messageIndex, horaeManager.getMessageMeta(messageIndex));
+    }
+    return _portCacheMeta.get(messageIndex);
+}
+
+/** 同一刷新批次内，按楼层维度缓存 Provider 结果，避免重复调用外部数据源。 */
+function _readDataProviders(baseContext) {
+    const messageKey = baseContext.messageIndex == null ? '__global__' : `m${baseContext.messageIndex}`;
+    let bucket = _portCacheProviders.get(messageKey);
+    if (!bucket) {
+        bucket = new Map();
+        _portCacheProviders.set(messageKey, bucket);
+    }
+    const providers = {};
+    for (const [id, provider] of horaeDataProviders.entries()) {
+        if (bucket.has(id)) {
+            providers[id] = bucket.get(id);
+            continue;
+        }
+        let value = null;
+        try {
+            value = provider(baseContext);
+        } catch (error) {
+            console.warn(`[Horae] 数据源 ${id} 读取失败:`, error);
+        }
+        bucket.set(id, value);
+        providers[id] = value;
+    }
+    return providers;
+}
+
+/** 构造端口上下文。state/rpg/meta 走刷新批次内的缓存，避免重复聚合。 */
+function _createPortContext(port, extra = {}) {
+    const chat = horaeManager.getChat();
+    const messageIndex = Number.isInteger(extra.messageIndex) ? extra.messageIndex : null;
+    const skipLast = messageIndex == null ? 0 : Math.max(0, (chat?.length || 0) - messageIndex - 1);
+    const baseContext = {
+        api: window.Horae || null,
+        context: getContext(),
+        settings: { ...settings },
+        state: messageIndex == null ? _getCachedLatestState() : horaeManager.getLatestState(skipLast),
+        rpg: _getCachedRpgState(skipLast),
+        chat,
+        messageIndex,
+        meta: _getCachedMessageMeta(messageIndex),
+        slot: port?.slot || extra.slot || '',
+        portId: port?.id || null,
+        firstRender: extra.firstRender !== false && !(extra.root?.dataset.horaeMounted === '1'),
+        root: extra.root || null,
+        container: extra.container || null,
+        panelEl: extra.panelEl || null,
+        messageEl: extra.messageEl || null,
+        hudEl: extra.hudEl || null,
+        helpers: {
+            escapeHtml,
+            showToast,
+            isLightMode,
+            t,
+            eventSource,
+            event_types,
+        },
+    };
+    baseContext.providers = _readDataProviders(baseContext);
+    baseContext.getProvider = id => baseContext.providers[id] ?? null;
+    return baseContext;
+}
+
+function _disposePortRoot(root, port) {
+    if (!root) return;
+    try {
+        port?.dispose?.(root);
+    } catch (error) {
+        console.warn(`[Horae] 端口 ${port?.id || root.dataset.horaePortId} 清理失败:`, error);
+    }
+    root.remove();
+}
+
+/** 把 render() / update() 的返回值写入挂载点。返回 false 表示本次不需要保留挂载点。 */
+function _applyPortOutput(root, output) {
+    if (output === false) return false;
+    if (output == null) {
+        root.replaceChildren();
+        return true;
+    }
+    if (typeof output === 'string') {
+        root.innerHTML = output;
+        return true;
+    }
+    if (output?.jquery) {
+        root.replaceChildren(...output.toArray());
+        return true;
+    }
+    if (output instanceof Node) {
+        root.replaceChildren(output);
+        return true;
+    }
+    root.textContent = String(output);
+    return true;
+}
+
+/** 累计端口运行错误，超出阈值后自动卸载并提示。 */
+function _recordPortError(port, error) {
+    const count = (horaePortErrors.get(port.id) || 0) + 1;
+    horaePortErrors.set(port.id, count);
+    console.error(`[Horae] 端口 ${port.id} 运行出错 (${count}/${HORAE_PORT_ERROR_LIMIT})`, error);
+    if (count >= HORAE_PORT_ERROR_LIMIT) {
+        showToast(`端口 ${port.id} 多次出错，已自动卸载`, 'error');
+        unregisterHoraePort(port.id);
+    }
+}
+
+function _renderPortIntoRoot(port, root, extra = {}) {
+    const isFirst = root.dataset.horaeMounted !== '1';
+    const context = _createPortContext(port, { ...extra, root, slot: port.slot, firstRender: isFirst });
+    let output;
+    try {
+        output = (!isFirst && typeof port.update === 'function')
+            ? port.update(context, root)
+            : port.render(context);
+    } catch (error) {
+        root.innerHTML = `<div class="horae-port-error">${escapeHtml(port.id)}</div>`;
+        _recordPortError(port, error);
+        return;
+    }
+    if (output === undefined && !isFirst && typeof port.update === 'function') {
+        return;
+    }
+    const keep = _applyPortOutput(root, output);
+    if (!keep) {
+        _disposePortRoot(root, port);
+        return;
+    }
+    root.dataset.horaeMounted = '1';
+    horaePortErrors.delete(port.id);
+}
+
+function _mountPorts(slot, container, extra = {}) {
+    if (!container) return;
+    const ports = _getPortsBySlot(slot);
+    const activeIds = new Set(ports.map(port => port.id));
+    container.querySelectorAll(':scope > .horae-port-root').forEach(root => {
+        if (!activeIds.has(root.dataset.horaePortId)) {
+            _disposePortRoot(root, horaePorts.get(root.dataset.horaePortId));
+        }
+    });
+    for (const port of ports) {
+        let root = [...container.children].find(el =>
+            el.classList?.contains('horae-port-root') && el.dataset.horaePortId === port.id);
+        if (!root) {
+            root = document.createElement('div');
+            root.className = `horae-port-root horae-port-root-${slot}`;
+            root.dataset.horaePortId = port.id;
+            container.appendChild(root);
+        }
+        _renderPortIntoRoot(port, root, { ...extra, container });
+    }
+}
+
+/** 找到 ST 输入区容器，回退到 body 时只取 body 末尾节点，避免污染 #send_form */
+function _resolveBottomBarHost() {
+    for (const sel of HORAE_PORT_BOTTOM_MOUNTS) {
+        const el = document.querySelector(sel);
+        if (el?.parentNode) return el.parentNode;
+    }
+    return document.body;
+}
+
+function _refreshBottomBarPorts() {
+    const ports = _getPortsBySlot('bottom-bar');
+    let container = document.getElementById('horae-port-bottom-bar');
+    if (ports.length === 0) {
+        if (container) {
+            container.querySelectorAll(':scope > .horae-port-root').forEach(root =>
+                _disposePortRoot(root, horaePorts.get(root.dataset.horaePortId)));
+            container.remove();
+        }
+        return;
+    }
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'horae-port-bottom-bar';
+        container.className = 'horae-port-container horae-port-bottom-bar';
+    }
+    const host = _resolveBottomBarHost();
+    if (container.parentNode !== host) host.insertBefore(container, host.firstChild || null);
+    container.classList.toggle('horae-light', isLightMode());
+    _mountPorts('bottom-bar', container);
+}
+
+function _refreshStatusPorts() {
+    _mountPorts('status', document.getElementById('horae-port-status'));
+}
+
+function _refreshDrawerTabPorts() {
+    const tabBar = document.querySelector('#horae_drawer .horae-tabs');
+    const contentRoot = document.querySelector('#horae_drawer .horae-tab-contents');
+    if (!tabBar || !contentRoot) return;
+
+    const ports = _getPortsBySlot('drawer-tab');
+    const activeDomIds = new Set(ports.map(port => _portIdToDomId(port.id)));
+
+    tabBar.querySelectorAll('.horae-port-tab').forEach(tab => {
+        if (!activeDomIds.has(tab.dataset.portDomId)) tab.remove();
+    });
+    contentRoot.querySelectorAll('.horae-port-tab-content').forEach(content => {
+        if (!activeDomIds.has(content.dataset.portDomId)) {
+            const portId = content.dataset.portId;
+            _disposePortRoot(content.querySelector('.horae-port-root'), horaePorts.get(portId));
+            content.remove();
+        }
+    });
+
+    const settingsTab = tabBar.querySelector('.horae-tab[data-tab="settings"]');
+    const settingsContent = contentRoot.querySelector('#horae-tab-settings');
+    for (const port of ports) {
+        const domId = _portIdToDomId(port.id);
+        const tabId = `port-${domId}`;
+        let tab = tabBar.querySelector(`.horae-port-tab[data-port-dom-id="${domId}"]`);
+        if (!tab) {
+            tab = document.createElement('button');
+            tab.className = 'horae-tab horae-port-tab';
+            tab.dataset.tab = tabId;
+            tab.dataset.portId = port.id;
+            tab.dataset.portDomId = domId;
+            tab.innerHTML = `<i class="${escapeHtml(port.icon || 'fa-solid fa-puzzle-piece')}"></i><span>${escapeHtml(port.title || port.name || port.id)}</span>`;
+            tabBar.insertBefore(tab, settingsTab || null);
+        }
+
+        let content = contentRoot.querySelector(`.horae-port-tab-content[data-port-dom-id="${domId}"]`);
+        if (!content) {
+            content = document.createElement('div');
+            content.id = `horae-tab-${tabId}`;
+            content.className = 'horae-tab-content horae-port-tab-content';
+            content.dataset.portId = port.id;
+            content.dataset.portDomId = domId;
+            const root = document.createElement('div');
+            root.className = 'horae-port-root horae-port-root-drawer-tab';
+            root.dataset.horaePortId = port.id;
+            content.appendChild(root);
+            contentRoot.insertBefore(content, settingsContent || null);
+        }
+        _renderPortIntoRoot(port, content.querySelector('.horae-port-root'), { container: content });
+    }
+}
+
+function _refreshMessagePanelPorts(scope = document) {
+    scope.querySelectorAll?.('.horae-message-panel').forEach(panelEl => {
+        const messageIndex = parseInt(panelEl.dataset.messageId, 10);
+        const content = panelEl.querySelector('.horae-panel-content') || panelEl;
+        let container = content.querySelector(':scope > .horae-port-message-panel');
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'horae-port-container horae-port-message-panel';
+            content.appendChild(container);
+        }
+        _mountPorts('message-panel', container, {
+            messageIndex: Number.isInteger(messageIndex) ? messageIndex : null,
+            panelEl,
+            messageEl: panelEl.closest('.mes'),
+        });
+    });
+}
+
+function _refreshRpgHudPorts(scope = document) {
+    scope.querySelectorAll?.('.horae-rpg-hud').forEach(hudEl => {
+        const messageEl = hudEl.closest('.mes');
+        const rawIdx = parseInt(messageEl?.getAttribute('mesid'), 10);
+        let container = hudEl.querySelector(':scope > .horae-port-rpg-hud');
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'horae-port-container horae-port-rpg-hud';
+            hudEl.appendChild(container);
+        }
+        _mountPorts('rpg-hud', container, {
+            messageIndex: Number.isInteger(rawIdx) ? rawIdx : null,
+            hudEl,
+            messageEl,
+        });
+    });
+}
+
+function _doRefreshHoraePorts(scope) {
+    if (!_portsReady) return;
+    const chat = horaeManager.getChat();
+    const len = chat?.length ?? 0;
+    if (len !== _portCacheChatLength) {
+        _resetPortCache();
+        _portCacheChatLength = len;
+    } else {
+        _portCacheLatest = null;
+        _portCacheRpg.clear();
+        _portCacheMeta.clear();
+        _portCacheProviders.clear();
+    }
+    _refreshBottomBarPorts();
+    _refreshStatusPorts();
+    _refreshDrawerTabPorts();
+    _refreshMessagePanelPorts(scope || document);
+    _refreshRpgHudPorts(scope || document);
+}
+
+/** 短窗口防抖：合并窗口内的多次刷新请求；scope 不一致时升级为 document，避免漏刷。 */
+function refreshHoraePorts(scope = document) {
+    if (!_portsReady) return;
+    const next = scope || document;
+    if (_pendingScope === null) {
+        _pendingScope = next;
+    } else if (_pendingScope !== next) {
+        _pendingScope = document;
+    }
+    if (_refreshScheduled) return;
+    _refreshScheduled = true;
+    clearTimeout(_refreshTimer);
+    _refreshTimer = setTimeout(() => {
+        const targetScope = _pendingScope || document;
+        _refreshScheduled = false;
+        _pendingScope = null;
+        try {
+            _doRefreshHoraePorts(targetScope);
+        } catch (error) {
+            console.error('[Horae] 端口刷新失败:', error);
+        }
+    }, HORAE_PORT_REFRESH_DEBOUNCE_MS);
+}
+
+function _emitPortChange(detail) {
+    const evt = new CustomEvent('horae:portsChanged', { detail });
+    window.dispatchEvent(evt);
+    try { eventSource?.emit?.('horae:portsChanged', detail); } catch (_) { /* eventSource 可能尚未就绪 */ }
+}
+
+function registerHoraePort(definition) {
+    if (!definition || typeof definition !== 'object') {
+        throw new TypeError('Horae port definition must be an object.');
+    }
+    const id = String(definition.id || '').trim();
+    const slot = String(definition.slot || '').trim();
+    if (!id) throw new TypeError('Horae port id is required.');
+    if (!HORAE_PORT_SLOTS.includes(slot)) {
+        throw new TypeError(`Unsupported Horae port slot: ${slot}`);
+    }
+    if (typeof definition.render !== 'function') {
+        throw new TypeError('Horae port render(context) is required.');
+    }
+    _unregisterPortInternal(id, true);
+    horaePorts.set(id, {
+        ...definition,
+        id,
+        slot,
+        priority: Number.isFinite(Number(definition.priority)) ? Number(definition.priority) : 100,
+    });
+    horaePortErrors.delete(id);
+    refreshHoraePorts();
+    _emitPortChange({ type: 'register', id, slot });
+    return () => unregisterHoraePort(id);
+}
+
+function _unregisterPortInternal(id, silent) {
+    id = String(id || '').trim();
+    const port = horaePorts.get(id);
+    if (!port) return false;
+    document.querySelectorAll(`.horae-port-root[data-horae-port-id="${CSS.escape(id)}"]`).forEach(root =>
+        _disposePortRoot(root, port));
+    document.querySelectorAll(
+        `.horae-port-tab[data-port-id="${CSS.escape(id)}"], .horae-port-tab-content[data-port-id="${CSS.escape(id)}"]`
+    ).forEach(el => el.remove());
+    horaePorts.delete(id);
+    horaePortErrors.delete(id);
+    if (!silent) {
+        refreshHoraePorts();
+        _emitPortChange({ type: 'unregister', id, slot: port.slot });
+    }
+    return true;
+}
+
+function unregisterHoraePort(id) {
+    return _unregisterPortInternal(id, false);
+}
+
+function registerHoraeDataProvider(id, provider) {
+    id = String(id || '').trim();
+    if (!id) throw new TypeError('Horae data provider id is required.');
+    if (typeof provider !== 'function') throw new TypeError('Horae data provider must be a function.');
+    horaeDataProviders.set(id, provider);
+    refreshHoraePorts();
+    return () => unregisterHoraeDataProvider(id);
+}
+
+function unregisterHoraeDataProvider(id) {
+    id = String(id || '').trim();
+    const existed = horaeDataProviders.delete(id);
+    if (existed) refreshHoraePorts();
+    return existed;
+}
+
+function _publishHoraeApi() {
+    const api = Object.freeze({
+        version: VERSION,
+        portApiVersion: 1,
+        isEnabled: () => !!settings.enabled,
+        getSettings: () => ({ ...settings }),
+        getLatestState: (skipLast) => horaeManager.getLatestState(skipLast),
+        getRpgState: (skipLast) => horaeManager.getRpgStateAt(skipLast),
+        getEvents: (limit, filterLevel) => horaeManager.getEvents(limit, filterLevel),
+        getChat: () => horaeManager.getChat(),
+        registerPort: registerHoraePort,
+        unregisterPort: unregisterHoraePort,
+        getPorts: () => [...horaePorts.values()].map(port => Object.freeze({
+            id: port.id,
+            slot: port.slot,
+            title: port.title || port.name || null,
+            icon: port.icon || null,
+            priority: port.priority,
+        })),
+        refreshPorts: refreshHoraePorts,
+        registerDataProvider: registerHoraeDataProvider,
+        unregisterDataProvider: unregisterHoraeDataProvider,
+        getDataProviderIds: () => [...horaeDataProviders.keys()],
+        slots: [...HORAE_PORT_SLOTS],
+    });
+    window.Horae = api;
+    return api;
+}
+
 /** 获取当前对话的自定义表格 */
 function getChatTables() {
     const context = getContext();
     if (!context?.chat?.length) return [];
-    
+
     const firstMessage = context.chat[0];
     if (firstMessage?.horae_meta?.customTables) {
         return firstMessage.horae_meta.customTables;
     }
-    
+
     // 兼容旧版：检查chat数组属性
     if (context.chat.horae_tables) {
         return context.chat.horae_tables;
     }
-    
+
     return [];
 }
 
@@ -554,18 +1432,18 @@ function getChatTables() {
 function setChatTables(tables) {
     const context = getContext();
     if (!context?.chat?.length) return;
-    
+
     if (!context.chat[0].horae_meta) {
         context.chat[0].horae_meta = createEmptyMeta();
     }
-    
+
     // 快照 baseData 用于回退
     for (const table of tables) {
         table.baseData = JSON.parse(JSON.stringify(table.data || {}));
         table.baseRows = table.rows || 2;
         table.baseCols = table.cols || 2;
     }
-    
+
     context.chat[0].horae_meta.customTables = tables;
     getContext().saveChat();
 }
@@ -825,7 +1703,7 @@ function getAllTables() {
 function getUserAgenda() {
     const context = getContext();
     if (!context?.chat?.length) return [];
-    
+
     const firstMessage = context.chat[0];
     if (firstMessage?.horae_meta?.agenda) {
         return firstMessage.horae_meta.agenda;
@@ -839,11 +1717,11 @@ function getUserAgenda() {
 function setUserAgenda(agenda) {
     const context = getContext();
     if (!context?.chat?.length) return;
-    
+
     if (!context.chat[0].horae_meta) {
         context.chat[0].horae_meta = createEmptyMeta();
     }
-    
+
     context.chat[0].horae_meta.agenda = agenda;
     getContext().saveChat();
 }
@@ -854,7 +1732,7 @@ function setUserAgenda(agenda) {
  */
 function getAllAgenda() {
     const all = [];
-    
+
     // 1. 用户手动创建的
     const userItems = getUserAgenda();
     for (const item of userItems) {
@@ -869,7 +1747,7 @@ function getAllAgenda() {
             _index: all.length
         });
     }
-    
+
     // 2. AI写入的（存储在各条消息的 horae_meta.agenda）
     const context = getContext();
     if (context?.chat) {
@@ -896,7 +1774,7 @@ function getAllAgenda() {
             }
         }
     }
-    
+
     return all;
 }
 
@@ -906,7 +1784,7 @@ function getAllAgenda() {
 function toggleAgendaDone(agendaItem, done) {
     const context = getContext();
     if (!context?.chat) return;
-    
+
     if (agendaItem._store === 'user') {
         const agenda = getUserAgenda();
         // 按text查找（更可靠）
@@ -934,7 +1812,7 @@ function deleteAgendaItem(agendaItem) {
     const context = getContext();
     if (!context?.chat) return;
     const targetText = agendaItem.text;
-    
+
     // 标记所有匹配项为 _deleted（防止其他消息中同名项复活）
     if (context.chat[0]?.horae_meta?.agenda) {
         for (const a of context.chat[0].horae_meta.agenda) {
@@ -949,7 +1827,7 @@ function deleteAgendaItem(agendaItem) {
             }
         }
     }
-    
+
     // 同时记录已删除文本到 chat[0]，供 rebuild 时参考
     if (!context.chat[0].horae_meta) context.chat[0].horae_meta = createEmptyMeta();
     if (!context.chat[0].horae_meta._deletedAgendaTexts) context.chat[0].horae_meta._deletedAgendaTexts = [];
@@ -991,7 +1869,7 @@ function importTable(file) {
             if (!tableData || typeof tableData !== 'object') {
                 throw new Error(t('ui.invalidTableData'));
             }
-            
+
             const newTable = {
                 id: Date.now().toString(),
                 name: tableData.name || t('ui.importedTable'),
@@ -1000,12 +1878,12 @@ function importTable(file) {
                 data: tableData.data || {},
                 prompt: tableData.prompt || ''
             };
-            
+
             // 设置 baseData 为完整导入数据，防止 rebuildTableData 时丢失
             newTable.baseData = JSON.parse(JSON.stringify(newTable.data));
             newTable.baseRows = newTable.rows;
             newTable.baseCols = newTable.cols;
-            
+
             // 清除同名表格的旧 AI 贡献记录，防止 rebuild 时旧数据回流
             const importName = (newTable.name || '').trim();
             if (importName) {
@@ -1024,15 +1902,15 @@ function importTable(file) {
                     }
                 }
             }
-            
+
             const tables = getChatTables();
             tables.push(newTable);
             setChatTables(tables);
-            
+
             renderCustomTablesList();
             showToast(t('toast.tableImported'), 'success');
         } catch (err) {
-            showToast(t('toast.importFailed', {error: err.message}), 'error');
+            showToast(t('toast.importFailed', { error: err.message }), 'error');
         }
     };
     reader.readAsText(file);
@@ -1047,7 +1925,7 @@ function importTable(file) {
  */
 function updateStatusDisplay() {
     const state = horaeManager.getLatestState();
-    
+
     // 更新时间显示（标准日历显示周几）
     const dateEl = document.getElementById('horae-current-date');
     const timeEl = document.getElementById('horae-current-time');
@@ -1062,15 +1940,15 @@ function updateStatusDisplay() {
         }
     }
     if (timeEl) timeEl.textContent = state.timestamp?.story_time || '--:--';
-    
+
     // 更新地点显示
     const locationEl = document.getElementById('horae-current-location');
     if (locationEl) locationEl.textContent = state.scene?.location || t('status.noLocation');
-    
+
     // 更新氛围
     const atmosphereEl = document.getElementById('horae-current-atmosphere');
     if (atmosphereEl) atmosphereEl.textContent = state.scene?.atmosphere || '';
-    
+
     // 更新服装列表（仅显示在场角色的服装）
     const costumesEl = document.getElementById('horae-costumes-list');
     if (costumesEl) {
@@ -1091,7 +1969,7 @@ function updateStatusDisplay() {
             `).join('');
         }
     }
-    
+
     // 更新物品快速列表
     const itemsEl = document.getElementById('horae-items-quick');
     if (itemsEl) {
@@ -1113,13 +1991,16 @@ function updateStatusDisplay() {
  * 更新时间线显示
  */
 function updateTimelineDisplay() {
+    // 渲染前先确保所有 active 摘要在 events 中都有卡片（缺失就补回，不会 deactivate 摘要）
+    try { cleanOrphanSummaries(); } catch (e) { console.warn('[Horae] projectSummaryCards before render failed:', e); }
+
     const filterLevel = document.getElementById('horae-timeline-filter')?.value || 'all';
     const searchKeyword = (document.getElementById('horae-timeline-search')?.value || '').trim().toLowerCase();
     let events = horaeManager.getEvents(0, filterLevel);
     const listEl = document.getElementById('horae-timeline-list');
-    
+
     if (!listEl) return;
-    
+
     // 关键字筛选
     if (searchKeyword) {
         events = events.filter(e => {
@@ -1129,39 +2010,43 @@ function updateTimelineDisplay() {
             return summary.includes(searchKeyword) || date.includes(searchKeyword) || level.includes(searchKeyword);
         });
     }
-    
+
     if (events.length === 0) {
-        const filterText = filterLevel === 'all' ? '' : t('ui.filterLevelOf', {level: filterLevel});
-        const searchText = searchKeyword ? t('ui.searchContaining', {keyword: searchKeyword}) : '';
+        const filterText = filterLevel === 'all' ? '' : t('ui.filterLevelOf', { level: filterLevel });
+        const searchText = searchKeyword ? t('ui.searchContaining', { keyword: searchKeyword }) : '';
         listEl.innerHTML = `
             <div class="horae-empty-state">
                 <i class="fa-regular fa-clock"></i>
-                <span>${t('ui.noFilteredEvents', {search: searchText, filter: filterText})}</span>
+                <span>${t('ui.noFilteredEvents', { search: searchText, filter: filterText })}</span>
             </div>
         `;
         return;
     }
-    
+
     const state = horaeManager.getLatestState();
     const currentDate = state.timestamp?.story_date || getCurrentSystemTime().date;
-    
+
     // 更新多选按钮状态
     const msBtn = document.getElementById('horae-btn-timeline-multiselect');
     if (msBtn) {
         msBtn.classList.toggle('active', timelineMultiSelectMode);
         msBtn.title = timelineMultiSelectMode ? t('ui.exitMultiSelect') : t('ui.multiSelectMode');
     }
-    
+
     // 获取摘要映射（summaryId → entry），用于判定压缩状态
     const chat = horaeManager.getChat();
     const summaries = chat?.[0]?.horae_meta?.autoSummaries || [];
     const activeSummaryIds = new Set(summaries.filter(s => s.active).map(s => s.id));
-    
+    const renderSummaryLevelBadge = (summaryEntry) => {
+        const depth = _normalizeSummaryDepth(summaryEntry?.depth);
+        return `<span class="horae-level-badge summary">${t('timeline.summaryBadge')} L${depth}</span>`;
+    };
+
     listEl.innerHTML = events.reverse().map(e => {
         const isSummary = e.event?.isSummary || e.event?.level === '摘要';
         const compressedBy = e.event?._compressedBy;
         const summaryId = e.event?._summaryId;
-        
+
         // 已被压缩的事件：当对应摘要处于 active 状态时隐藏
         if (compressedBy && activeSummaryIds.has(compressedBy)) {
             return '';
@@ -1170,11 +2055,12 @@ function updateTimelineDisplay() {
         if (summaryId && !activeSummaryIds.has(summaryId)) {
             const summaryEntry = summaries.find(s => s.id === summaryId);
             const rangeStr = summaryEntry ? `#${summaryEntry.range[0]}-#${summaryEntry.range[1]}` : '';
+            const summaryBadge = renderSummaryLevelBadge(summaryEntry);
             return `
             <div class="horae-timeline-item summary horae-summary-collapsed" data-message-id="${e.messageIndex}" data-summary-id="${summaryId}">
                 <div class="horae-timeline-summary-icon"><i class="fa-solid fa-file-lines"></i></div>
                 <div class="horae-timeline-content">
-                    <div class="horae-timeline-summary"><span class="horae-level-badge summary">${t('timeline.summaryBadge')}</span>${t('timeline.summaryExpanded')}</div>
+                    <div class="horae-timeline-summary">${summaryBadge}${t('timeline.summaryExpanded')}</div>
                     <div class="horae-timeline-meta">${rangeStr} · ${summaryEntry?.auto ? t('timeline.autoSummary') : t('timeline.manualSummary')}</div>
                 </div>
                 <div class="horae-summary-actions">
@@ -1187,36 +2073,37 @@ function updateTimelineDisplay() {
                 </div>
             </div>`;
         }
-        
+
         const result = calculateDetailedRelativeTime(
             e.timestamp?.story_date || '',
             currentDate
         );
         const relTime = result.relative;
         const levelClass = isSummary ? 'summary' :
-                          (e.event?.level === '关键' || e.event?.level === '關鍵') ? 'critical' : 
-                          e.event?.level === '重要' ? 'important' : '';
+            (e.event?.level === '关键' || e.event?.level === '關鍵') ? 'critical' :
+                e.event?.level === '重要' ? 'important' : '';
         const levelBadge = e.event?.level ? `<span class="horae-level-badge ${levelClass}">${e.event.level}</span>` : '';
-        
+
         const dateStr = e.timestamp?.story_date || '?';
         const parsed = parseStoryDate(dateStr);
         const displayDate = (parsed && parsed.type === 'standard') ? formatStoryDate(parsed, true) : dateStr;
-        
+
         const eventKey = `${e.messageIndex}-${e.eventIndex || 0}`;
         const isSelected = selectedTimelineEvents.has(eventKey);
         const selectedClass = isSelected ? 'selected' : '';
         const checkboxDisplay = timelineMultiSelectMode ? 'flex' : 'none';
-        
+
         // 被标记为已压缩但摘要为 inactive 的事件，显示虚线框
         const isRestoredFromCompress = compressedBy && !activeSummaryIds.has(compressedBy);
         const compressedClass = isRestoredFromCompress ? 'horae-compressed-restored' : '';
-        
+
         if (isSummary) {
             const summaryContent = e.event?.summary || '';
             const summaryDisplay = summaryContent || `<span class="horae-summary-hint">${t('tooltip.editSummary')}</span>`;
             const summaryEntry = summaryId ? summaries.find(s => s.id === summaryId) : null;
             const isActive = summaryEntry?.active;
             const rangeStr = summaryEntry ? `#${summaryEntry.range[0]}-#${summaryEntry.range[1]}` : '';
+            const summaryBadge = renderSummaryLevelBadge(summaryEntry);
             // 有 summaryId 的摘要事件带切换/删除/编辑按钮
             const toggleBtns = summaryId ? `
                 <div class="horae-summary-actions">
@@ -1239,7 +2126,7 @@ function updateTimelineDisplay() {
                     <i class="fa-solid fa-file-lines"></i>
                 </div>
                 <div class="horae-timeline-content">
-                    <div class="horae-timeline-summary">${levelBadge}${summaryDisplay}</div>
+                    <div class="horae-timeline-summary">${summaryBadge}${summaryDisplay}</div>
                     <div class="horae-timeline-meta">${rangeStr ? rangeStr + ' · ' : ''}${summaryEntry?.auto ? t('timeline.autoSummary') : ''} ${t('timeline.summaryBadge')} · #${e.messageIndex}</div>
                 </div>
                 ${toggleBtns}
@@ -1249,12 +2136,12 @@ function updateTimelineDisplay() {
             </div>
             `;
         }
-        
+
         const restoreBtn = isRestoredFromCompress ? `
-                <button class="horae-summary-toggle-btn horae-btn-inline-toggle" data-summary-id="${compressedBy}" title="${t('tooltip.toggleSummary')}"
+                <button class="horae-summary-toggle-btn horae-btn-inline-toggle" data-summary-id="${compressedBy}" title="${t('tooltip.toggleSummary')}">
                     <i class="fa-solid fa-compress"></i>
                 </button>` : '';
-        
+
         return `
             <div class="horae-timeline-item horae-editable-item ${levelClass} ${selectedClass} ${compressedClass}" data-message-id="${e.messageIndex}" data-event-key="${eventKey}">
                 <div class="horae-item-checkbox" style="display: ${checkboxDisplay}">
@@ -1266,7 +2153,7 @@ function updateTimelineDisplay() {
                 </div>
                 <div class="horae-timeline-content">
                     <div class="horae-timeline-summary">${levelBadge}${e.event?.summary || t('ui.noRecorded')}</div>
-                    <div class="horae-timeline-meta">${relTime} · ${t('ui.messageLabel', {id: e.messageIndex})}</div>
+                    <div class="horae-timeline-meta">${relTime} · ${t('ui.messageLabel', { id: e.messageIndex })}</div>
                 </div>
                 ${restoreBtn}
                 <button class="horae-item-edit-btn" data-edit-type="event" data-message-id="${e.messageIndex}" data-event-index="${e.eventIndex || 0}" title="${t('common.edit')}" style="${timelineMultiSelectMode ? 'display:none' : ''}">
@@ -1275,11 +2162,11 @@ function updateTimelineDisplay() {
             </div>
         `;
     }).join('');
-    
+
     // 绑定事件
     listEl.querySelectorAll('.horae-timeline-item').forEach(item => {
         const eventKey = item.dataset.eventKey;
-        
+
         if (timelineMultiSelectMode) {
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -1300,7 +2187,7 @@ function updateTimelineDisplay() {
             item.addEventListener('touchcancel', cancelTimelineLongPress);
         }
     });
-    
+
     // 摘要切换/删除按钮
     listEl.querySelectorAll('.horae-summary-toggle-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -1320,7 +2207,7 @@ function updateTimelineDisplay() {
             openSummaryEditModal(btn.dataset.summaryId, parseInt(btn.dataset.messageId), parseInt(btn.dataset.eventIndex));
         });
     });
-    
+
     bindEditButtons();
 }
 
@@ -1337,14 +2224,44 @@ async function setMessagesHidden(chat, indices, hidden) {
         const slashModule = await import('/scripts/slash-commands.js');
         const exec = slashModule.executeSlashCommandsWithOptions;
         const cmd = hidden ? '/hide' : '/unhide';
-        for (const idx of indices) {
-            if (!chat[idx]) continue;
+        const action = hidden ? 'hide' : 'unhide';
+        const msgCounterKey = hidden ? 'hideMsgs' : 'unhideMsgs';
+        const batchId = ++_hideUnhideDebugStats.batches;
+
+        const validIndices = [...new Set(indices.filter(idx => Number.isInteger(idx) && idx >= 0 && !!chat[idx]))]
+            .sort((a, b) => a - b);
+        const ranges = [];
+        if (validIndices.length > 0) {
+            let start = validIndices[0];
+            let prev = validIndices[0];
+            for (let i = 1; i < validIndices.length; i++) {
+                const cur = validIndices[i];
+                if (cur === prev + 1) {
+                    prev = cur;
+                    continue;
+                }
+                ranges.push([start, prev]);
+                start = cur;
+                prev = cur;
+            }
+            ranges.push([start, prev]);
+        }
+
+        console.log(`[Horae][Debug] /${action} batch#${batchId} start, indices=${indices.length}, valid=${validIndices.length}, ranges=${ranges.length}`);
+        for (let i = 0; i < ranges.length; i++) {
+            const [start, end] = ranges[i];
+            const rangeArg = start === end ? `${start}` : `${start}-${end}`;
+            const covered = end - start + 1;
             try {
-                await exec(`${cmd} ${idx}`);
+                _hideUnhideDebugStats[action]++;
+                _hideUnhideDebugStats[msgCounterKey] += covered;
+                console.log(`[Horae][Debug] /${action} call#${_hideUnhideDebugStats[action]} (batch#${batchId} ${i + 1}/${ranges.length}) range=${rangeArg} covers=${covered}`);
+                await exec(`${cmd} ${rangeArg}`);
             } catch (cmdErr) {
-                console.warn(`[Horae] ${cmd} ${idx} 失败:`, cmdErr);
+                console.warn(`[Horae] ${cmd} ${rangeArg} 失败:`, cmdErr);
             }
         }
+        console.log(`[Horae][Debug] batch#${batchId} done, total /hide=${_hideUnhideDebugStats.hide} (msgs=${_hideUnhideDebugStats.hideMsgs}), total /unhide=${_hideUnhideDebugStats.unhide} (msgs=${_hideUnhideDebugStats.unhideMsgs})`);
     } catch (e) {
         console.warn('[Horae] 无法加载酒馆命令模块，回退到手动设置:', e);
     }
@@ -1360,14 +2277,119 @@ async function setMessagesHidden(chat, indices, hidden) {
     await getContext().saveChat();
 }
 
+/** 归一化摘要层级：缺失/非法一律回落到 1 */
+function _normalizeSummaryDepth(depth) {
+    const n = parseInt(depth, 10);
+    if (!Number.isFinite(n) || n < 1) return 1;
+    return Math.floor(n);
+}
+
 /** 从摘要条目中取回所有关联的消息索引 */
 function getSummaryMsgIndices(entry) {
     if (!entry) return [];
+    if (Array.isArray(entry.coveredIndices) && entry.coveredIndices.length) {
+        const set = new Set(entry.coveredIndices);
+        for (const e of (entry.originalEvents || [])) set.add(e.msgIdx);
+        return [...set];
+    }
     const fromEvents = (entry.originalEvents || []).map(e => e.msgIdx);
     if (entry.range) {
         for (let i = entry.range[0]; i <= entry.range[1]; i++) fromEvents.push(i);
     }
     return [...new Set(fromEvents)];
+}
+
+function _pickPreferredSummaryOwner(prev, next) {
+    if (!prev) return next;
+    if (!next) return prev;
+    if ((next.depth || 1) !== (prev.depth || 1)) {
+        return (next.depth || 1) > (prev.depth || 1) ? next : prev;
+    }
+    return (next.span || Number.MAX_SAFE_INTEGER) < (prev.span || Number.MAX_SAFE_INTEGER) ? next : prev;
+}
+
+async function _removeSummaryAndRestoreHierarchy(chat, summaryId) {
+    if (!chat?.length || !summaryId) return { removedEntry: null, restoredChildren: [] };
+    const firstMeta = chat?.[0]?.horae_meta;
+
+    let removedEntry = null;
+    if (Array.isArray(firstMeta?.autoSummaries)) {
+        const idx = firstMeta.autoSummaries.findIndex(s => s?.id === summaryId);
+        if (idx !== -1) {
+            removedEntry = firstMeta.autoSummaries.splice(idx, 1)[0];
+        }
+    }
+
+    const restoredChildren = [];
+    if (removedEntry && Array.isArray(removedEntry.mergedSummaries) && removedEntry.mergedSummaries.length && Array.isArray(firstMeta?.autoSummaries)) {
+        const existingIds = new Set(firstMeta.autoSummaries.filter(s => s?.id).map(s => s.id));
+        for (const child of removedEntry.mergedSummaries) {
+            if (!child?.id || existingIds.has(child.id)) continue;
+            firstMeta.autoSummaries.push(child);
+            existingIds.add(child.id);
+            restoredChildren.push(child);
+        }
+    }
+
+    const childOwnerByMsg = new Map();
+    for (const child of restoredChildren) {
+        const childId = child?.id;
+        if (!childId) continue;
+        const depth = _normalizeSummaryDepth(child?.depth);
+        const childRange = _getSummaryEntryRange(child);
+        const span = childRange ? Math.max(1, childRange[1] - childRange[0] + 1) : Number.MAX_SAFE_INTEGER;
+        const owner = { id: childId, depth, span };
+        for (const idx of getSummaryMsgIndices(child)) {
+            if (!Number.isInteger(idx)) continue;
+            const prev = childOwnerByMsg.get(idx);
+            childOwnerByMsg.set(idx, _pickPreferredSummaryOwner(prev, owner));
+        }
+    }
+
+    for (let i = 0; i < chat.length; i++) {
+        const meta = chat[i]?.horae_meta;
+        if (!Array.isArray(meta?.events)) continue;
+
+        meta.events = meta.events.filter(evt => evt?._summaryId !== summaryId);
+
+        const msgOwner = childOwnerByMsg.get(i);
+        for (const evt of meta.events) {
+            if (!evt || evt._compressedBy !== summaryId) continue;
+            if (msgOwner?.id) evt._compressedBy = msgOwner.id;
+            else delete evt._compressedBy;
+        }
+    }
+
+    if (restoredChildren.length > 0) {
+        cleanOrphanSummaries();
+    }
+
+    if (removedEntry) {
+        const affected = new Set(
+            getSummaryMsgIndices(removedEntry).filter(i => Number.isInteger(i) && i >= 0 && !!chat[i])
+        );
+
+        if (affected.size > 0) {
+            const shouldHide = new Set();
+            const activeSummaries = (firstMeta?.autoSummaries || []).filter(s => s?.id && s.active !== false);
+            for (const s of activeSummaries) {
+                for (const idx of getSummaryMsgIndices(s)) {
+                    if (affected.has(idx)) shouldHide.add(idx);
+                }
+            }
+
+            const toHide = [];
+            const toShow = [];
+            for (const idx of affected) {
+                if (shouldHide.has(idx)) toHide.push(idx);
+                else toShow.push(idx);
+            }
+            if (toShow.length > 0) await setMessagesHidden(chat, toShow, false);
+            if (toHide.length > 0) await setMessagesHidden(chat, toHide, true);
+        }
+    }
+
+    return { removedEntry, restoredChildren };
 }
 
 /** 切换摘要的 active 状态（摘要视图 ↔ 原始时间线） */
@@ -1390,35 +2412,10 @@ async function toggleSummaryActive(summaryId) {
 async function deleteSummary(summaryId) {
     if (!summaryId) return;
     if (!confirm(t('confirm.deleteSummary'))) return;
-    
+
     const chat = horaeManager.getChat();
-    const firstMeta = chat?.[0]?.horae_meta;
-    
-    // 从 autoSummaries 中移除记录（如有）
-    let removedEntry = null;
-    if (firstMeta?.autoSummaries) {
-        const idx = firstMeta.autoSummaries.findIndex(s => s.id === summaryId);
-        if (idx !== -1) {
-            removedEntry = firstMeta.autoSummaries.splice(idx, 1)[0];
-        }
-    }
-    
-    // 清除所有消息中对应的 _compressedBy 标记和摘要事件（无论 autoSummaries 记录是否存在）
-    for (let i = 0; i < chat.length; i++) {
-        const meta = chat[i]?.horae_meta;
-        if (!meta?.events) continue;
-        meta.events = meta.events.filter(evt => evt._summaryId !== summaryId);
-        for (const evt of meta.events) {
-            if (evt._compressedBy === summaryId) delete evt._compressedBy;
-        }
-    }
-    
-    // 恢复被隐藏的楼层
-    if (removedEntry) {
-        const indices = getSummaryMsgIndices(removedEntry);
-        await setMessagesHidden(chat, indices, false);
-    }
-    
+    await _removeSummaryAndRestoreHierarchy(chat, summaryId);
+
     await getContext().saveChat();
     updateTimelineDisplay();
     showToast(t('toast.saveSuccess'), 'success');
@@ -1434,7 +2431,10 @@ function openSummaryEditModal(summaryId, messageId, eventIndex) {
     const evtsArr = meta?.events || [];
     const evt = evtsArr[eventIndex];
     if (!evt) { showToast(t('toast.summaryNotFound'), 'error'); return; }
-    const currentText = evt.summary || '';
+    // 优先读 autoSummaries.summaryText（持久化的真源），回退到 events 卡片上的 summary
+    const currentText = (summaryEntry && typeof summaryEntry.summaryText === 'string' && summaryEntry.summaryText)
+        ? summaryEntry.summaryText
+        : (evt.summary || '');
 
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal${isLightMode() ? ' horae-light' : ''}">
@@ -1470,8 +2470,12 @@ function openSummaryEditModal(summaryId, messageId, eventIndex) {
         e.stopPropagation();
         const newText = document.getElementById('horae-summary-edit-text').value.trim();
         if (!newText) { showToast(t('toast.summaryEmpty'), 'warning'); return; }
-        evt.summary = newText;
+        // autoSummaries.summaryText 是真源，永远写入；events 卡片是投影，存在则同步
         if (summaryEntry) summaryEntry.summaryText = newText;
+        evt.summary = newText;
+        if (typeof messageId === 'number' && messageId > 0) {
+            try { injectHoraeTagToMessage(messageId, meta); } catch (e2) { /* ignore */ }
+        }
         await getContext().saveChat();
         closeEditModal();
         updateTimelineDisplay();
@@ -1487,28 +2491,28 @@ function openSummaryEditModal(summaryId, messageId, eventIndex) {
 function updateAgendaDisplay() {
     const listEl = document.getElementById('horae-agenda-list');
     if (!listEl) return;
-    
+
     const agenda = getAllAgenda();
-    
+
     if (agenda.length === 0) {
         listEl.innerHTML = `<div class="horae-empty-hint">${t('timeline.noAgenda')}</div>`;
         // 退出多选模式（如果所有待办被删完了）
         if (agendaMultiSelectMode) exitAgendaMultiSelect();
         return;
     }
-    
+
     listEl.innerHTML = agenda.map((item, index) => {
         const sourceIcon = item.source === 'ai'
             ? `<i class="fa-solid fa-robot horae-agenda-source-ai" title="${t('badge.aiRecord')}"></i>`
             : `<i class="fa-solid fa-user horae-agenda-source-user" title="${t('badge.userAdded')}"></i>`;
         const dateDisplay = item.date ? `<span class="horae-agenda-date"><i class="fa-regular fa-calendar"></i> ${escapeHtml(item.date)}</span>` : '';
-        
+
         // 多选模式：显示 checkbox
         const checkboxHtml = agendaMultiSelectMode
             ? `<label class="horae-agenda-select-check"><input type="checkbox" ${selectedAgendaIndices.has(index) ? 'checked' : ''} data-agenda-select="${index}"></label>`
             : '';
         const selectedClass = agendaMultiSelectMode && selectedAgendaIndices.has(index) ? ' selected' : '';
-        
+
         return `
             <div class="horae-agenda-item${selectedClass}" data-agenda-idx="${index}">
                 ${checkboxHtml}
@@ -1519,12 +2523,12 @@ function updateAgendaDisplay() {
             </div>
         `;
     }).join('');
-    
+
     const currentAgenda = agenda;
-    
+
     listEl.querySelectorAll('.horae-agenda-item').forEach(el => {
         const idx = parseInt(el.dataset.agendaIdx);
-        
+
         if (agendaMultiSelectMode) {
             // 多选模式：点击切换选中
             el.addEventListener('click', (e) => {
@@ -1538,7 +2542,7 @@ function updateAgendaDisplay() {
                 const item = currentAgenda[idx];
                 if (item) openAgendaEditModal(item);
             });
-            
+
             // 长按进入多选模式（仅绑定在 agenda item 上）
             el.addEventListener('mousedown', (e) => startAgendaLongPress(e, idx));
             el.addEventListener('touchstart', (e) => startAgendaLongPress(e, idx), { passive: true });
@@ -1573,14 +2577,14 @@ function enterAgendaMultiSelect(initialIdx) {
     if (initialIdx !== undefined && initialIdx !== null) {
         selectedAgendaIndices.add(initialIdx);
     }
-    
+
     const bar = document.getElementById('horae-agenda-multiselect-bar');
     if (bar) bar.style.display = 'flex';
-    
+
     // 隐藏添加按钮
     const addBtn = document.getElementById('horae-btn-add-agenda');
     if (addBtn) addBtn.style.display = 'none';
-    
+
     updateAgendaDisplay();
     updateAgendaSelectedCount();
     showToast(t('toast.agendaMultiSelect'), 'info');
@@ -1589,14 +2593,14 @@ function enterAgendaMultiSelect(initialIdx) {
 function exitAgendaMultiSelect() {
     agendaMultiSelectMode = false;
     selectedAgendaIndices.clear();
-    
+
     const bar = document.getElementById('horae-agenda-multiselect-bar');
     if (bar) bar.style.display = 'none';
-    
+
     // 恢复添加按钮
     const addBtn = document.getElementById('horae-btn-add-agenda');
     if (addBtn) addBtn.style.display = '';
-    
+
     updateAgendaDisplay();
 }
 
@@ -1606,7 +2610,7 @@ function toggleAgendaSelection(idx) {
     } else {
         selectedAgendaIndices.add(idx);
     }
-    
+
     // 更新该条目的UI
     const item = document.querySelector(`#horae-agenda-list .horae-agenda-item[data-agenda-idx="${idx}"]`);
     if (item) {
@@ -1614,7 +2618,7 @@ function toggleAgendaSelection(idx) {
         if (cb) cb.checked = selectedAgendaIndices.has(idx);
         item.classList.toggle('selected', selectedAgendaIndices.has(idx));
     }
-    
+
     updateAgendaSelectedCount();
 }
 
@@ -1638,24 +2642,24 @@ async function deleteSelectedAgenda() {
         showToast(t('toast.insufficientEvents'), 'warning');
         return;
     }
-    
-    const confirmed = confirm(t('confirm.deleteAgenda', {n: selectedAgendaIndices.size}));
+
+    const confirmed = confirm(t('confirm.deleteAgenda', { n: selectedAgendaIndices.size }));
     if (!confirmed) return;
-    
+
     // 获取当前完整的 agenda 列表，按索引倒序删除
     const agenda = getAllAgenda();
     const sortedIndices = Array.from(selectedAgendaIndices).sort((a, b) => b - a);
-    
+
     for (const idx of sortedIndices) {
         const item = agenda[idx];
         if (item) {
             deleteAgendaItem(item);
         }
     }
-    
+
     await getContext().saveChat();
     showToast(t('toast.saveSuccess'), 'success');
-    
+
     exitAgendaMultiSelect();
 }
 
@@ -1687,7 +2691,7 @@ function cancelTimelineLongPress() {
 function showTimelineContextMenu(e, eventKey) {
     closeTimelineContextMenu();
     const [msgIdx, evtIdx] = eventKey.split('-').map(Number);
-    
+
     const menu = document.createElement('div');
     menu.id = 'horae-timeline-context-menu';
     menu.className = 'horae-context-menu';
@@ -1710,14 +2714,14 @@ function showTimelineContextMenu(e, eventKey) {
             <i class="fa-solid fa-trash-can"></i> ${t('ui.contextDeleteEvent')}
         </div>
     `;
-    
+
     document.body.appendChild(menu);
-    
+
     // 阻止菜单自身的所有事件冒泡（防止移动端抽屉收回）
     ['click', 'mousedown', 'mouseup', 'touchstart', 'touchend'].forEach(evType => {
         menu.addEventListener(evType, (ev) => ev.stopPropagation());
     });
-    
+
     // 定位
     const rect = e.target.closest('.horae-timeline-item')?.getBoundingClientRect();
     if (rect) {
@@ -1732,7 +2736,7 @@ function showTimelineContextMenu(e, eventKey) {
         menu.style.top = `${(e.clientY || e.touches?.[0]?.clientY || 100)}px`;
         menu.style.left = `${(e.clientX || e.touches?.[0]?.clientX || 100)}px`;
     }
-    
+
     // 绑定菜单项操作（click + touchend 双绑定确保移动端可用）
     menu.querySelectorAll('.horae-context-item').forEach(item => {
         let handled = false;
@@ -1749,7 +2753,7 @@ function showTimelineContextMenu(e, eventKey) {
         item.addEventListener('click', handler);
         item.addEventListener('touchend', handler);
     });
-    
+
     // 点击菜单外区域关闭（仅用 click，不用 touchstart 避免抢占移动端触摸）
     setTimeout(() => {
         const dismissHandler = (ev) => {
@@ -1770,9 +2774,9 @@ function closeTimelineContextMenu() {
 /** 处理时间线上下文菜单操作 */
 async function handleTimelineContextAction(action, msgIdx, evtIdx, eventKey) {
     const chat = horaeManager.getChat();
-    
+
     if (action === 'delete') {
-        if (!confirm(t('confirm.deleteTimeline', {n: 1}))) return;
+        if (!confirm(t('confirm.deleteTimeline', { n: 1 }))) return;
         const meta = chat[msgIdx]?.horae_meta;
         if (!meta) return;
         if (meta.events && evtIdx < meta.events.length) {
@@ -1786,10 +2790,10 @@ async function handleTimelineContextAction(action, msgIdx, evtIdx, eventKey) {
         updateStatusDisplay();
         return;
     }
-    
+
     const isAbove = action.includes('above');
     const isSummary = action.includes('summary');
-    
+
     if (isSummary) {
         openTimelineSummaryModal(msgIdx, evtIdx, isAbove);
     } else {
@@ -1802,7 +2806,7 @@ function openTimelineInsertEventModal(refMsgIdx, refEvtIdx, isAbove) {
     const state = horaeManager.getLatestState();
     const currentDate = state.timestamp?.story_date || '';
     const currentTime = state.timestamp?.story_time || '';
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -1842,48 +2846,48 @@ function openTimelineInsertEventModal(refMsgIdx, refEvtIdx, isAbove) {
             </div>
         </div>
     `;
-    
+
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     document.getElementById('edit-modal-save').addEventListener('click', async (e) => {
         e.stopPropagation();
         const date = document.getElementById('insert-event-date').value.trim();
         const time = document.getElementById('insert-event-time').value.trim();
         const level = document.getElementById('insert-event-level').value;
         const summary = document.getElementById('insert-event-summary').value.trim();
-        
+
         if (!summary) { showToast(t('toast.enterSummary'), 'warning'); return; }
-        
+
         const newEvent = {
             is_important: level === '重要' || level === '关键' || level === '關鍵',
             level: level,
             summary: summary
         };
-        
+
         const chat = horaeManager.getChat();
         const meta = chat[refMsgIdx]?.horae_meta;
         if (!meta) { closeEditModal(); return; }
         if (!meta.events) meta.events = [];
-        
+
         const newTimestamp = { story_date: date, story_time: time };
         if (!meta.timestamp) meta.timestamp = {};
-        
+
         const insertIdx = isAbove ? refEvtIdx + 1 : refEvtIdx;
         meta.events.splice(insertIdx, 0, newEvent);
-        
+
         if (date && !meta.timestamp.story_date) {
             meta.timestamp.story_date = date;
             meta.timestamp.story_time = time;
         }
-        
+
         await getContext().saveChat();
         closeEditModal();
         updateTimelineDisplay();
         updateStatusDisplay();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('edit-modal-cancel').addEventListener('click', (e) => {
         e.stopPropagation();
         closeEditModal();
@@ -1930,15 +2934,15 @@ function openTimelineSummaryModal(refMsgIdx, refEvtIdx, isAbove) {
             </div>
         </div>
     `;
-    
+
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     document.getElementById('edit-modal-save').addEventListener('click', async (e) => {
         e.stopPropagation();
         const summaryText = document.getElementById('insert-summary-text').value.trim();
         if (!summaryText) { showToast(t('toast.enterContent'), 'warning'); return; }
-        
+
         const rangeFrom = parseInt(document.getElementById('insert-summary-from').value) || 0;
         const rangeTo = parseInt(document.getElementById('insert-summary-to').value) || refMsgIdx;
         const rMin = Math.max(0, Math.min(rangeFrom, rangeTo));
@@ -1952,12 +2956,12 @@ function openTimelineSummaryModal(refMsgIdx, refEvtIdx, isAbove) {
             isSummary: true,
             _summaryId: summaryId
         };
-        
+
         if (!chat?.length) { closeEditModal(); return; }
         const meta = chat[refMsgIdx]?.horae_meta;
         if (!meta) { closeEditModal(); return; }
         if (!meta.events) meta.events = [];
-        
+
         const insertIdx = isAbove ? refEvtIdx + 1 : refEvtIdx;
         meta.events.splice(insertIdx, 0, newEvent);
 
@@ -1970,19 +2974,20 @@ function openTimelineSummaryModal(refMsgIdx, refEvtIdx, isAbove) {
             range: [rMin, rMax],
             summaryText,
             originalEvents: [],
+            depth: 1,
             active: true,
             createdAt: new Date().toISOString(),
             auto: false,
             manual: true
         });
-        
+
         await getContext().saveChat();
         closeEditModal();
         updateTimelineDisplay();
         updateStatusDisplay();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('edit-modal-cancel').addEventListener('click', (e) => {
         e.stopPropagation();
         closeEditModal();
@@ -1994,10 +2999,10 @@ function enterTimelineMultiSelect(initialKey) {
     timelineMultiSelectMode = true;
     selectedTimelineEvents.clear();
     if (initialKey) selectedTimelineEvents.add(initialKey);
-    
+
     const bar = document.getElementById('horae-timeline-multiselect-bar');
     if (bar) bar.style.display = 'flex';
-    
+
     updateTimelineDisplay();
     updateTimelineSelectedCount();
     showToast(t('toast.agendaMultiSelect'), 'info');
@@ -2007,10 +3012,10 @@ function enterTimelineMultiSelect(initialKey) {
 function exitTimelineMultiSelect() {
     timelineMultiSelectMode = false;
     selectedTimelineEvents.clear();
-    
+
     const bar = document.getElementById('horae-timeline-multiselect-bar');
     if (bar) bar.style.display = 'none';
-    
+
     updateTimelineDisplay();
 }
 
@@ -2021,7 +3026,7 @@ function toggleTimelineSelection(eventKey) {
     } else {
         selectedTimelineEvents.add(eventKey);
     }
-    
+
     const item = document.querySelector(`.horae-timeline-item[data-event-key="${eventKey}"]`);
     if (item) {
         const checkbox = item.querySelector('input[type="checkbox"]');
@@ -2057,7 +3062,7 @@ function showCompressModeDialog(eventCount, msgRange) {
                 <div class="horae-modal-header"><span>${t('ui.compressMode')}</span></div>
                 <div class="horae-modal-body" style="padding: 16px;">
                     <p style="margin: 0 0 12px; color: var(--horae-text-muted); font-size: 13px;">
-                        ${t('ui.selectedEventsInfo', {n: eventCount, from: msgRange[0], to: msgRange[1]})}
+                        ${t('ui.selectedEventsInfo', { n: eventCount, from: msgRange[0], to: msgRange[1] })}
                     </p>
                     <label style="display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 1px solid var(--horae-border); border-radius: 6px; cursor: pointer; margin-bottom: 8px;">
                         <input type="radio" name="horae-compress-mode" value="event" checked style="margin-top: 3px;">
@@ -2098,9 +3103,11 @@ async function compressSelectedTimelineEvents() {
         showToast(t('toast.insufficientEvents'), 'warning');
         return;
     }
-    
+
     const chat = horaeManager.getChat();
+    const _allSummaries = chat[0]?.horae_meta?.autoSummaries || [];
     const events = [];
+    const _selectedSummaryIds = new Set();
     for (const key of selectedTimelineEvents) {
         const [msgIdx, evtIdx] = key.split('-').map(Number);
         const meta = chat[msgIdx]?.horae_meta;
@@ -2108,28 +3115,45 @@ async function compressSelectedTimelineEvents() {
         const evtsArr = meta.events || (meta.event ? [meta.event] : []);
         const evt = evtsArr[evtIdx];
         if (!evt) continue;
+        if (evt._carryoverSeed) continue;
         const date = meta.timestamp?.story_date || '?';
         const time = meta.timestamp?.story_time || '';
+        const isSummary = evt.isSummary || evt.level === '摘要';
+        // _summaryId 缺失时通过 msgIdx + summaryText 反查（兼容旧版数据丢字段的场景）
+        let _summaryId = evt._summaryId || null;
+        if (isSummary && !_summaryId) {
+            const sig = (evt.summary || '').slice(0, 40);
+            const matched = _allSummaries.find(s => {
+                const inRange = s.range && msgIdx >= s.range[0] && msgIdx <= s.range[1];
+                if (!inRange) return false;
+                if (!sig) return true;
+                return s.summaryText === evt.summary
+                    || (s.summaryText || '').slice(0, 40) === sig;
+            });
+            if (matched) _summaryId = matched.id;
+        }
+        if (isSummary && _summaryId) _selectedSummaryIds.add(_summaryId);
         events.push({
             key, msgIdx, evtIdx,
             date, time,
             level: evt.level || '一般',
             summary: evt.summary || '',
-            isSummary: evt.isSummary || evt.level === '摘要'
+            isSummary,
+            _summaryId
         });
     }
-    
+
     if (events.length < 2) {
         showToast(t('toast.insufficientEvents'), 'warning');
         return;
     }
-    
+
     events.sort((a, b) => a.msgIdx - b.msgIdx || a.evtIdx - b.evtIdx);
-    
+
     const msgRange = [events[0].msgIdx, events[events.length - 1].msgIdx];
     const mode = await showCompressModeDialog(events.length, msgRange);
     if (!mode) return;
-    
+
     let sourceText;
     if (mode === 'fulltext') {
         // 收集涉及的消息全文
@@ -2148,14 +3172,14 @@ async function compressSelectedTimelineEvents() {
             return `[${e.level}] ${timeStr}: ${e.summary}`;
         }).join('\n');
     }
-    
+
     let cancelled = false;
     let cancelResolve = null;
     const cancelPromise = new Promise(resolve => { cancelResolve = resolve; });
 
     const fetchAbort = new AbortController();
     const _origFetch = window.fetch;
-    window.fetch = function(input, init = {}) {
+    window.fetch = function (input, init = {}) {
         if (!cancelled) {
             const ourSignal = fetchAbort.signal;
             if (init.signal && typeof AbortSignal.any === 'function') {
@@ -2184,13 +3208,13 @@ async function compressSelectedTimelineEvents() {
         if (!confirm(t('confirm.compressCancel'))) return;
         cancelled = true;
         fetchAbort.abort();
-        try { getContext().stopGeneration(); } catch (_) {}
+        try { getContext().stopGeneration(); } catch (_) { }
         cancelResolve();
         overlay.remove();
         window.fetch = _origFetch;
         showToast(t('toast.scanCancelled'), 'info');
     });
-    
+
     try {
         const context = getContext();
         const userName = context?.name1 || t('ui.protagonist');
@@ -2210,61 +3234,131 @@ async function compressSelectedTimelineEvents() {
         _isSummaryGeneration = true;
         let response;
         try {
-            const genPromise = getContext().generateRaw(prompt, null, false, false);
+            const genPromise = _generateForAuxTask(prompt, { kind: 'manualCompress' });
             response = await Promise.race([genPromise, cancelPromise]);
         } finally {
             _isSummaryGeneration = false;
             window.fetch = _origFetch;
         }
-        
+
         if (cancelled) return;
-        
+
         if (!response || !response.trim()) {
             overlay.remove();
             showToast(t('toast.aiNoValidSummary'), 'warning');
             return;
         }
-        
-        let summaryText = response.trim()
+
+        const cleanedText = response.trim()
             .replace(/<think(?:ing)?[\s>][\s\S]*?<\/think(?:ing)?>/gi, '')
             .replace(/<horae>[\s\S]*?<\/horae>/gi, '')
             .replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, '')
             .replace(/<!--horae[\s\S]*?-->/gi, '')
             .trim();
+        const hasOpenSummaryTag = /<horaesummary>/i.test(cleanedText);
+        const hasCloseSummaryTag = /<\/horaesummary>/i.test(cleanedText);
+        if (hasOpenSummaryTag && !hasCloseSummaryTag) {
+            overlay.remove();
+            showToast('总结失败：AI回复截断', 'warning');
+            return;
+        }
+        if (!hasOpenSummaryTag && !hasCloseSummaryTag) {
+            overlay.remove();
+            showToast('总结失败：AI回复掉格式', 'warning');
+            return;
+        }
+        if (!hasOpenSummaryTag || !hasCloseSummaryTag) {
+            overlay.remove();
+            showToast('总结失败：AI回复掉格式', 'warning');
+            return;
+        }
+        const summaryMatch = cleanedText.match(/<horaesummary>([\s\S]*?)<\/horaesummary>/i);
+        let summaryText = (summaryMatch?.[1] || '').trim();
         if (!summaryText) {
             overlay.remove();
             showToast(t('toast.aiSummaryEmpty'), 'warning');
             return;
         }
-        
+
         // 非破坏性压缩：将原始事件和摘要存入 autoSummaries
         const firstMsg = chat[0];
         if (!firstMsg.horae_meta) firstMsg.horae_meta = createEmptyMeta();
         if (!firstMsg.horae_meta.autoSummaries) firstMsg.horae_meta.autoSummaries = [];
-        
-        // 收集被压缩的原始事件备份
-        const originalEvents = events.map(e => ({
-            msgIdx: e.msgIdx,
-            evtIdx: e.evtIdx,
-            event: { ...chat[e.msgIdx]?.horae_meta?.events?.[e.evtIdx] },
-            timestamp: chat[e.msgIdx]?.horae_meta?.timestamp
-        }));
-        
+
+        // 计算合并范围：旧摘要按其原 range 取并集，普通事件按 msgIdx
+        let rangeMin = Infinity, rangeMax = -Infinity;
+        for (const e of events) {
+            if (e.isSummary && e._summaryId) {
+                const oldEntry = _allSummaries.find(s => s.id === e._summaryId);
+                if (oldEntry?.range && Array.isArray(oldEntry.range) && oldEntry.range.length >= 2) {
+                    rangeMin = Math.min(rangeMin, oldEntry.range[0]);
+                    rangeMax = Math.max(rangeMax, oldEntry.range[1]);
+                    continue;
+                }
+            }
+            rangeMin = Math.min(rangeMin, e.msgIdx);
+            rangeMax = Math.max(rangeMax, e.msgIdx);
+        }
+        if (!isFinite(rangeMin) || !isFinite(rangeMax)) {
+            rangeMin = events[0].msgIdx;
+            rangeMax = events[events.length - 1].msgIdx;
+        }
+
+        // 继承被合并摘要的 originalEvents，便于后续删除时还原
+        const ownOriginal = events
+            .filter(e => !e.isSummary)
+            .map(e => ({
+                msgIdx: e.msgIdx,
+                evtIdx: e.evtIdx,
+                event: { ...chat[e.msgIdx]?.horae_meta?.events?.[e.evtIdx] },
+                timestamp: chat[e.msgIdx]?.horae_meta?.timestamp
+            }));
+        const inheritedOriginal = [];
+        for (const sid of _selectedSummaryIds) {
+            const old = _allSummaries.find(s => s.id === sid);
+            if (old?.originalEvents?.length) inheritedOriginal.push(...old.originalEvents);
+        }
+        const originalEvents = [...inheritedOriginal, ...ownOriginal];
+
         const summaryId = `cs_${Date.now()}`;
+        const coveredIndices = [];
+        for (let i = rangeMin; i <= rangeMax; i++) coveredIndices.push(i);
+        let nextDepth = 1;
+        if (_selectedSummaryIds.size > 0) {
+            let maxDepth = 1;
+            for (const sid of _selectedSummaryIds) {
+                const old = _allSummaries.find(s => s.id === sid);
+                maxDepth = Math.max(maxDepth, _normalizeSummaryDepth(old?.depth));
+            }
+            nextDepth = maxDepth + 1;
+        }
         const summaryEntry = {
             id: summaryId,
-            range: [events[0].msgIdx, events[events.length - 1].msgIdx],
+            range: [rangeMin, rangeMax],
+            coveredIndices,
             summaryText,
             originalEvents,
+            depth: nextDepth,
             active: true,
             createdAt: new Date().toISOString(),
             auto: false
         };
+        // 剔除被合并的旧 entry，避免重叠
+        const mergedSummaries = [];
+        if (_selectedSummaryIds.size > 0) {
+            const retained = [];
+            for (const s of firstMsg.horae_meta.autoSummaries) {
+                if (s?.id && _selectedSummaryIds.has(s.id)) mergedSummaries.push(s);
+                else retained.push(s);
+            }
+            firstMsg.horae_meta.autoSummaries = retained;
+        }
+        if (mergedSummaries.length > 0) summaryEntry.mergedSummaries = mergedSummaries;
         firstMsg.horae_meta.autoSummaries.push(summaryEntry);
-        
-        // 标记原始事件为已压缩（不删除），兼容旧 meta.event 单数格式
-        // 标记所有涉及消息的全部事件，避免同一消息中未选中的事件泄露
-        const compressedMsgIndices = [...new Set(events.map(e => e.msgIdx))];
+
+        // 标记原始事件为已压缩，并清掉旧摘要卡片
+        const compressedMsgIndices = [];
+        for (let i = rangeMin; i <= rangeMax; i++) compressedMsgIndices.push(i);
         for (const msgIdx of compressedMsgIndices) {
             const meta = chat[msgIdx]?.horae_meta;
             if (!meta) continue;
@@ -2273,16 +3367,20 @@ async function compressSelectedTimelineEvents() {
                 delete meta.event;
             }
             if (!meta.events) continue;
+            if (_selectedSummaryIds.size > 0) {
+                meta.events = meta.events.filter(ev =>
+                    !(ev?.isSummary && ev?._summaryId && _selectedSummaryIds.has(ev._summaryId))
+                );
+            }
             for (let j = 0; j < meta.events.length; j++) {
                 if (meta.events[j] && !meta.events[j].isSummary) {
                     meta.events[j]._compressedBy = summaryId;
                 }
             }
         }
-        
-        // 在最早的消息位置插入摘要事件
-        const firstEvent = events[0];
-        const firstMeta = chat[firstEvent.msgIdx]?.horae_meta;
+
+        // 在 range 起点插入新摘要卡片
+        const firstMeta = chat[rangeMin]?.horae_meta;
         if (firstMeta) {
             if (!firstMeta.events) firstMeta.events = [];
             firstMeta.events.push({
@@ -2293,26 +3391,24 @@ async function compressSelectedTimelineEvents() {
                 _summaryId: summaryId
             });
         }
-        
+
         // 隐藏范围内所有楼层（包括中间的 USER 消息）
-        const hideMin = compressedMsgIndices[0];
-        const hideMax = compressedMsgIndices[compressedMsgIndices.length - 1];
         const hideIndices = [];
-        for (let i = hideMin; i <= hideMax; i++) hideIndices.push(i);
+        for (let i = rangeMin; i <= rangeMax; i++) hideIndices.push(i);
         await setMessagesHidden(chat, hideIndices, true);
-        
+
         await context.saveChat();
         overlay.remove();
         exitTimelineMultiSelect();
         updateTimelineDisplay();
         updateStatusDisplay();
-        showToast(t('toast.eventsCompressed', {n: events.length}), 'success');
+        showToast(t('toast.eventsCompressed', { n: events.length }), 'success');
     } catch (err) {
         window.fetch = _origFetch;
         overlay.remove();
         if (cancelled || err?.name === 'AbortError') return;
         console.error('[Horae] 压缩失败:', err);
-        showToast(t('toast.compressFailed', {error: err.message || 'unknown'}), 'error');
+        showToast(t('toast.compressFailed', { error: err.message || 'unknown' }), 'error');
     }
 }
 
@@ -2322,13 +3418,12 @@ async function deleteSelectedTimelineEvents() {
         showToast(t('toast.insufficientEvents'), 'warning');
         return;
     }
-    
-    const confirmed = confirm(t('confirm.deleteTimeline', {n: selectedTimelineEvents.size}));
+
+    const confirmed = confirm(t('confirm.deleteTimeline', { n: selectedTimelineEvents.size }));
     if (!confirmed) return;
-    
+
     const chat = horaeManager.getChat();
-    const firstMeta = chat?.[0]?.horae_meta;
-    
+
     // 按消息分组，倒序删除事件索引
     const msgMap = new Map();
     for (const key of selectedTimelineEvents) {
@@ -2336,7 +3431,7 @@ async function deleteSelectedTimelineEvents() {
         if (!msgMap.has(msgIdx)) msgMap.set(msgIdx, []);
         msgMap.get(msgIdx).push(evtIdx);
     }
-    
+
     // 收集被删除的摘要事件的 summaryId，用于级联清理
     const deletedSummaryIds = new Set();
     for (const [msgIdx, evtIndices] of msgMap) {
@@ -2347,11 +3442,11 @@ async function deleteSelectedTimelineEvents() {
             if (evt?._summaryId) deletedSummaryIds.add(evt._summaryId);
         }
     }
-    
+
     for (const [msgIdx, evtIndices] of msgMap) {
         const meta = chat[msgIdx]?.horae_meta;
         if (!meta) continue;
-        
+
         if (meta.events && meta.events.length > 0) {
             const sorted = evtIndices.sort((a, b) => b - a);
             for (const ei of sorted) {
@@ -2363,29 +3458,14 @@ async function deleteSelectedTimelineEvents() {
             delete meta.event;
         }
     }
-    
-    // 级联清理：删除摘要事件时同步清理 autoSummaries、_compressedBy、is_hidden
-    if (deletedSummaryIds.size > 0 && firstMeta?.autoSummaries) {
+
+    // 级联清理：删除摘要事件时同步清理并回退到子摘要层（如有）
+    if (deletedSummaryIds.size > 0) {
         for (const summaryId of deletedSummaryIds) {
-            const idx = firstMeta.autoSummaries.findIndex(s => s.id === summaryId);
-            let removedEntry = null;
-            if (idx !== -1) {
-                removedEntry = firstMeta.autoSummaries.splice(idx, 1)[0];
-            }
-            for (let i = 0; i < chat.length; i++) {
-                const meta = chat[i]?.horae_meta;
-                if (!meta?.events) continue;
-                for (const evt of meta.events) {
-                    if (evt._compressedBy === summaryId) delete evt._compressedBy;
-                }
-            }
-            if (removedEntry) {
-                const indices = getSummaryMsgIndices(removedEntry);
-                await setMessagesHidden(chat, indices, false);
-            }
+            await _removeSummaryAndRestoreHierarchy(chat, summaryId);
         }
     }
-    
+
     await getContext().saveChat();
     showToast(t('toast.saveSuccess'), 'success');
     exitTimelineMultiSelect();
@@ -2402,14 +3482,14 @@ function openAgendaEditModal(agendaItem = null) {
     const currentText = isEdit ? (agendaItem.text || '') : '';
     const currentDate = isEdit ? (agendaItem.date || '') : '';
     const title = isEdit ? t('ui.editAgenda') : t('ui.addAgenda');
-    
+
     closeEditModal();
-    
+
     const deleteBtn = isEdit ? `
                     <button id="agenda-modal-delete" class="horae-btn danger">
                         <i class="fa-solid fa-trash"></i> ${t('common.delete')}
                     </button>` : '';
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -2438,19 +3518,19 @@ function openAgendaEditModal(agendaItem = null) {
             </div>
         </div>
     `;
-    
+
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     setTimeout(() => {
         const textarea = document.getElementById('agenda-edit-text');
         if (textarea) textarea.focus();
     }, 100);
-    
+
     document.getElementById('horae-edit-modal').addEventListener('click', (e) => {
         if (e.target.id === 'horae-edit-modal') closeEditModal();
     });
-    
+
     document.getElementById('agenda-modal-save').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -2460,7 +3540,7 @@ function openAgendaEditModal(agendaItem = null) {
             showToast(t('toast.contentEmpty'), 'warning');
             return;
         }
-        
+
         if (isEdit) {
             // 编辑现有项
             const context = getContext();
@@ -2489,27 +3569,27 @@ function openAgendaEditModal(agendaItem = null) {
             agenda.push({ text, date, source: 'user', done: false, createdAt: Date.now() });
             setUserAgenda(agenda);
         }
-        
+
         closeEditModal();
         updateAgendaDisplay();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('agenda-modal-cancel').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
         closeEditModal();
     });
-    
+
     // 删除按钮（仅编辑模式）
     const deleteEl = document.getElementById('agenda-modal-delete');
     if (deleteEl && isEdit) {
         deleteEl.addEventListener('click', (e) => {
             e.stopPropagation();
             e.stopImmediatePropagation();
-            
-            if (!confirm(t('confirm.deleteAgenda', {n: 1}))) return;
-            
+
+            if (!confirm(t('confirm.deleteAgenda', { n: 1 }))) return;
+
             deleteAgendaItem(agendaItem);
             closeEditModal();
             updateAgendaDisplay();
@@ -2525,11 +3605,11 @@ function updateCharactersDisplay() {
     const state = horaeManager.getLatestState();
     const presentChars = state.scene?.characters_present || [];
     const favoriteNpcs = settings.favoriteNpcs || [];
-    
+
     // 获取角色卡主角色名（用于置顶和特殊样式）
     const context = getContext();
     const mainCharName = context?.name2 || '';
-    
+
     // 在场角色
     const presentEl = document.getElementById('horae-present-characters');
     if (presentEl) {
@@ -2547,7 +3627,7 @@ function updateCharactersDisplay() {
             }).join('');
         }
     }
-    
+
     // 好感度 - 分层显示：重要角色 > 在场角色 > 其他
     const affectionEl = document.getElementById('horae-affection-list');
     const pinnedNpcsAff = settings.pinnedNpcs || [];
@@ -2563,13 +3643,13 @@ function updateCharactersDisplay() {
                 return false;
             };
             const mainCharAffection = entries.filter(([key]) => isMainCharAff(key));
-            const presentAffection = entries.filter(([key]) => 
+            const presentAffection = entries.filter(([key]) =>
                 !isMainCharAff(key) && presentChars.some(char => key.includes(char))
             );
-            const otherAffection = entries.filter(([key]) => 
+            const otherAffection = entries.filter(([key]) =>
                 !isMainCharAff(key) && !presentChars.some(char => key.includes(char))
             );
-            
+
             const renderAffection = (arr, isMainChar = false) => arr.map(([key, value]) => {
                 const numValue = typeof value === 'number' ? value : parseFloat(value) || 0;
                 const valueClass = numValue > 0 ? 'positive' : numValue < 0 ? 'negative' : 'neutral';
@@ -2587,7 +3667,7 @@ function updateCharactersDisplay() {
                     </div>
                 `;
             }).join('');
-            
+
             let html = '';
             // 角色卡角色置顶
             if (mainCharAffection.length > 0) {
@@ -2608,7 +3688,7 @@ function updateCharactersDisplay() {
             affectionEl.innerHTML = html;
         }
     }
-    
+
     // NPC列表 - 分层显示：重要角色 > 星标角色 > 普通角色
     const npcEl = document.getElementById('horae-npc-list');
     const pinnedNpcs = settings.pinnedNpcs || [];
@@ -2624,13 +3704,13 @@ function updateCharactersDisplay() {
                 return false;
             };
             const mainCharEntries = entries.filter(([name]) => isMainChar(name));
-            const favoriteEntries = entries.filter(([name]) => 
+            const favoriteEntries = entries.filter(([name]) =>
                 !isMainChar(name) && favoriteNpcs.includes(name)
             );
-            const normalEntries = entries.filter(([name]) => 
+            const normalEntries = entries.filter(([name]) =>
                 !isMainChar(name) && !favoriteNpcs.includes(name)
             );
-            
+
             const renderNpc = (name, info, isFavorite, isMainChar = false) => {
                 let descHtml = '';
                 if (info.appearance || info.personality || info.relationship) {
@@ -2642,14 +3722,14 @@ function updateCharactersDisplay() {
                 } else {
                     descHtml = `<span class="horae-npc-legacy">${t('ui.noDescription')}</span>`;
                 }
-                
+
                 // 扩展信息行（年龄/种族/职业）
                 const extraTags = [];
                 if (info.race) extraTags.push(info.race);
                 if (info.age) {
                     const ageResult = horaeManager.calcCurrentAge(info, state.timestamp?.story_date);
                     if (ageResult.changed) {
-                        extraTags.push(`<span class="horae-age-calc" title="${t('ui.ageCalcTitle', {original: ageResult.original})}">${ageResult.display}${t('ui.ageSuffix')}</span>`);
+                        extraTags.push(`<span class="horae-age-calc" title="${t('ui.ageCalcTitle', { original: ageResult.original })}">${ageResult.display}${t('ui.ageSuffix')}</span>`);
                     } else {
                         extraTags.push(info.age);
                     }
@@ -2664,11 +3744,11 @@ function updateCharactersDisplay() {
                 if (info.note) {
                     descHtml += `<span class="horae-npc-note">${info.note}</span>`;
                 }
-                
+
                 const starClass = isFavorite ? 'favorite' : '';
                 const mainClass = isMainChar ? 'main-character' : '';
                 const starIcon = isFavorite ? 'fa-solid fa-star' : 'fa-regular fa-star';
-                
+
                 // 性别图标映射
                 let genderIcon, genderClass;
                 if (isMainChar) {
@@ -2687,7 +3767,7 @@ function updateCharactersDisplay() {
                         genderClass = 'horae-gender-unknown';
                     }
                 }
-                
+
                 const isSelected = selectedNpcs.has(name);
                 const selectedClass = isSelected ? 'selected' : '';
                 const checkboxDisplay = npcMultiSelectMode ? 'flex' : 'none';
@@ -2711,7 +3791,7 @@ function updateCharactersDisplay() {
                     </div>
                 `;
             };
-            
+
             // 性别过滤栏
             let html = `
                 <div class="horae-gender-filter">
@@ -2721,7 +3801,7 @@ function updateCharactersDisplay() {
                     <button class="horae-gender-btn" data-filter="other" title="${t('characters.genderOther')}"><i class="fa-solid fa-user"></i></button>
                 </div>
             `;
-            
+
             // 角色卡角色区域（置顶）
             if (mainCharEntries.length > 0) {
                 html += '<div class="horae-npc-section main-character-section">';
@@ -2729,7 +3809,7 @@ function updateCharactersDisplay() {
                 html += mainCharEntries.map(([name, info]) => renderNpc(name, info, false, true)).join('');
                 html += '</div>';
             }
-            
+
             // 星标NPC区域
             if (favoriteEntries.length > 0) {
                 if (mainCharEntries.length > 0) {
@@ -2740,7 +3820,7 @@ function updateCharactersDisplay() {
                 html += favoriteEntries.map(([name, info]) => renderNpc(name, info, true)).join('');
                 html += '</div>';
             }
-            
+
             // 普通NPC区域
             if (normalEntries.length > 0) {
                 if (mainCharEntries.length > 0 || favoriteEntries.length > 0) {
@@ -2753,9 +3833,9 @@ function updateCharactersDisplay() {
                 html += normalEntries.map(([name, info]) => renderNpc(name, info, false)).join('');
                 html += '</div>';
             }
-            
+
             npcEl.innerHTML = html;
-            
+
             npcEl.querySelectorAll('.horae-npc-star').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -2764,7 +3844,7 @@ function updateCharactersDisplay() {
                     toggleNpcFavorite(npcName);
                 });
             });
-            
+
             // NPC 多选点击
             npcEl.querySelectorAll('.horae-npc-item').forEach(item => {
                 item.addEventListener('click', (e) => {
@@ -2774,9 +3854,9 @@ function updateCharactersDisplay() {
                     if (name) toggleNpcSelection(name);
                 });
             });
-            
+
             bindEditButtons();
-            
+
             npcEl.querySelectorAll('.horae-gender-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     npcEl.querySelectorAll('.horae-gender-btn').forEach(b => b.classList.remove('active'));
@@ -2798,7 +3878,7 @@ function updateCharactersDisplay() {
             });
         }
     }
-    
+
     // 关系网络渲染
     if (settings.sendRelationships) {
         updateRelationshipDisplay();
@@ -2811,14 +3891,14 @@ function updateCharactersDisplay() {
 function updateRelationshipDisplay() {
     const listEl = document.getElementById('horae-relationship-list');
     if (!listEl) return;
-    
+
     const relationships = horaeManager.getRelationships();
-    
+
     if (relationships.length === 0) {
         listEl.innerHTML = `<div class="horae-empty-hint">${t('characters.noRelationships')}</div>`;
         return;
     }
-    
+
     const html = relationships.map((rel, idx) => `
         <div class="horae-relationship-item" data-rel-index="${idx}">
             <div class="horae-rel-content">
@@ -2834,9 +3914,9 @@ function updateRelationshipDisplay() {
             </div>
         </div>
     `).join('');
-    
+
     listEl.innerHTML = html;
-    
+
     // 绑定编辑/删除事件
     listEl.querySelectorAll('.horae-rel-edit').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -2844,13 +3924,13 @@ function updateRelationshipDisplay() {
             openRelationshipEditModal(idx);
         });
     });
-    
+
     listEl.querySelectorAll('.horae-rel-delete').forEach(btn => {
         btn.addEventListener('click', async (e) => {
             const idx = parseInt(btn.closest('.horae-relationship-item').dataset.relIndex);
             const rels = horaeManager.getRelationships();
             const rel = rels[idx];
-            if (!confirm(t('confirm.deleteNpc', {name: `${rel.from} → ${rel.to}`}))) return;
+            if (!confirm(t('confirm.deleteNpc', { name: `${rel.from} → ${rel.to}` }))) return;
             rels.splice(idx, 1);
             horaeManager.setRelationships(rels);
             // 同步清理各消息中的同方向关系数据，防止 rebuildRelationships 复活
@@ -2876,7 +3956,7 @@ function openRelationshipEditModal(editIndex = null) {
     const rels = horaeManager.getRelationships();
     const isEdit = editIndex !== null && editIndex >= 0;
     const existing = isEdit ? rels[editIndex] : { from: '', to: '', type: '', note: '' };
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -2914,23 +3994,23 @@ function openRelationshipEditModal(editIndex = null) {
     `;
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     document.getElementById('horae-edit-modal').addEventListener('click', (e) => {
         if (e.target.id === 'horae-edit-modal') closeEditModal();
     });
-    
+
     document.getElementById('horae-rel-modal-save').addEventListener('click', async (e) => {
         e.stopPropagation();
         const from = document.getElementById('horae-rel-from').value.trim();
         const to = document.getElementById('horae-rel-to').value.trim();
         const type = document.getElementById('horae-rel-type').value.trim();
         const note = document.getElementById('horae-rel-note').value.trim();
-        
+
         if (!from || !to || !type) {
             showToast(t('toast.relFieldsRequired'), 'warning');
             return;
         }
-        
+
         if (isEdit) {
             const oldRel = rels[editIndex];
             rels[editIndex] = { from, to, type, note, _userEdited: true };
@@ -2952,14 +4032,14 @@ function openRelationshipEditModal(editIndex = null) {
         } else {
             rels.push({ from, to, type, note });
         }
-        
+
         horaeManager.setRelationships(rels);
         await getContext().saveChat();
         updateRelationshipDisplay();
         closeEditModal();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('horae-rel-modal-cancel').addEventListener('click', () => closeEditModal());
 }
 
@@ -2970,17 +4050,17 @@ function toggleNpcFavorite(npcName) {
     if (!settings.favoriteNpcs) {
         settings.favoriteNpcs = [];
     }
-    
+
     const index = settings.favoriteNpcs.indexOf(npcName);
     if (index > -1) {
         // 取消星标
         settings.favoriteNpcs.splice(index, 1);
-        showToast(t('toast.starRemoved', {name: npcName}), 'info');
+        showToast(t('toast.starRemoved', { name: npcName }), 'info');
     } else {
         settings.favoriteNpcs.push(npcName);
-        showToast(t('toast.starAdded', {name: npcName}), 'success');
+        showToast(t('toast.starAdded', { name: npcName }), 'success');
     }
-    
+
     saveSettings();
     updateCharactersDisplay();
 }
@@ -2994,21 +4074,27 @@ function updateItemsDisplay() {
     const filterEl = document.getElementById('horae-items-filter');
     const holderFilterEl = document.getElementById('horae-items-holder-filter');
     const searchEl = document.getElementById('horae-items-search');
-    
+
     if (!listEl) return;
-    
+
+    const multiSelectBtn = document.getElementById('horae-btn-items-multiselect');
+    if (multiSelectBtn) {
+        multiSelectBtn.classList.toggle('active', itemsMultiSelectMode);
+        multiSelectBtn.title = itemsMultiSelectMode ? t('ui.exitMultiSelect') : t('ui.multiSelectMode');
+    }
+
     const filterValue = filterEl?.value || 'all';
     const holderFilter = holderFilterEl?.value || 'all';
     const searchQuery = (searchEl?.value || '').trim().toLowerCase();
     let entries = Object.entries(state.items || {});
-    
+
     if (holderFilterEl) {
         const currentHolder = holderFilterEl.value;
         const holders = new Set();
         entries.forEach(([name, info]) => {
             if (info.holder) holders.add(info.holder);
         });
-        
+
         // 保留当前选项，更新选项列表
         const holderOptions = [`<option value="all">${t('ui.allHolders')}</option>`];
         holders.forEach(holder => {
@@ -3016,7 +4102,7 @@ function updateItemsDisplay() {
         });
         holderFilterEl.innerHTML = holderOptions.join('');
     }
-    
+
     // 搜索物品 - 按关键字
     if (searchQuery) {
         entries = entries.filter(([name, info]) => {
@@ -3024,17 +4110,17 @@ function updateItemsDisplay() {
             return searchTarget.includes(searchQuery);
         });
     }
-    
+
     // 筛选物品 - 按重要程度
     if (filterValue !== 'all') {
         entries = entries.filter(([name, info]) => info.importance === filterValue);
     }
-    
+
     // 筛选物品 - 按持有人
     if (holderFilter !== 'all') {
         entries = entries.filter(([name, info]) => info.holder === holderFilter);
     }
-    
+
     if (entries.length === 0) {
         let emptyMsg = t('items.noItems');
         if (filterValue !== 'all' || holderFilter !== 'all' || searchQuery) {
@@ -3048,7 +4134,7 @@ function updateItemsDisplay() {
         `;
         return;
     }
-    
+
     listEl.innerHTML = entries.map(([name, info]) => {
         const icon = info.icon || '📦';
         const importance = info.importance || '';
@@ -3057,7 +4143,7 @@ function updateItemsDisplay() {
         const importanceClass = isCritical ? 'critical' : isImportant ? 'important' : 'normal';
         const importanceLabel = isCritical ? t('levels.critical') : isImportant ? t('levels.important') : '';
         const importanceBadge = importanceLabel ? `<span class="horae-item-importance ${importanceClass}">${importanceLabel}</span>` : '';
-        
+
         // 修复显示格式：持有者 · 位置
         let positionStr = '';
         if (info.holder && info.location) {
@@ -3065,11 +4151,11 @@ function updateItemsDisplay() {
         } else if (info.holder) {
             positionStr = `<span class="holder">${info.holder}</span> ${t('ui.heldBy')}`;
         } else if (info.location) {
-            positionStr = t('ui.locatedAt', {location: info.location});
+            positionStr = t('ui.locatedAt', { location: info.location });
         } else {
             positionStr = t('ui.locationUnknown');
         }
-        
+
         const isSelected = selectedItems.has(name);
         const selectedClass = isSelected ? 'selected' : '';
         const checkboxDisplay = itemsMultiSelectMode ? 'flex' : 'none';
@@ -3078,7 +4164,7 @@ function updateItemsDisplay() {
         const isLocked = !!info._locked;
         const lockIcon = isLocked ? 'fa-lock' : 'fa-lock-open';
         const lockTitle = isLocked ? t('ui.locked') : t('ui.clickToLock');
-        
+
         return `
             <div class="horae-full-item horae-editable-item ${importanceClass} ${selectedClass}" data-item-name="${name}">
                 <div class="horae-item-checkbox" style="display: ${checkboxDisplay}">
@@ -3102,7 +4188,7 @@ function updateItemsDisplay() {
             </div>
         `;
     }).join('');
-    
+
     bindItemsEvents();
     bindEditButtons();
 }
@@ -3115,14 +4201,14 @@ function bindEditButtons() {
         // 移除旧的监听器（避免重复绑定）
         btn.replaceWith(btn.cloneNode(true));
     });
-    
+
     document.querySelectorAll('.horae-item-edit-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const editType = btn.dataset.editType;
             const editName = btn.dataset.editName;
             const messageId = btn.dataset.messageId;
-            
+
             if (editType === 'item') {
                 openItemEditModal(editName);
             } else if (editType === 'npc') {
@@ -3148,7 +4234,7 @@ function openItemEditModal(itemName) {
         showToast(t('toast.itemNotFoundGeneric'), 'error');
         return;
     }
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -3196,10 +4282,10 @@ function openItemEditModal(itemName) {
             </div>
         </div>
     `;
-    
+
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     document.getElementById('edit-modal-save').addEventListener('click', async (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -3208,7 +4294,7 @@ function openItemEditModal(itemName) {
             showToast(t('toast.itemNameRequired'), 'error');
             return;
         }
-        
+
         const newData = {
             icon: document.getElementById('edit-item-icon').value || item.icon,
             importance: document.getElementById('edit-item-importance').value,
@@ -3216,12 +4302,12 @@ function openItemEditModal(itemName) {
             holder: document.getElementById('edit-item-holder').value,
             location: document.getElementById('edit-item-location').value
         };
-        
+
         // 更新所有消息中的该物品（含数量后缀变体，如 sword(3)）
         const chat = horaeManager.getChat();
         const nameChanged = newName !== itemName;
         const editBaseName = getItemBaseName(itemName).toLowerCase();
-        
+
         for (let i = 0; i < chat.length; i++) {
             const meta = chat[i].horae_meta;
             if (!meta?.items) continue;
@@ -3236,14 +4322,14 @@ function openItemEditModal(itemName) {
                 Object.assign(meta.items[matchKey], newData);
             }
         }
-        
+
         await getContext().saveChat();
         closeEditModal();
         updateItemsDisplay();
         updateStatusDisplay();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('edit-modal-cancel').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -3259,12 +4345,12 @@ function openAffectionEditModal(charName) {
     const currentValue = state.affection?.[charName] || 0;
     const numValue = typeof currentValue === 'number' ? currentValue : parseFloat(currentValue) || 0;
     const level = horaeManager.getAffectionLevel(numValue);
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
                 <div class="horae-modal-header">
-                    <i class="fa-solid fa-heart"></i> ${t('modal.editAffection', {name: charName})}
+                    <i class="fa-solid fa-heart"></i> ${t('modal.editAffection', { name: charName })}
                 </div>
                 <div class="horae-modal-body horae-edit-modal-body">
                     <div class="horae-edit-field">
@@ -3290,25 +4376,25 @@ function openAffectionEditModal(charName) {
             </div>
         </div>
     `;
-    
+
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     // 实时更新好感等级预览
     document.getElementById('edit-affection-value').addEventListener('input', (e) => {
         const val = parseFloat(e.target.value) || 0;
         const newLevel = horaeManager.getAffectionLevel(val);
         document.querySelector('.horae-affection-level-preview').textContent = newLevel;
     });
-    
+
     document.getElementById('edit-modal-save').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
         const newValue = parseFloat(document.getElementById('edit-affection-value').value) || 0;
-        
+
         const chat = horaeManager.getChat();
         let lastMessageWithAffection = -1;
-        
+
         for (let i = chat.length - 1; i >= 0; i--) {
             const meta = chat[i].horae_meta;
             if (meta?.affection?.[charName] !== undefined) {
@@ -3316,12 +4402,12 @@ function openAffectionEditModal(charName) {
                 break;
             }
         }
-        
+
         let affectedIdx;
         if (lastMessageWithAffection >= 0) {
-            chat[lastMessageWithAffection].horae_meta.affection[charName] = { 
-                type: 'absolute', 
-                value: newValue 
+            chat[lastMessageWithAffection].horae_meta.affection[charName] = {
+                type: 'absolute',
+                value: newValue
             };
             affectedIdx = lastMessageWithAffection;
         } else {
@@ -3342,7 +4428,7 @@ function openAffectionEditModal(charName) {
     document.getElementById('edit-modal-delete').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
-        if (!confirm(t('confirm.deleteNpc', {name: charName}))) return;
+        if (!confirm(t('confirm.deleteNpc', { name: charName }))) return;
         const chat = horaeManager.getChat();
         let removed = 0;
         for (let i = 0; i < chat.length; i++) {
@@ -3357,7 +4443,7 @@ function openAffectionEditModal(charName) {
         updateCharactersDisplay();
         showToast(t('toast.saveSuccess'), 'info');
     });
-    
+
     document.getElementById('edit-modal-cancel').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -3373,7 +4459,7 @@ function _cascadeDeleteNpcs(names) {
     if (!names?.length) return;
     const chat = horaeManager.getChat();
     const nameSet = new Set(names);
-    
+
     for (let i = 0; i < chat.length; i++) {
         const meta = chat[i].horae_meta;
         if (!meta) continue;
@@ -3396,7 +4482,7 @@ function _cascadeDeleteNpcs(names) {
         }
         if (changed && i > 0) injectHoraeTagToMessage(i, meta);
     }
-    
+
     // RPG 数据
     const rpg = chat[0]?.horae_meta?.rpg;
     if (rpg) {
@@ -3408,13 +4494,23 @@ function _cascadeDeleteNpcs(names) {
             if (rpg.equipmentConfig?.perChar?.[name]) delete rpg.equipmentConfig.perChar[name];
         }
     }
-    
+
+    // 同步清理 _rpgConfigs，避免下次 rebuild 复活
+    const _cfgs = chat[0]?.horae_meta?._rpgConfigs;
+    if (_cfgs) {
+        for (const name of nameSet) {
+            if (_cfgs.equipmentConfig?.perChar?.[name]) {
+                delete _cfgs.equipmentConfig.perChar[name];
+            }
+        }
+    }
+
     // pinnedNpcs
     if (settings.pinnedNpcs) {
         settings.pinnedNpcs = settings.pinnedNpcs.filter(n => !nameSet.has(n));
         saveSettings();
     }
-    
+
     // 防回滚：记录到 chat[0]
     if (!chat[0].horae_meta) chat[0].horae_meta = createEmptyMeta();
     if (!chat[0].horae_meta._deletedNpcs) chat[0].horae_meta._deletedNpcs = [];
@@ -3423,6 +4519,294 @@ function _cascadeDeleteNpcs(names) {
             chat[0].horae_meta._deletedNpcs.push(name);
         }
     }
+}
+
+/**
+ * 打开「手动添加 NPC」弹窗（精简版）
+ * 字段：名字（必填）/ 别名 / 性别 / 外貌 / 性格 / 关系
+ * 提交前检查：撞名（含 _aliases）→ 提示打开编辑或合并
+ * 写入：chat[最后一条消息].horae_meta.npcs[名字]，并标记 chat[0].horae_meta._userAddedNpcs
+ * 名字旁有 ✨ 按钮可触发 AI 从剧情中补全外貌/性格/关系
+ */
+function openNpcAddModal() {
+    closeEditModal();
+    const state = horaeManager.getLatestState();
+    const existingNpcs = state.npcs || {};
+
+    const genderOptions = [
+        { val: '', label: t('ui.genderUnknown') },
+        { val: '男', label: t('ui.genderMale') },
+        { val: '女', label: t('ui.genderFemale') },
+        { val: '__custom__', label: t('ui.genderCustom') }
+    ].map(o => `<option value="${o.val}">${o.label}</option>`).join('');
+
+    const modalHtml = `
+        <div id="horae-edit-modal" class="horae-modal">
+            <div class="horae-modal-content">
+                <div class="horae-modal-header">
+                    <i class="fa-solid fa-user-plus"></i> ${t('modal.addNpc')}
+                </div>
+                <div class="horae-modal-body horae-edit-modal-body">
+                    <div class="horae-edit-field">
+                        <label>${t('label.npcName')} <span style="color:#e74c3c">*</span></label>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <input type="text" id="add-npc-name" placeholder="${t('placeholder.npcNameRequired')}" style="flex:1;min-width:0;">
+                            <button id="add-npc-ai-enrich" class="horae-btn" title="${t('tooltip.aiEnrichNpc')}" style="white-space:nowrap;padding:4px 10px;">
+                                <i class="fa-solid fa-wand-magic-sparkles"></i> ${t('label.aiEnrich')}
+                            </button>
+                        </div>
+                        <span class="horae-setting-sub-hint">${t('ui.aiEnrichHint')}</span>
+                    </div>
+                    <div class="horae-edit-field">
+                        <label>${t('label.npcAliases')} <span style="font-weight:normal;color:var(--horae-text-dim);font-size:11px">${t('label.npcAliasesHint')}</span></label>
+                        <input type="text" id="add-npc-aliases" placeholder="${t('placeholder.npcAliases')}">
+                    </div>
+                    <div class="horae-edit-field-row">
+                        <div class="horae-edit-field horae-edit-field-compact">
+                            <label>${t('label.npcGender')}</label>
+                            <select id="add-npc-gender">${genderOptions}</select>
+                            <input type="text" id="add-npc-gender-custom" placeholder="${t('ui.customGenderPlaceholder')}" style="display:none;margin-top:4px;">
+                        </div>
+                        <div class="horae-edit-field horae-edit-field-compact">
+                            <label>${t('label.npcAge')}</label>
+                            <input type="text" id="add-npc-age" placeholder="${t('placeholder.npcAge')}">
+                        </div>
+                    </div>
+                    <div class="horae-edit-field">
+                        <label>${t('label.npcAppearance')}</label>
+                        <textarea id="add-npc-appearance" placeholder="${t('placeholder.npcAppearance')}"></textarea>
+                    </div>
+                    <div class="horae-edit-field">
+                        <label>${t('label.npcPersonality')}</label>
+                        <input type="text" id="add-npc-personality" placeholder="${t('placeholder.npcPersonality')}">
+                    </div>
+                    <div class="horae-edit-field">
+                        <label>${t('label.npcRelationship')}</label>
+                        <input type="text" id="add-npc-relationship" placeholder="${t('placeholder.npcRelationship')}">
+                    </div>
+                </div>
+                <div class="horae-modal-footer">
+                    <button id="add-modal-save" class="horae-btn primary">
+                        <i class="fa-solid fa-check"></i> ${t('common.save')}
+                    </button>
+                    <button id="add-modal-cancel" class="horae-btn">
+                        <i class="fa-solid fa-xmark"></i> ${t('common.cancel')}
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    preventModalBubble();
+
+    document.getElementById('add-npc-gender').addEventListener('change', function () {
+        const customInput = document.getElementById('add-npc-gender-custom');
+        customInput.style.display = this.value === '__custom__' ? 'block' : 'none';
+        if (this.value !== '__custom__') customInput.value = '';
+    });
+
+    // ✨ AI 补全
+    document.getElementById('add-npc-ai-enrich').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const name = document.getElementById('add-npc-name').value.trim();
+        const aliasesRaw = document.getElementById('add-npc-aliases').value.trim();
+        const aliases = aliasesRaw ? aliasesRaw.split(/[,，、\/]/).map(s => s.trim()).filter(Boolean) : [];
+        if (!name) { showToast(t('toast.npcNameRequired'), 'warning'); return; }
+
+        const btn = e.currentTarget;
+        const origHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${t('common.loading')}`;
+        try {
+            const enriched = await aiEnrichNpc(name, aliases);
+            if (!enriched) {
+                showToast(t('toast.aiEnrichNoMessages', { name }), 'warning');
+                return;
+            }
+            if (enriched.appearance) document.getElementById('add-npc-appearance').value = enriched.appearance;
+            if (enriched.personality) document.getElementById('add-npc-personality').value = enriched.personality;
+            if (enriched.relationship) document.getElementById('add-npc-relationship').value = enriched.relationship;
+            if (enriched.age) document.getElementById('add-npc-age').value = enriched.age;
+            if (enriched.gender) {
+                const sel = document.getElementById('add-npc-gender');
+                if (['男', '女'].includes(enriched.gender)) {
+                    sel.value = enriched.gender;
+                } else {
+                    sel.value = '__custom__';
+                    const ci = document.getElementById('add-npc-gender-custom');
+                    ci.style.display = 'block';
+                    ci.value = enriched.gender;
+                }
+            }
+            showToast(t('toast.aiEnrichDone', { name, n: enriched._matchCount || 0 }), 'success');
+        } catch (err) {
+            console.error('[Horae] aiEnrichNpc 失败:', err);
+            showToast(t('toast.aiEnrichFailed', { error: err.message || err }), 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+        }
+    });
+
+    document.getElementById('add-modal-save').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const newName = document.getElementById('add-npc-name').value.trim();
+        if (!newName) { showToast(t('toast.npcNameRequired'), 'warning'); return; }
+
+        const aliasesRaw = document.getElementById('add-npc-aliases').value.trim();
+        const aliases = aliasesRaw ? aliasesRaw.split(/[,，、\/]/).map(s => s.trim()).filter(Boolean) : [];
+
+        // 撞名检查：精确名 / 既有 _aliases 包含
+        const lcName = newName.toLowerCase();
+        const lcAliases = aliases.map(a => a.toLowerCase());
+        let conflictName = null;
+        for (const [exName, exNpc] of Object.entries(existingNpcs)) {
+            if (exName.toLowerCase() === lcName) { conflictName = exName; break; }
+            const exAliasesLc = (exNpc?._aliases || []).map(a => a.toLowerCase());
+            if (exAliasesLc.includes(lcName) || lcAliases.some(a => exAliasesLc.includes(a) || a === exName.toLowerCase())) {
+                conflictName = exName;
+                break;
+            }
+        }
+        if (conflictName) {
+            const ok = confirm(t('confirm.npcAlreadyExists', { existing: conflictName, name: newName }));
+            if (ok) {
+                closeEditModal();
+                openNpcEditModal(conflictName);
+            }
+            return;
+        }
+
+        const genderSel = document.getElementById('add-npc-gender').value;
+        const newData = {
+            appearance: document.getElementById('add-npc-appearance').value,
+            personality: document.getElementById('add-npc-personality').value,
+            relationship: document.getElementById('add-npc-relationship').value,
+            gender: genderSel === '__custom__'
+                ? document.getElementById('add-npc-gender-custom').value.trim()
+                : genderSel,
+            age: document.getElementById('add-npc-age').value,
+            first_seen: new Date().toISOString(),
+            last_seen: new Date().toISOString(),
+        };
+        if (aliases.length) newData._aliases = aliases;
+
+        const chat = horaeManager.getChat();
+        if (!chat?.length) { showToast(t('toast.metaNotFound'), 'error'); return; }
+
+        // 写入最后一条消息的 horae_meta.npcs，确保下次 rebuild 时该 NPC 出现
+        const lastIdx = chat.length - 1;
+        let targetMeta = chat[lastIdx].horae_meta;
+        if (!targetMeta) {
+            targetMeta = createEmptyMeta();
+            chat[lastIdx].horae_meta = targetMeta;
+        }
+        if (!targetMeta.npcs) targetMeta.npcs = {};
+        targetMeta.npcs[newName] = newData;
+
+        // 标记到 chat[0]._userAddedNpcs，避免被「失踪过滤」当幽灵清掉
+        if (!chat[0].horae_meta) chat[0].horae_meta = createEmptyMeta();
+        if (!Array.isArray(chat[0].horae_meta._userAddedNpcs)) chat[0].horae_meta._userAddedNpcs = [];
+        if (!chat[0].horae_meta._userAddedNpcs.includes(newName)) {
+            chat[0].horae_meta._userAddedNpcs.push(newName);
+        }
+
+        // 同步从 _deletedNpcs 移除（防止用户先删后加被立刻吞回）
+        const delList = chat[0].horae_meta._deletedNpcs;
+        if (Array.isArray(delList)) {
+            const di = delList.indexOf(newName);
+            if (di !== -1) delList.splice(di, 1);
+        }
+
+        if (lastIdx > 0) injectHoraeTagToMessage(lastIdx, targetMeta);
+
+        await getContext().saveChat();
+        closeEditModal();
+        refreshAllDisplays();
+        showToast(t('toast.npcAdded', { name: newName }), 'success');
+    });
+
+    document.getElementById('add-modal-cancel').addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        closeEditModal();
+    });
+}
+
+/**
+ * AI 补全：搜全 chat 中包含 name/aliases 的消息，最多取 20 条最相关的，发给 AI 提取角色档案
+ * 返回 {appearance, personality, relationship, age, gender, _matchCount} 或 null（无匹配）
+ */
+async function aiEnrichNpc(name, aliases = []) {
+    const chat = horaeManager.getChat();
+    if (!chat?.length) return null;
+
+    const keywords = [name, ...aliases].filter(Boolean);
+    const matches = [];
+    for (let i = 1; i < chat.length; i++) {
+        const msg = chat[i];
+        const text = msg?.mes || '';
+        if (!text) continue;
+        const hit = keywords.some(k => text.includes(k));
+        if (hit) matches.push({ idx: i, text: text.slice(0, 1000), is_user: !!msg.is_user });
+    }
+
+    if (matches.length === 0) return null;
+
+    // 优先取最近的 20 条
+    const picked = matches.slice(-20);
+    const matchCount = matches.length;
+
+    const ctxBlock = picked.map(m => `[#${m.idx}${m.is_user ? '|USER' : '|AI'}] ${m.text}`).join('\n---\n');
+    const targetLang = detectEffectiveAiLang(settings);
+    const langName = targetLang === 'zh-CN' ? '简体中文' : targetLang === 'zh-TW' ? '繁體中文'
+        : targetLang === 'ja' ? '日本語' : targetLang === 'ko' ? '한국어'
+            : targetLang === 'ru' ? 'Русский' : 'English';
+
+    const prompt = `You are an analyst extracting a character profile from roleplay messages.\n` +
+        `Target character: "${name}"${aliases.length ? ` (also known as: ${aliases.join(', ')})` : ''}\n\n` +
+        `Read the messages below and produce a concise profile. Output STRICT JSON only, no prose, no markdown:\n` +
+        `{"appearance": "...", "personality": "...", "relationship": "...", "age": "...", "gender": "..."}\n\n` +
+        `Rules:\n` +
+        `- Output language: ${langName}\n` +
+        `- Each field 1-2 short sentences max; leave empty string "" if not enough info.\n` +
+        `- "gender" should be one of: 男 / 女 / or a short custom string / "" if unknown.\n` +
+        `- "age" should be a short string like "20" / "约30岁" / "" if unknown.\n` +
+        `- Stay faithful: never invent facts not present in the messages.\n\n` +
+        `=== MESSAGES (${picked.length} of ${matchCount} hits) ===\n${ctxBlock}\n=== END ===`;
+
+    let raw = '';
+    try {
+        raw = await generateForSummary(prompt);
+    } catch (err) {
+        throw new Error(t('toast.aiEnrichApiError', { error: err.message || String(err) }));
+    }
+    if (!raw || !raw.trim()) throw new Error(t('toast.aiEnrichEmpty'));
+
+    // 剥 <think> 块
+    raw = raw.replace(/<think[\s\S]*?<\/think>/gi, '').trim();
+    // 抓第一个 JSON 块
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error(t('toast.aiEnrichParseError'));
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonMatch[0]);
+    } catch (_) {
+        throw new Error(t('toast.aiEnrichParseError'));
+    }
+
+    return {
+        appearance: typeof parsed.appearance === 'string' ? parsed.appearance.trim() : '',
+        personality: typeof parsed.personality === 'string' ? parsed.personality.trim() : '',
+        relationship: typeof parsed.relationship === 'string' ? parsed.relationship.trim() : '',
+        age: typeof parsed.age === 'string' ? parsed.age.trim() : '',
+        gender: typeof parsed.gender === 'string' ? parsed.gender.trim() : '',
+        _matchCount: matchCount,
+    };
 }
 
 /**
@@ -3435,9 +4819,9 @@ function openNpcEditModal(npcName) {
         showToast(t('toast.npcNotFound'), 'error');
         return;
     }
-    
+
     const isPinned = (settings.pinnedNpcs || []).includes(npcName);
-    
+
     // 性别选项：预设值以外的自动归入「自定义」
     const genderVal = npc.gender || '';
     const presetGenders = ['', '男', '女'];
@@ -3451,7 +4835,7 @@ function openNpcEditModal(npcName) {
         const selected = isCustomGender ? o.val === '__custom__' : genderVal === o.val;
         return `<option value="${o.val}" ${selected ? 'selected' : ''}>${o.label}</option>`;
     }).join('');
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -3478,9 +4862,9 @@ function openNpcEditModal(npcName) {
                         </div>
                         <div class="horae-edit-field horae-edit-field-compact">
                             <label>${t('label.npcAge')}${(() => {
-                                const ar = horaeManager.calcCurrentAge(npc, state.timestamp?.story_date);
-                                return ar.changed ? ` <span style="font-weight:normal;color:var(--horae-accent)">(${t('ui.currentAgeCalc', {age: ar.display})})</span>` : '';
-                            })()}</label>
+            const ar = horaeManager.calcCurrentAge(npc, state.timestamp?.story_date);
+            return ar.changed ? ` <span style="font-weight:normal;color:var(--horae-accent)">(${t('ui.currentAgeCalc', { age: ar.display })})</span>` : '';
+        })()}</label>
                             <input type="text" id="edit-npc-age" value="${npc.age || ''}" placeholder="${t('placeholder.npcAge')}">
                         </div>
                         <div class="horae-edit-field horae-edit-field-compact">
@@ -3527,30 +4911,30 @@ function openNpcEditModal(npcName) {
             </div>
         </div>
     `;
-    
+
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
-    document.getElementById('edit-npc-gender').addEventListener('change', function() {
+
+    document.getElementById('edit-npc-gender').addEventListener('change', function () {
         const customInput = document.getElementById('edit-npc-gender-custom');
         customInput.style.display = this.value === '__custom__' ? 'block' : 'none';
         if (this.value !== '__custom__') customInput.value = '';
     });
-    
+
     // 删除NPC（完整级联：npcs/affection/relationships/mood/costumes/RPG + 防回滚）
     document.getElementById('edit-modal-delete').addEventListener('click', async (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
-        if (!confirm(t('confirm.deleteNpc', {name: npcName}))) return;
-        
+        if (!confirm(t('confirm.deleteNpc', { name: npcName }))) return;
+
         _cascadeDeleteNpcs([npcName]);
-        
+
         await getContext().saveChat();
         closeEditModal();
         refreshAllDisplays();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     // 保存NPC编辑（支持改名 + 曾用名）
     document.getElementById('edit-modal-save').addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -3571,9 +4955,9 @@ function openNpcEditModal(npcName) {
             birthday: document.getElementById('edit-npc-birthday').value.trim(),
             note: document.getElementById('edit-npc-note').value
         };
-        
+
         if (!newName) { showToast(t('toast.npcNameRequired'), 'warning'); return; }
-        
+
         const currentState = horaeManager.getLatestState();
         const ageChanged = newAge !== (npc.age || '');
         if (ageChanged && newAge) {
@@ -3581,22 +4965,22 @@ function openNpcEditModal(npcName) {
             const storyDate = currentState.timestamp?.story_date || t('ui.noStoryDate');
             const confirmed = confirm(t('confirm.ageBaseChange', {
                 original: npc.age || t('levels.none'),
-                currentCalc: ageCalc.changed ? t('ui.ageBaseCurrentCalc', {age: ageCalc.display}) : '',
+                currentCalc: ageCalc.changed ? t('ui.ageBaseCurrentCalc', { age: ageCalc.display }) : '',
                 newAge,
                 storyDate
             }));
             if (!confirmed) return;
             newData._ageRefDate = storyDate;
         }
-        
+
         const isRename = newName !== npcName;
-        
+
         // 改名：级联迁移所有消息中的 key + 记录曾用名
         if (isRename) {
             const aliases = npc._aliases ? [...npc._aliases] : [];
             if (!aliases.includes(npcName)) aliases.push(npcName);
             newData._aliases = aliases;
-            
+
             for (let i = 0; i < chat.length; i++) {
                 const meta = chat[i].horae_meta;
                 if (!meta) continue;
@@ -3633,7 +5017,7 @@ function openNpcEditModal(npcName) {
                 }
                 if (changed && i > 0) injectHoraeTagToMessage(i, meta);
             }
-            
+
             // RPG 数据迁移
             const rpg = chat[0]?.horae_meta?.rpg;
             if (rpg) {
@@ -3652,7 +5036,14 @@ function openNpcEditModal(npcName) {
                     delete rpg.equipmentConfig.perChar[npcName];
                 }
             }
-            
+
+            // 同步 _rpgConfigs，避免旧名 perChar 被回填
+            const _cfgs = chat[0]?.horae_meta?._rpgConfigs;
+            if (_cfgs?.equipmentConfig?.perChar?.[npcName]) {
+                _cfgs.equipmentConfig.perChar[newName] = _cfgs.equipmentConfig.perChar[npcName];
+                delete _cfgs.equipmentConfig.perChar[npcName];
+            }
+
             // pinnedNpcs 迁移
             if (settings.pinnedNpcs) {
                 const idx = settings.pinnedNpcs.indexOf(npcName);
@@ -3668,7 +5059,7 @@ function openNpcEditModal(npcName) {
                 }
             }
         }
-        
+
         // 处理重要角色标记
         const finalName = isRename ? newName : npcName;
         const newPinned = document.getElementById('edit-npc-pinned').checked;
@@ -3680,13 +5071,13 @@ function openNpcEditModal(npcName) {
             settings.pinnedNpcs.splice(pinIdx, 1);
         }
         saveSettings();
-        
+
         await getContext().saveChat();
         closeEditModal();
         refreshAllDisplays();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('edit-modal-cancel').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -3701,17 +5092,17 @@ function openEventEditModal(messageId, eventIndex = 0) {
         showToast(t('toast.metaNotFound'), 'error');
         return;
     }
-    
+
     // 兼容新旧事件格式
     const eventsArr = meta.events || (meta.event ? [meta.event] : []);
     const event = eventsArr[eventIndex] || {};
     const totalEvents = eventsArr.length;
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
                 <div class="horae-modal-header">
-                    <i class="fa-solid fa-pen"></i> ${t('modal.editEvent', {id: messageId})}${totalEvents > 1 ? ` (${eventIndex + 1}/${totalEvents})` : ''}
+                    <i class="fa-solid fa-pen"></i> ${t('modal.editEvent', { id: messageId })}${totalEvents > 1 ? ` (${eventIndex + 1}/${totalEvents})` : ''}
                 </div>
                 <div class="horae-modal-body horae-edit-modal-body">
                     <div class="horae-edit-field">
@@ -3742,10 +5133,10 @@ function openEventEditModal(messageId, eventIndex = 0) {
             </div>
         </div>
     `;
-    
+
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     document.getElementById('edit-modal-save').addEventListener('click', async (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -3754,10 +5145,10 @@ function openEventEditModal(messageId, eventIndex = 0) {
         if (chatMeta) {
             const newLevel = document.getElementById('edit-event-level').value;
             const newSummary = document.getElementById('edit-event-summary').value.trim();
-            
+
             // 防呆提示：摘要为空等同于删除
             if (!newSummary) {
-                if (!confirm(t('confirm.deleteTimeline', {n: 1}))) {
+                if (!confirm(t('confirm.deleteTimeline', { n: 1 }))) {
                     return;
                 }
                 // 用户确认删除，执行删除逻辑
@@ -3768,19 +5159,19 @@ function openEventEditModal(messageId, eventIndex = 0) {
                     chatMeta.events.splice(eventIndex, 1);
                 }
                 delete chatMeta.event;
-                
+
                 await getContext().saveChat();
                 closeEditModal();
                 updateTimelineDisplay();
                 showToast(t('toast.saveSuccess'), 'success');
                 return;
             }
-            
+
             // 确保events数组存在
             if (!chatMeta.events) {
                 chatMeta.events = chatMeta.event ? [chatMeta.event] : [];
             }
-            
+
             // 更新或添加事件
             const isSummaryLevel = newLevel === '摘要';
             if (chatMeta.events[eventIndex]) {
@@ -3798,22 +5189,22 @@ function openEventEditModal(messageId, eventIndex = 0) {
                     ...(isSummaryLevel ? { isSummary: true } : {})
                 });
             }
-            
+
             // 清除旧格式
             delete chatMeta.event;
         }
-        
+
         await getContext().saveChat();
         closeEditModal();
         updateTimelineDisplay();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     // 删除事件（带确认）
     document.getElementById('edit-modal-delete').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
-        if (confirm(t('confirm.deleteTimeline', {n: 1}))) {
+        if (confirm(t('confirm.deleteTimeline', { n: 1 }))) {
             const chat = horaeManager.getChat();
             const chatMeta = chat[messageId]?.horae_meta;
             if (chatMeta) {
@@ -3824,7 +5215,7 @@ function openEventEditModal(messageId, eventIndex = 0) {
                     chatMeta.events.splice(eventIndex, 1);
                 }
                 delete chatMeta.event;
-                
+
                 getContext().saveChat();
                 closeEditModal();
                 updateTimelineDisplay();
@@ -3832,7 +5223,7 @@ function openEventEditModal(messageId, eventIndex = 0) {
             }
         }
     });
-    
+
     document.getElementById('edit-modal-cancel').addEventListener('click', (e) => {
         e.stopPropagation();
         e.stopImmediatePropagation();
@@ -4000,9 +5391,9 @@ function renderCustomTablesList() {
         const lockedCols = new Set(table.lockedCols || []);
         const lockedCells = new Set(table.lockedCells || []);
         const scopeConfig = {
-            global:    { icon: 'fa-globe',     label: t('ui.scopeGlobal'),     title: t('ui.scopeGlobalDesc'),     color: 'var(--horae-accent)' },
-            character: { icon: 'fa-id-card',   label: t('ui.scopeCharacter'),  title: t('ui.scopeCharacterDesc'),  color: 'var(--horae-warning)' },
-            local:     { icon: 'fa-bookmark',  label: t('ui.scopeLocal'),      title: t('ui.scopeLocalDesc'),      color: 'var(--horae-primary-light)' },
+            global: { icon: 'fa-globe', label: t('ui.scopeGlobal'), title: t('ui.scopeGlobalDesc'), color: 'var(--horae-accent)' },
+            character: { icon: 'fa-id-card', label: t('ui.scopeCharacter'), title: t('ui.scopeCharacterDesc'), color: 'var(--horae-warning)' },
+            local: { icon: 'fa-bookmark', label: t('ui.scopeLocal'), title: t('ui.scopeLocalDesc'), color: 'var(--horae-primary-light)' },
         };
         const sc = scopeConfig[scope] || scopeConfig.local;
         const isGlobal = scope === 'global';
@@ -4096,10 +5487,10 @@ function renderCustomTablesList() {
 function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g, '&amp;')
-              .replace(/</g, '&lt;')
-              .replace(/>/g, '&gt;')
-              .replace(/"/g, '&quot;')
-              .replace(/'/g, '&#39;');
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 /**
@@ -4210,7 +5601,7 @@ function bindExcelTableEvents() {
             toggleTableScope(tableIndex, currentScope);
         });
     });
-    
+
     // 所有单元格长按/右键显示菜单
     document.querySelectorAll('.horae-excel-table th, .horae-excel-table td').forEach(cell => {
         let pressTimer = null;
@@ -4329,21 +5720,21 @@ function showTableContextMenu(e, tableIndex, row, col, scope = 'local') {
             <div class="horae-context-menu-item" data-action="toggle-lock-cell"><i class="fa-solid ${cellLocked ? 'fa-lock-open' : 'fa-lock'}"></i> ${cellLocked ? t('ui.unlockCell') : t('ui.lockCell')}</div>
         `;
     }
-    
+
     const menu = document.createElement('div');
     menu.className = 'horae-context-menu';
     if (isLightMode()) menu.classList.add('horae-light');
     menu.innerHTML = menuItems;
-    
+
     // 获取位置
     const x = e.clientX || e.touches?.[0]?.clientX || 100;
     const y = e.clientY || e.touches?.[0]?.clientY || 100;
     menu.style.left = `${x}px`;
     menu.style.top = `${y}px`;
-    
+
     document.body.appendChild(menu);
     activeContextMenu = menu;
-    
+
     // 确保菜单不超出屏幕
     const rect = menu.getBoundingClientRect();
     if (rect.right > window.innerWidth) {
@@ -4352,7 +5743,7 @@ function showTableContextMenu(e, tableIndex, row, col, scope = 'local') {
     if (rect.bottom > window.innerHeight) {
         menu.style.top = `${window.innerHeight - rect.height - 10}px`;
     }
-    
+
     // 绑定菜单项点击 - 执行操作后关闭菜单
     menu.querySelectorAll('.horae-context-menu-item').forEach(item => {
         item.addEventListener('click', (ev) => {
@@ -4365,7 +5756,7 @@ function showTableContextMenu(e, tableIndex, row, col, scope = 'local') {
                 executeTableAction(tableIndex, row, col, action, scope);
             }, 10);
         });
-        
+
         item.addEventListener('touchend', (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -4377,14 +5768,14 @@ function showTableContextMenu(e, tableIndex, row, col, scope = 'local') {
             }, 10);
         });
     });
-    
+
     ['click', 'touchstart', 'touchend', 'mousedown', 'mouseup'].forEach(eventType => {
         menu.addEventListener(eventType, (ev) => {
             ev.stopPropagation();
             ev.stopImmediatePropagation();
         });
     });
-    
+
     // 延迟绑定，避免当前事件触发
     setTimeout(() => {
         contextMenuCloseHandler = (ev) => {
@@ -4395,7 +5786,7 @@ function showTableContextMenu(e, tableIndex, row, col, scope = 'local') {
         document.addEventListener('click', contextMenuCloseHandler, true);
         document.addEventListener('touchstart', contextMenuCloseHandler, true);
     }, 50);
-    
+
     e.preventDefault();
     e.stopPropagation();
 }
@@ -4409,7 +5800,7 @@ function hideContextMenu() {
         document.removeEventListener('touchstart', contextMenuCloseHandler, true);
         contextMenuCloseHandler = null;
     }
-    
+
     if (activeContextMenu) {
         activeContextMenu.remove();
         activeContextMenu = null;
@@ -4510,10 +5901,10 @@ function executeTableAction(tableIndex, row, col, action, scope = 'local') {
             const idx = table.lockedRows.indexOf(row);
             if (idx >= 0) {
                 table.lockedRows.splice(idx, 1);
-                showToast(t('toast.rowUnlocked', {n: row + 1}), 'info');
+                showToast(t('toast.rowUnlocked', { n: row + 1 }), 'info');
             } else {
                 table.lockedRows.push(row);
-                showToast(t('toast.rowLocked', {n: row + 1}), 'success');
+                showToast(t('toast.rowLocked', { n: row + 1 }), 'success');
             }
             break;
         }
@@ -4523,10 +5914,10 @@ function executeTableAction(tableIndex, row, col, action, scope = 'local') {
             const idx = table.lockedCols.indexOf(col);
             if (idx >= 0) {
                 table.lockedCols.splice(idx, 1);
-                showToast(t('toast.colUnlocked', {n: col + 1}), 'info');
+                showToast(t('toast.colUnlocked', { n: col + 1 }), 'info');
             } else {
                 table.lockedCols.push(col);
-                showToast(t('toast.colLocked', {n: col + 1}), 'success');
+                showToast(t('toast.colLocked', { n: col + 1 }), 'success');
             }
             break;
         }
@@ -4537,10 +5928,10 @@ function executeTableAction(tableIndex, row, col, action, scope = 'local') {
             const idx = table.lockedCells.indexOf(cellKey);
             if (idx >= 0) {
                 table.lockedCells.splice(idx, 1);
-                showToast(t('toast.cellUnlocked', {row, col}), 'info');
+                showToast(t('toast.cellUnlocked', { row, col }), 'info');
             } else {
                 table.lockedCells.push(cellKey);
-                showToast(t('toast.cellLocked', {row, col}), 'success');
+                showToast(t('toast.cellLocked', { row, col }), 'success');
             }
             break;
         }
@@ -4753,7 +6144,7 @@ function toggleTableScope(tableIndex, currentScope) {
         local: t('ui.scopeLocalFull'),
     };
     const label = labelMap[newScope];
-    if (!confirm(t('confirm.convertTableScope', {scope: label}))) return;
+    if (!confirm(t('confirm.convertTableScope', { scope: label }))) return;
     pushTableSnapshot(currentScope, tableIndex);
 
     const srcTables = getTablesByScope(currentScope);
@@ -4783,7 +6174,7 @@ function toggleTableScope(tableIndex, currentScope) {
 
     renderCustomTablesList();
     getContext().saveChat();
-    showToast(t('toast.tableScopeChanged', {scope: label}), 'success');
+    showToast(t('toast.tableScopeChanged', { scope: label }), 'success');
 }
 
 
@@ -4792,19 +6183,11 @@ function toggleTableScope(tableIndex, currentScope) {
  */
 function bindItemsEvents() {
     const items = document.querySelectorAll('#horae-items-full-list .horae-full-item');
-    
+
     items.forEach(item => {
         const itemName = item.dataset.itemName;
         if (!itemName) return;
-        
-        // 长按进入多选模式
-        item.addEventListener('mousedown', (e) => startLongPress(e, itemName));
-        item.addEventListener('touchstart', (e) => startLongPress(e, itemName), { passive: true });
-        item.addEventListener('mouseup', cancelLongPress);
-        item.addEventListener('mouseleave', cancelLongPress);
-        item.addEventListener('touchend', cancelLongPress);
-        item.addEventListener('touchcancel', cancelLongPress);
-        
+
         // 多选模式下点击切换选中
         item.addEventListener('click', () => {
             if (itemsMultiSelectMode) {
@@ -4837,7 +6220,7 @@ function bindItemsEvents() {
                     meta.items[key]._locked = !meta.items[key]._locked;
                     getContext().saveChat();
                     updateItemsDisplay();
-                    showToast(meta.items[key]._locked ? t('toast.itemLocked', {name}) : t('toast.itemUnlocked', {name}), meta.items[key]._locked ? 'success' : 'info');
+                    showToast(meta.items[key]._locked ? t('toast.itemLocked', { name }) : t('toast.itemUnlocked', { name }), meta.items[key]._locked ? 'success' : 'info');
                     return;
                 }
             }
@@ -4847,7 +6230,7 @@ function bindItemsEvents() {
             first.horae_meta.items[name] = { ...itemInfo, _locked: true };
             getContext().saveChat();
             updateItemsDisplay();
-            showToast(t('toast.itemLocked', {name}), 'success');
+            showToast(t('toast.itemLocked', { name }), 'success');
         });
     });
 }
@@ -4870,7 +6253,7 @@ function _equipItemToChar(itemName, owner, slotName, replacedItem) {
     if (!first.horae_meta) first.horae_meta = createEmptyMeta();
     const state = horaeManager.getLatestState();
     const itemInfo = state.items?.[itemName];
-    if (!itemInfo) { showToast(t('toast.itemNotFound', {name: itemName}), 'warning'); return; }
+    if (!itemInfo) { showToast(t('toast.itemNotFound', { name: itemName }), 'warning'); return; }
 
     if (!first.horae_meta.rpg) first.horae_meta.rpg = {};
     const rpg = first.horae_meta.rpg;
@@ -5043,7 +6426,7 @@ function _openEquipItemDialog(itemName) {
         if (existing.length >= max) {
             const oldest = existing[0];
             conflictDiv.style.display = '';
-            conflictDiv.textContent = t('toast.slotConflict', {slot: slotName, max, oldest: oldest.name});
+            conflictDiv.textContent = t('toast.slotConflict', { slot: slotName, max, oldest: oldest.name });
         } else {
             conflictDiv.style.display = 'none';
         }
@@ -5070,31 +6453,10 @@ function _openEquipItemDialog(itemName) {
         renderEquipmentValues();
         _bindEquipmentEvents();
         updateAllRpgHuds();
-        showToast(t('toast.itemEquipped', {item: itemName, owner, slot: slotName}), 'success');
+        showToast(t('toast.itemEquipped', { item: itemName, owner, slot: slotName }), 'success');
     };
 
     modal.querySelector('#horae-equip-cancel').onclick = () => modal.remove();
-}
-
-/**
- * 开始长按计时
- */
-function startLongPress(e, itemName) {
-    if (itemsMultiSelectMode) return; // 已在多选模式
-    
-    longPressTimer = setTimeout(() => {
-        enterMultiSelectMode(itemName);
-    }, 800); // 800ms 长按触发（延长防止误触）
-}
-
-/**
- * 取消长按
- */
-function cancelLongPress() {
-    if (longPressTimer) {
-        clearTimeout(longPressTimer);
-        longPressTimer = null;
-    }
 }
 
 /**
@@ -5106,18 +6468,20 @@ function enterMultiSelectMode(initialItem) {
     if (initialItem) {
         selectedItems.add(initialItem);
     }
-    
+
     // 显示多选工具栏
     const bar = document.getElementById('horae-items-multiselect-bar');
     if (bar) bar.style.display = 'flex';
-    
+    const btn = document.getElementById('horae-btn-items-multiselect');
+    if (btn) { btn.classList.add('active'); btn.title = t('ui.exitMultiSelect'); }
+
     // 隐藏提示
     const hint = document.querySelector('#horae-tab-items .horae-items-hint');
     if (hint) hint.style.display = 'none';
-    
+
     updateItemsDisplay();
     updateSelectedCount();
-    
+
     showToast(t('toast.agendaMultiSelect'), 'info');
 }
 
@@ -5127,15 +6491,17 @@ function enterMultiSelectMode(initialItem) {
 function exitMultiSelectMode() {
     itemsMultiSelectMode = false;
     selectedItems.clear();
-    
+
     // 隐藏多选工具栏
     const bar = document.getElementById('horae-items-multiselect-bar');
     if (bar) bar.style.display = 'none';
-    
+    const btn = document.getElementById('horae-btn-items-multiselect');
+    if (btn) { btn.classList.remove('active'); btn.title = t('ui.multiSelectMode'); }
+
     // 显示提示
     const hint = document.querySelector('#horae-tab-items .horae-items-hint');
     if (hint) hint.style.display = 'block';
-    
+
     updateItemsDisplay();
 }
 
@@ -5148,7 +6514,7 @@ function toggleItemSelection(itemName) {
     } else {
         selectedItems.add(itemName);
     }
-    
+
     // 更新UI
     const item = document.querySelector(`#horae-items-full-list .horae-full-item[data-item-name="${itemName}"]`);
     if (item) {
@@ -5156,7 +6522,7 @@ function toggleItemSelection(itemName) {
         if (checkbox) checkbox.checked = selectedItems.has(itemName);
         item.classList.toggle('selected', selectedItems.has(itemName));
     }
-    
+
     updateSelectedCount();
 }
 
@@ -5189,15 +6555,15 @@ async function deleteSelectedItems() {
         showToast(t('toast.insufficientEvents'), 'warning');
         return;
     }
-    
+
     // 确认对话框
-    const confirmed = confirm(t('confirm.deleteTimeline', {n: selectedItems.size}));
+    const confirmed = confirm(t('confirm.deleteTimeline', { n: selectedItems.size }));
     if (!confirmed) return;
-    
+
     // 从所有消息的 meta 中删除这些物品
     const chat = horaeManager.getChat();
     const itemsToDelete = Array.from(selectedItems);
-    
+
     for (let i = 0; i < chat.length; i++) {
         const meta = chat[i].horae_meta;
         if (meta && meta.items) {
@@ -5211,12 +6577,12 @@ async function deleteSelectedItems() {
             if (changed) injectHoraeTagToMessage(i, meta);
         }
     }
-    
+
     // 保存更改
     await getContext().saveChat();
-    
+
     showToast(t('toast.saveSuccess'), 'success');
-    
+
     exitMultiSelectMode();
     updateStatusDisplay();
 }
@@ -5266,8 +6632,8 @@ function _updateNpcSelectedCount() {
 
 async function deleteSelectedNpcs() {
     if (selectedNpcs.size === 0) { showToast(t('toast.insufficientEvents'), 'warning'); return; }
-    if (!confirm(t('confirm.deleteNpc', {name: `${selectedNpcs.size}`}))) return;
-    
+    if (!confirm(t('confirm.deleteNpc', { name: `${selectedNpcs.size}` }))) return;
+
     _cascadeDeleteNpcs(Array.from(selectedNpcs));
     await getContext().saveChat();
     showToast(t('toast.saveSuccess'), 'success');
@@ -5330,12 +6696,12 @@ function getRpgBarName(key, aiLabel) {
 // ============================================
 
 const RPG_DICE_TYPES = [
-    { faces: 4,   label: 'D4' },
-    { faces: 6,   label: 'D6' },
-    { faces: 8,   label: 'D8' },
-    { faces: 10,  label: 'D10' },
-    { faces: 12,  label: 'D12' },
-    { faces: 20,  label: 'D20' },
+    { faces: 4, label: 'D4' },
+    { faces: 6, label: 'D6' },
+    { faces: 8, label: 'D8' },
+    { faces: 10, label: 'D10' },
+    { faces: 12, label: 'D12' },
+    { faces: 20, label: 'D20' },
     { faces: 100, label: 'D100' },
 ];
 
@@ -5514,9 +6880,14 @@ function renderBarConfig() {
     if (!list) return;
     const bars = settings.rpgBarConfig || [];
     list.innerHTML = bars.map((b, i) => `
-        <div class="horae-rpg-config-row" data-idx="${i}">
-            <input class="horae-rpg-config-key" value="${escapeHtml(b.key)}" maxlength="10" data-idx="${i}" />
-            <input class="horae-rpg-config-name" value="${escapeHtml(b.name)}" maxlength="8" data-idx="${i}" />
+        <div class="horae-rpg-config-row horae-rpg-bar-config-row" data-idx="${i}">
+            <input class="horae-rpg-config-key" value="${escapeHtml(b.key)}" maxlength="10" data-idx="${i}" placeholder="key" title="${t('ui.rpgKeyHint')}" />
+            <input class="horae-rpg-config-name" value="${escapeHtml(b.name)}" maxlength="8" data-idx="${i}" title="${t('ui.rpgDisplayNameHint')}" />
+            <input class="horae-rpg-config-min" type="number" value="${b.min ?? 0}" data-idx="${i}" placeholder="${t('placeholder.rpgBarMin')}" title="${t('placeholder.rpgBarMin')}" />
+            <input class="horae-rpg-config-max" type="number" value="${b.max ?? 100}" data-idx="${i}" placeholder="${t('placeholder.rpgBarMax')}" title="${t('placeholder.rpgBarMax')}" />
+            <input class="horae-rpg-config-default-max" type="number" value="${b.defaultMax ?? b.max ?? 100}" data-idx="${i}" placeholder="${t('placeholder.rpgBarDefaultMax')}" title="${t('placeholder.rpgBarDefaultMax')}" />
+            <input class="horae-rpg-config-desc" value="${escapeHtml(b.desc || '')}" data-idx="${i}" placeholder="${t('placeholder.rpgBarDesc')}" title="${t('ui.rpgDefinitionHint')}" />
+            <label class="horae-rpg-config-required" title="${t('ui.rpgBarRequiredHint')}"><input type="checkbox" class="horae-rpg-config-required-check" data-idx="${i}" ${b.required !== false ? 'checked' : ''}>${t('ui.requiredShort')}</label>
             <input type="color" class="horae-rpg-config-color" value="${b.color}" data-idx="${i}" />
             <button class="horae-rpg-config-del" data-idx="${i}" title="${t('common.delete')}"><i class="fa-solid fa-xmark"></i></button>
         </div>
@@ -5773,13 +7144,25 @@ function updateRpgDisplay() {
         if (sendEq && (!settings.rpgEquipmentUserOnly || _isU)) {
             tabs.push({ id: `eq_${eid}`, label: t('ui.rpgTabEquip') });
             let html = '';
-            const slotEntries = Object.entries(charEq);
+            const rawCharEq = _getEqValues()?.[name] || charEq;
+            const cardCharCfg = _getCharEqConfig(name);
+            const cardDeletedSlots = new Set(cardCharCfg._deletedSlots || []);
+            const cardActiveSlots = _getActiveEqSlots(cardCharCfg);
+            const cardActiveSlotNames = new Set(cardActiveSlots.map(s => s.name));
+            const hasActiveSlotConfig = cardActiveSlotNames.size > 0;
+            const activeForm = _getActiveEqForm(cardCharCfg);
+            const inactiveTitle = t('ui.equipmentInactiveReason', { form: activeForm?.name || t('ui.defaultForm') });
+            const slotEntries = Object.entries(rawCharEq).filter(([slotName, items]) =>
+                !cardDeletedSlots.has(slotName) && Array.isArray(items) && items.length > 0);
             if (slotEntries.length > 0) {
                 html += '<div class="horae-rpg-card-eq">';
                 for (const [slotName, items] of slotEntries) {
                     for (const item of items) {
                         const attrStr = Object.entries(item.attrs || {}).map(([k, v]) => `${k}${v >= 0 ? '+' : ''}${v}`).join(', ');
-                        html += `<div class="horae-rpg-card-eq-item"><span class="horae-rpg-card-eq-slot">[${escapeHtml(slotName)}]</span> ${escapeHtml(item.name)}`;
+                        const inactive = hasActiveSlotConfig && !cardActiveSlotNames.has(slotName);
+                        html += `<div class="horae-rpg-card-eq-item${inactive ? ' horae-rpg-card-eq-item-inactive' : ''}"${inactive ? ` title="${escapeHtml(inactiveTitle)}"` : ''}>`;
+                        if (inactive) html += `<span class="horae-rpg-eq-inactive-badge"><i class="fa-solid fa-triangle-exclamation"></i> ${t('ui.inactive')}</span> `;
+                        html += `<span class="horae-rpg-card-eq-slot">[${escapeHtml(slotName)}]</span> ${escapeHtml(item.name)}`;
                         if (attrStr) html += ` <span class="horae-rpg-card-eq-attrs">(${attrStr})</span>`;
                         html += '</div>';
                     }
@@ -5929,7 +7312,7 @@ function updateRpgDisplay() {
 
         // 分页标签点击事件
         barsSection.querySelectorAll('.horae-rpg-card-tab-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
+            btn.addEventListener('click', function () {
                 const tabs = this.closest('.horae-rpg-card-tabs');
                 const idx = this.dataset.idx;
                 tabs.querySelectorAll('.horae-rpg-card-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.idx === idx));
@@ -6008,9 +7391,9 @@ function renderAttrConfig() {
     const attrs = settings.rpgAttributeConfig || [];
     list.innerHTML = attrs.map((a, i) => `
         <div class="horae-rpg-config-row" data-idx="${i}">
-            <input class="horae-rpg-config-key" value="${escapeHtml(a.key)}" maxlength="10" data-idx="${i}" data-type="attr" />
-            <input class="horae-rpg-config-name" value="${escapeHtml(a.name)}" maxlength="8" data-idx="${i}" data-type="attr" />
-            <input class="horae-rpg-attr-desc" value="${escapeHtml(a.desc || '')}" placeholder="${t('label.description')}" data-idx="${i}" />
+            <input class="horae-rpg-config-key" value="${escapeHtml(a.key)}" maxlength="10" data-idx="${i}" data-type="attr" placeholder="key" title="${t('ui.rpgKeyHint')}" />
+            <input class="horae-rpg-config-name" value="${escapeHtml(a.name)}" maxlength="8" data-idx="${i}" data-type="attr" title="${t('ui.rpgDisplayNameHint')}" />
+            <input class="horae-rpg-attr-desc" value="${escapeHtml(a.desc || '')}" placeholder="${t('label.description')}" data-idx="${i}" title="${t('ui.rpgDefinitionHint')}" />
             <button class="horae-rpg-attr-del" data-idx="${i}" title="${t('common.delete')}"><i class="fa-solid fa-xmark"></i></button>
         </div>
     `).join('');
@@ -6043,6 +7426,8 @@ function _syncConfigsToRpg() {
     if (c.equipmentConfig) meta.rpg.equipmentConfig = c.equipmentConfig;
     if (c.currencyConfig) meta.rpg.currencyConfig = c.currencyConfig;
     if (c._deletedSkills) meta.rpg._deletedSkills = c._deletedSkills;
+    if (c._deletedCurrencies) meta.rpg._deletedCurrencies = c._deletedCurrencies;
+    if (c.strongholds) meta.rpg.strongholds = c.strongholds;
     if (c._deletedStrongholds) meta.rpg._deletedStrongholds = c._deletedStrongholds;
 }
 
@@ -6155,7 +7540,7 @@ function _openRepSubItemsDialog(catIndex) {
     modal.className = 'horae-modal';
     modal.innerHTML = `
         <div class="horae-modal-content" style="max-width:400px;width:92vw;box-sizing:border-box;">
-            <div class="horae-modal-header"><h3>${t('ui.reputationSubitemTitle', {name: escapeHtml(cat.name)})}</h3></div>
+            <div class="horae-modal-header"><h3>${t('ui.reputationSubitemTitle', { name: escapeHtml(cat.name) })}</h3></div>
             <div class="horae-modal-body">
                 <p style="margin-bottom:8px;opacity:.7;font-size:.9em;">${t('ui.reputationSubitemHint')}</p>
                 <div id="horae-rep-subitems-list"></div>
@@ -6218,7 +7603,7 @@ function _bindReputationConfigEvents() {
     });
 
     // 名称/范围编辑
-    $(container).off('input.repconfig').on('input.repconfig', '.horae-rpg-rep-name, .horae-rpg-rep-range', function() {
+    $(container).off('input.repconfig').on('input.repconfig', '.horae-rpg-rep-name, .horae-rpg-rep-range', function () {
         const idx = parseInt(this.dataset.idx);
         const config = _getRepConfig();
         const cat = config.categories[idx];
@@ -6233,12 +7618,12 @@ function _bindReputationConfigEvents() {
     });
 
     // 细项编辑按钮
-    $(container).off('click.repsubitems').on('click.repsubitems', '.horae-rpg-rep-subitems', function() {
+    $(container).off('click.repsubitems').on('click.repsubitems', '.horae-rpg-rep-subitems', function () {
         _openRepSubItemsDialog(parseInt(this.dataset.idx));
     });
 
     // 删除声望分类
-    $(container).off('click.repdel').on('click.repdel', '.horae-rpg-rep-del', function() {
+    $(container).off('click.repdel').on('click.repdel', '.horae-rpg-rep-del', function () {
         if (!confirm(t('confirm.deleteTable'))) return;
         const idx = parseInt(this.dataset.idx);
         const config = _getRepConfig();
@@ -6259,7 +7644,7 @@ function _bindReputationConfigEvents() {
     });
 
     // 手动编辑声望数值
-    $(container).off('click.repvaledit').on('click.repvaledit', '.horae-rpg-rep-val-edit', function() {
+    $(container).off('click.repvaledit').on('click.repvaledit', '.horae-rpg-rep-val-edit', function () {
         const owner = this.dataset.owner;
         const catName = this.dataset.cat;
         const config = _getRepConfig();
@@ -6269,7 +7654,7 @@ function _bindReputationConfigEvents() {
         if (!repValues[owner]) repValues[owner] = {};
         if (!repValues[owner][catName]) repValues[owner][catName] = { value: cat.default ?? 0, subItems: {} };
         const current = repValues[owner][catName].value;
-        const newVal = prompt(t('toast.reputationPrompt', {owner, cat: catName, min: cat.min ?? -100, max: cat.max ?? 100}), current);
+        const newVal = prompt(t('toast.reputationPrompt', { owner, cat: catName, min: cat.min ?? -100, max: cat.max ?? 100 }), current);
         if (newVal === null) return;
         const parsed = parseInt(newVal);
         if (isNaN(parsed)) return;
@@ -6296,7 +7681,7 @@ function _bindReputationConfigEvents() {
     $('#horae-rpg-rep-import').off('click').on('click', () => {
         document.getElementById('horae-rpg-rep-import-file')?.click();
     });
-    $('#horae-rpg-rep-import-file').off('change').on('change', function() {
+    $('#horae-rpg-rep-import-file').off('change').on('change', function () {
         const file = this.files?.[0];
         if (!file) return;
         const reader = new FileReader();
@@ -6308,7 +7693,7 @@ function _bindReputationConfigEvents() {
                     showToast(t('toast.invalidFile'), 'error');
                     return;
                 }
-                if (!confirm(t('confirm.importReputation', {n: imported.categories.length}))) return;
+                if (!confirm(t('confirm.importReputation', { n: imported.categories.length }))) return;
                 const config = _getRepConfig();
                 const existingNames = new Set(config.categories.map(c => c.name));
                 let added = 0;
@@ -6330,9 +7715,9 @@ function _bindReputationConfigEvents() {
                 _saveRepData();
                 renderReputationConfig();
                 renderReputationValues();
-                showToast(t('toast.reputationImported', {n: added}), 'success');
+                showToast(t('toast.reputationImported', { n: added }), 'success');
             } catch (err) {
-                showToast(t('toast.importFailed', {error: err.message}), 'error');
+                showToast(t('toast.importFailed', { error: err.message }), 'error');
             }
         };
         reader.readAsText(file);
@@ -6382,7 +7767,110 @@ function _getEqConfigMap() {
 function _getCharEqConfig(owner) {
     const map = _getEqConfigMap();
     if (!map.perChar[owner]) map.perChar[owner] = { slots: [], _deletedSlots: [] };
+    _normalizeCharEqConfig(map.perChar[owner]);
     return map.perChar[owner];
+}
+
+function _normalizeCharEqConfig(charCfg) {
+    if (!charCfg) return;
+    if (!Array.isArray(charCfg.slots)) charCfg.slots = [];
+    if (!Array.isArray(charCfg._deletedSlots)) charCfg._deletedSlots = [];
+    if (Array.isArray(charCfg.forms) && charCfg.forms.length) {
+        charCfg.forms = charCfg.forms.map((form, idx) => ({
+            id: String(form.id || `form_${idx + 1}`),
+            name: String(form.name || form.id || `Form ${idx + 1}`),
+            slots: (Array.isArray(form.slots) ? form.slots : []).map(_normalizeEquipSlot).filter(Boolean),
+        })).filter(f => f.slots.length);
+        if (!charCfg.currentForm || !charCfg.forms.some(f => f.id === charCfg.currentForm)) {
+            charCfg.currentForm = charCfg.forms[0]?.id || 'default';
+        }
+        const active = _getActiveEqForm(charCfg);
+        if (active?.slots?.length) charCfg.slots = JSON.parse(JSON.stringify(active.slots));
+    } else if (charCfg.slots.length) {
+        charCfg.forms = [{ id: 'default', name: t('ui.defaultForm'), slots: JSON.parse(JSON.stringify(charCfg.slots)) }];
+        charCfg.currentForm = 'default';
+    }
+}
+
+function _getActiveEqForm(charCfg) {
+    if (!charCfg?.forms?.length) return null;
+    return charCfg.forms.find(f => f.id === charCfg.currentForm) || charCfg.forms[0] || null;
+}
+
+function _getActiveEqSlots(charCfg) {
+    const active = _getActiveEqForm(charCfg);
+    return Array.isArray(active?.slots) && active.slots.length ? active.slots : (charCfg?.slots || []);
+}
+
+function _applyEqForm(charCfg, formId) {
+    if (!charCfg?.forms?.length) return;
+    const form = charCfg.forms.find(f => f.id === formId) || charCfg.forms[0];
+    charCfg.currentForm = form.id;
+    charCfg.slots = JSON.parse(JSON.stringify(form.slots));
+}
+
+function _normalizeEqTemplateMatchText(value) {
+    return String(value || '')
+        .trim()
+        .toLocaleLowerCase()
+        .normalize('NFKC')
+        .replace(/[「」『』"'\s]/g, '');
+}
+
+function _getEquipTemplateMatchAliases(tpl) {
+    const aliases = new Set([tpl?.name, tpl?.id, ...(tpl?.aliases || [])].filter(Boolean));
+    return [...aliases].map(_normalizeEqTemplateMatchText).filter(Boolean);
+}
+
+function _findAutoEquipTemplateForRace(race) {
+    const raceKey = _normalizeEqTemplateMatchText(race);
+    if (!raceKey || HORAEEQ_AMBIGUOUS_TEMPLATE_ALIASES.has(raceKey)) return null;
+    const tpls = (settings.equipmentTemplates || []).map(_normalizeEquipTemplate).filter(Boolean);
+    const matches = tpls.filter(tpl => {
+        const aliases = _getEquipTemplateMatchAliases(tpl);
+        return aliases.includes(raceKey) && !aliases.some(a => a === raceKey && HORAEEQ_AMBIGUOUS_TEMPLATE_ALIASES.has(a));
+    });
+    return matches.length === 1 ? matches[0] : null;
+}
+
+function _applyEquipTemplateToCharConfig(charCfg, tpl, race) {
+    const forms = JSON.parse(JSON.stringify(tpl.forms?.length ? tpl.forms : [{ id: 'default', name: t('ui.defaultForm'), slots: tpl.slots }]));
+    charCfg.forms = forms;
+    charCfg.currentForm = forms[0]?.id || 'default';
+    _applyEqForm(charCfg, charCfg.currentForm);
+    charCfg._deletedSlots = [];
+    charCfg._template = tpl.name;
+    charCfg._autoTemplate = true;
+    charCfg._autoRace = race;
+    charCfg._manualLocked = false;
+}
+
+function _autoApplyEquipmentTemplatesByRace({ persist = false } = {}) {
+    if (!settings.rpgMode || !settings.sendRpgEquipment) return false;
+    const state = horaeManager.getLatestState();
+    const npcs = state?.npcs || {};
+    if (!Object.keys(npcs).length) return false;
+    const cfgMap = _getEqConfigMap();
+    let changed = false;
+    for (const [owner, info] of Object.entries(npcs)) {
+        const race = String(info?.race || '').trim();
+        if (!race) continue;
+        const tpl = _findAutoEquipTemplateForRace(race);
+        if (!tpl) continue;
+        const charCfg = cfgMap.perChar[owner] || { slots: [], _deletedSlots: [] };
+        _normalizeCharEqConfig(charCfg);
+        const hasUserConfig = !!charCfg._manualLocked || ((charCfg.slots?.length || 0) > 0 && !charCfg._autoTemplate);
+        if (hasUserConfig) continue;
+        if (charCfg._autoTemplate && charCfg._template === tpl.name && charCfg._autoRace === race) continue;
+        _applyEquipTemplateToCharConfig(charCfg, tpl, race);
+        cfgMap.perChar[owner] = charCfg;
+        changed = true;
+    }
+    if (changed) {
+        _syncConfigsToRpg();
+        if (persist) _saveEqData();
+    }
+    return changed;
 }
 
 function _getEqValues() {
@@ -6405,6 +7893,7 @@ function renderEquipmentSlotConfig() { /* noop - per-char config in renderEquipm
 function renderEquipmentValues() {
     const section = document.getElementById('horae-rpg-eq-values-section');
     if (!section) return;
+    _autoApplyEquipmentTemplatesByRace({ persist: true });
     const eqValues = _getEqValues();
     const cfgMap = _getEqConfigMap();
     const lockBtn = document.getElementById('horae-rpg-eq-lock');
@@ -6428,13 +7917,21 @@ function renderEquipmentValues() {
         const charCfg = _getCharEqConfig(owner);
         const ownerSlots = eqValues[owner] || {};
         const deletedSlots = new Set(charCfg._deletedSlots || []);
+        const activeSlots = _getActiveEqSlots(charCfg);
+        const activeSlotNames = new Set(activeSlots.map(s => s.name));
+        const activeForm = _getActiveEqForm(charCfg);
+        const formSelectHtml = charCfg.forms?.length > 1 ? `
+            <select class="horae-rpg-eq-form-select" data-owner="${escapeHtml(owner)}" title="${t('ui.equipmentFormHint')}">
+                ${charCfg.forms.map(f => `<option value="${escapeHtml(f.id)}"${f.id === charCfg.currentForm ? ' selected' : ''}>${escapeHtml(f.name)}</option>`).join('')}
+            </select>` : (activeForm ? `<span class="horae-rpg-eq-form-badge">${escapeHtml(activeForm.name)}</span>` : '');
         let hasItems = false;
         let itemsHtml = '';
-        for (const slot of charCfg.slots) {
+        for (const slot of activeSlots) {
             if (deletedSlots.has(slot.name)) continue;
             const items = ownerSlots[slot.name] || [];
             if (items.length > 0) hasItems = true;
-            itemsHtml += `<div class="horae-rpg-eq-slot-group"><span class="horae-rpg-eq-slot-label">${escapeHtml(slot.name)} (${items.length}/${slot.maxCount ?? 1})</span>`;
+            const slotDesc = slot.desc ? `<span class="horae-rpg-eq-slot-desc" title="${escapeHtml(slot.desc)}">${escapeHtml(slot.desc)}</span>` : '';
+            itemsHtml += `<div class="horae-rpg-eq-slot-group"><span class="horae-rpg-eq-slot-label">${escapeHtml(slot.name)} (${items.length}/${slot.maxCount ?? 1})${slotDesc}</span>`;
             if (items.length > 0) {
                 for (const item of items) {
                     const attrStr = Object.entries(item.attrs || {}).map(([k, v]) => `<span class="horae-rpg-eq-attr">${escapeHtml(k)} ${v >= 0 ? '+' : ''}${v}</span>`).join(' ');
@@ -6454,9 +7951,38 @@ function renderEquipmentValues() {
             }
             itemsHtml += '</div>';
         }
+        const inactiveEntries = [];
+        for (const [slotName, items] of Object.entries(ownerSlots)) {
+            if (!items?.length || activeSlotNames.has(slotName) || deletedSlots.has(slotName)) continue;
+            for (const item of items) inactiveEntries.push({ slotName, item });
+        }
+        if (inactiveEntries.length) {
+            hasItems = true;
+            itemsHtml += `<div class="horae-rpg-eq-inactive-group">
+                <div class="horae-rpg-eq-inactive-title"><i class="fa-solid fa-triangle-exclamation"></i> ${t('ui.equipmentInactiveTitle')}</div>`;
+            for (const { slotName, item } of inactiveEntries) {
+                const meta = item._itemMeta || {};
+                const attrStr = Object.entries(item.attrs || {}).map(([k, v]) => `<span class="horae-rpg-eq-attr">${escapeHtml(k)} ${v >= 0 ? '+' : ''}${v}</span>`).join(' ');
+                const descHtml = meta.description ? `<div class="horae-rpg-eq-item-desc">${escapeHtml(meta.description)}</div>` : '';
+                const title = t('ui.equipmentInactiveReason', { form: activeForm?.name || t('ui.defaultForm') });
+                itemsHtml += `<div class="horae-rpg-eq-item horae-rpg-eq-item-inactive" title="${escapeHtml(title)}">
+                    <div class="horae-rpg-eq-item-header">
+                        <span class="horae-rpg-eq-inactive-badge"><i class="fa-solid fa-triangle-exclamation"></i> ${t('ui.inactive')}</span>
+                        ${meta.icon ? `<span class="horae-rpg-eq-item-icon">${meta.icon}</span>` : ''}
+                        <span class="horae-rpg-eq-item-name">${escapeHtml(item.name)}</span> ${attrStr}
+                        <span class="horae-rpg-eq-item-slot">${escapeHtml(slotName)}</span>
+                        <button class="horae-rpg-eq-item-del" data-owner="${escapeHtml(owner)}" data-slot="${escapeHtml(slotName)}" data-item="${escapeHtml(item.name)}" title="${t('tooltip.unequipReturn')}"><i class="fa-solid fa-arrow-right-from-bracket"></i></button>
+                    </div>
+                    ${descHtml}
+                    <div class="horae-rpg-eq-inactive-reason">${escapeHtml(title)}</div>
+                </div>`;
+            }
+            itemsHtml += '</div>';
+        }
         html += `<details class="horae-rpg-char-detail"${hasItems ? ' open' : ''}>
             <summary class="horae-rpg-char-summary">
-                <span class="horae-rpg-char-detail-name">${t('ui.equipLabel', {owner: escapeHtml(owner)})}</span>
+                <span class="horae-rpg-char-detail-name">${t('ui.equipLabel', { owner: escapeHtml(owner) })}</span>
+                ${formSelectHtml}
                 <span style="flex:1;"></span>
                 <button class="horae-rpg-btn-sm horae-rpg-eq-char-tpl" data-owner="${escapeHtml(owner)}" title="${t('tooltip.loadTemplate')}"><i class="fa-solid fa-shapes"></i></button>
                 <button class="horae-rpg-btn-sm horae-rpg-eq-char-add-slot" data-owner="${escapeHtml(owner)}" title="${t('tooltip.addSlot')}"><i class="fa-solid fa-plus"></i></button>
@@ -6476,7 +8002,7 @@ function renderEquipmentValues() {
 /** 手动添加装备对话框 */
 function _openAddEquipDialog(owner) {
     const charCfg = _getCharEqConfig(owner);
-    if (!charCfg.slots.length) { showToast(t('toast.noSlots', {owner}), 'warning'); return; }
+    if (!charCfg.slots.length) { showToast(t('toast.noSlots', { owner }), 'warning'); return; }
     const modal = document.createElement('div');
     modal.className = 'horae-modal';
     modal.innerHTML = `
@@ -6540,23 +8066,24 @@ function _bindEquipmentEvents() {
     if (!container) return;
 
     // 为角色加载模板
-    $(container).off('click.eqchartpl').on('click.eqchartpl', '.horae-rpg-eq-char-tpl', function(e) {
+    $(container).off('click.eqchartpl').on('click.eqchartpl', '.horae-rpg-eq-char-tpl', function (e) {
         e.stopPropagation();
         const owner = this.dataset.owner;
-        const tpls = settings.equipmentTemplates || [];
+        const tpls = (settings.equipmentTemplates || []).map(_normalizeEquipTemplate).filter(Boolean);
         if (!tpls.length) { showToast(t('toast.noTemplates'), 'warning'); return; }
         const modal = document.createElement('div');
         modal.className = 'horae-modal';
         let listHtml = tpls.map((tpl, i) => {
-            const slotsStr = tpl.slots.map(s => s.name).join('、');
+            const formStr = tpl.forms?.length > 1 ? tpl.forms.map(f => `${f.name}:${f.slots.map(s => s.name).join('、')}`).join(' / ') : tpl.slots.map(s => s.name).join('、');
+            const partsStr = tpl.parts?.length ? `<div class="horae-rpg-tpl-parts">${escapeHtml(tpl.parts.join(' + '))}</div>` : '';
             return `<div class="horae-rpg-tpl-item" data-idx="${i}" style="cursor:pointer;">
                 <div class="horae-rpg-tpl-name">${escapeHtml(tpl.name)}</div>
-                <div class="horae-rpg-tpl-slots">${escapeHtml(slotsStr)}</div>
+                <div class="horae-rpg-tpl-slots">${escapeHtml(formStr)}${partsStr}</div>
             </div>`;
         }).join('');
         modal.innerHTML = `
             <div class="horae-modal-content" style="max-width:400px;width:90vw;box-sizing:border-box;">
-                <div class="horae-modal-header"><h3>${t('modal.selectTemplate', {owner: escapeHtml(owner)})}</h3></div>
+                <div class="horae-modal-header"><h3>${t('modal.selectTemplate', { owner: escapeHtml(owner) })}</h3></div>
                 <div class="horae-modal-body" style="max-height:50vh;overflow-y:auto;">
                     <div style="margin-bottom:8px;font-size:11px;color:var(--horae-text-muted);">
                         ${t('ui.templateReplaceHint')}
@@ -6573,16 +8100,19 @@ function _bindEquipmentEvents() {
         modal.querySelector('#horae-eq-tpl-close').onclick = () => modal.remove();
         modal.querySelector('#horae-eq-tpl-save').onclick = () => {
             const charCfg = _getCharEqConfig(owner);
-            if (!charCfg.slots.length) { showToast(t('toast.noSlotsToSave', {owner}), 'warning'); return; }
+            if (!charCfg.slots.length) { showToast(t('toast.noSlotsToSave', { owner }), 'warning'); return; }
             const name = prompt(t('label.name') + ':', '');
             if (!name?.trim()) return;
             settings.equipmentTemplates.push({
                 name: name.trim(),
-                slots: JSON.parse(JSON.stringify(charCfg.slots.map(s => ({ name: s.name, maxCount: s.maxCount ?? 1 })))),
+                aliases: [name.trim()],
+                parts: ['manual'],
+                slots: JSON.parse(JSON.stringify(_getActiveEqSlots(charCfg).map(s => ({ name: s.name, maxCount: s.maxCount ?? 1, ...(s.desc ? { desc: s.desc } : {}) })))),
+                forms: JSON.parse(JSON.stringify(charCfg.forms?.length ? charCfg.forms : [{ id: 'default', name: t('ui.defaultForm'), slots: _getActiveEqSlots(charCfg) }])),
             });
             saveSettingsDebounced();
             modal.remove();
-            showToast(t('toast.templateSaved', {name: name.trim()}), 'success');
+            showToast(t('toast.templateSaved', { name: name.trim() }), 'success');
         };
         modal.querySelectorAll('.horae-rpg-tpl-item').forEach(item => {
             item.onclick = () => {
@@ -6590,9 +8120,12 @@ function _bindEquipmentEvents() {
                 const tpl = tpls[idx];
                 if (!tpl) return;
                 const charCfg = _getCharEqConfig(owner);
-                charCfg.slots = JSON.parse(JSON.stringify(tpl.slots));
+                charCfg.forms = JSON.parse(JSON.stringify(tpl.forms?.length ? tpl.forms : [{ id: 'default', name: t('ui.defaultForm'), slots: tpl.slots }]));
+                charCfg.currentForm = charCfg.forms[0]?.id || 'default';
+                _applyEqForm(charCfg, charCfg.currentForm);
                 charCfg._deletedSlots = [];
                 charCfg._template = tpl.name;
+                charCfg._manualLocked = true;
                 _saveEqData();
                 renderEquipmentValues();
                 _bindEquipmentEvents();
@@ -6600,13 +8133,13 @@ function _bindEquipmentEvents() {
                 _refreshSystemPromptDisplay();
                 updateTokenCounter();
                 modal.remove();
-                showToast(t('toast.templateLoaded', {owner, name: tpl.name}), 'success');
+                showToast(t('toast.templateLoaded', { owner, name: tpl.name }), 'success');
             };
         });
     });
 
     // 为角色添加格位
-    $(container).off('click.eqcharaddslot').on('click.eqcharaddslot', '.horae-rpg-eq-char-add-slot', function(e) {
+    $(container).off('click.eqcharaddslot').on('click.eqcharaddslot', '.horae-rpg-eq-char-add-slot', function (e) {
         e.stopPropagation();
         const owner = this.dataset.owner;
         const name = prompt(t('label.name') + ':', '');
@@ -6615,7 +8148,11 @@ function _bindEquipmentEvents() {
         const maxCount = Math.max(1, parseInt(maxStr) || 1);
         const charCfg = _getCharEqConfig(owner);
         if (charCfg.slots.some(s => s.name === name.trim())) { showToast(t('toast.slotExists'), 'warning'); return; }
-        charCfg.slots.push({ name: name.trim(), maxCount });
+        const newSlot = { name: name.trim(), maxCount };
+        const activeForm = _getActiveEqForm(charCfg);
+        if (activeForm) activeForm.slots.push(newSlot);
+        charCfg.slots.push(newSlot);
+        charCfg._manualLocked = true;
         if (charCfg._deletedSlots) charCfg._deletedSlots = charCfg._deletedSlots.filter(n => n !== name.trim());
         _saveEqData();
         renderEquipmentValues();
@@ -6626,18 +8163,21 @@ function _bindEquipmentEvents() {
     });
 
     // 为角色删除格位
-    $(container).off('click.eqchardelslot').on('click.eqchardelslot', '.horae-rpg-eq-char-del-slot', function(e) {
+    $(container).off('click.eqchardelslot').on('click.eqchardelslot', '.horae-rpg-eq-char-del-slot', function (e) {
         e.stopPropagation();
         const owner = this.dataset.owner;
         const charCfg = _getCharEqConfig(owner);
         if (!charCfg.slots.length) { showToast(t('toast.charNoSlots'), 'warning'); return; }
         const names = charCfg.slots.map(s => s.name);
-        const name = prompt(t('toast.deleteSlotPrompt', {slots: names.join(', ')}), '');
+        const name = prompt(t('toast.deleteSlotPrompt', { slots: names.join(', ') }), '');
         if (!name?.trim()) return;
         const idx = charCfg.slots.findIndex(s => s.name === name.trim());
-        if (idx < 0) { showToast(t('toast.itemNotFound', {name: name.trim()}), 'warning'); return; }
+        if (idx < 0) { showToast(t('toast.itemNotFound', { name: name.trim() }), 'warning'); return; }
         if (!confirm(t('confirm.deleteTable'))) return;
         const deleted = charCfg.slots.splice(idx, 1)[0];
+        const activeForm = _getActiveEqForm(charCfg);
+        if (activeForm) activeForm.slots = activeForm.slots.filter(s => s.name !== deleted.name);
+        charCfg._manualLocked = true;
         if (!charCfg._deletedSlots) charCfg._deletedSlots = [];
         charCfg._deletedSlots.push(deleted.name);
         const eqValues = _getEqValues();
@@ -6653,6 +8193,25 @@ function _bindEquipmentEvents() {
         updateTokenCounter();
     });
 
+    // 切换角色当前形态。装备不会自动卸下，不兼容格位会显示为未激活。
+    $(container).off('change.eqform').on('change.eqform', '.horae-rpg-eq-form-select', function (e) {
+        e.stopPropagation();
+        const owner = this.dataset.owner;
+        const charCfg = _getCharEqConfig(owner);
+        _applyEqForm(charCfg, this.value);
+        charCfg._manualLocked = true;
+        _saveEqData();
+        renderEquipmentValues();
+        _bindEquipmentEvents();
+        horaeManager.init(getContext(), settings);
+        _refreshSystemPromptDisplay();
+        updateTokenCounter();
+        showToast(t('toast.equipmentFormChanged', { owner, form: _getActiveEqForm(charCfg)?.name || this.value }), 'success');
+    });
+    $(container).off('click.eqform').on('click.eqform', '.horae-rpg-eq-form-select', function (e) {
+        e.stopPropagation();
+    });
+
     // 锁定/解锁
     $('#horae-rpg-eq-lock').off('click').on('click', () => {
         const cfgMap = _getEqConfigMap();
@@ -6666,7 +8225,7 @@ function _bindEquipmentEvents() {
     });
 
     // 卸下装备
-    $(container).off('click.eqitemdel').on('click.eqitemdel', '.horae-rpg-eq-item-del', function() {
+    $(container).off('click.eqitemdel').on('click.eqitemdel', '.horae-rpg-eq-item-del', function () {
         const owner = this.dataset.owner;
         const slotName = this.dataset.slot;
         const itemName = this.dataset.item;
@@ -6675,11 +8234,11 @@ function _bindEquipmentEvents() {
         _bindEquipmentEvents();
         updateItemsDisplay();
         updateAllRpgHuds();
-        showToast(t('toast.itemUnequipped', {item: itemName, owner, slot: slotName}), 'info');
+        showToast(t('toast.itemUnequipped', { item: itemName, owner, slot: slotName }), 'info');
     });
 
     // 手动添加装备
-    $(container).off('click.eqadditem').on('click.eqadditem', '.horae-rpg-eq-add-item', function() {
+    $(container).off('click.eqadditem').on('click.eqadditem', '.horae-rpg-eq-add-item', function () {
         _openAddEquipDialog(this.dataset.owner);
     });
 
@@ -6696,7 +8255,7 @@ function _bindEquipmentEvents() {
     $('#horae-rpg-eq-import').off('click').on('click', () => {
         document.getElementById('horae-rpg-eq-import-file')?.click();
     });
-    $('#horae-rpg-eq-import-file').off('change').on('change', function() {
+    $('#horae-rpg-eq-import-file').off('change').on('change', function () {
         const file = this.files?.[0]; if (!file) return;
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -6730,7 +8289,7 @@ function _bindEquipmentEvents() {
                 _refreshSystemPromptDisplay();
                 updateTokenCounter();
                 showToast(t('toast.equipmentImported'), 'success');
-            } catch (err) { showToast(t('toast.importFailed', {error: err.message}), 'error'); }
+            } catch (err) { showToast(t('toast.importFailed', { error: err.message }), 'error'); }
         };
         reader.readAsText(file);
         this.value = '';
@@ -6747,11 +8306,14 @@ function _openEquipTemplateManageModal() {
     const modal = document.createElement('div');
     modal.className = 'horae-modal';
     function _render() {
-        const tpls = settings.equipmentTemplates || [];
+        const tpls = (settings.equipmentTemplates || []).map(_normalizeEquipTemplate).filter(Boolean);
         let listHtml = tpls.map((tpl, i) => {
-            const slotsStr = tpl.slots.map(s => s.name).join('、');
+            const slotsStr = tpl.forms?.length > 1
+                ? tpl.forms.map(f => `${f.name}:${f.slots.map(s => s.name).join('、')}`).join(' / ')
+                : tpl.slots.map(s => s.name).join('、');
+            const partsStr = tpl.parts?.length ? `<div class="horae-rpg-tpl-parts">${escapeHtml(tpl.parts.join(' + '))}</div>` : '';
             return `<div class="horae-rpg-tpl-item"><div class="horae-rpg-tpl-name">${escapeHtml(tpl.name)}</div>
-                <div class="horae-rpg-tpl-slots">${escapeHtml(slotsStr)}</div>
+                <div class="horae-rpg-tpl-slots">${escapeHtml(slotsStr)}${partsStr}</div>
                 <button class="horae-rpg-btn-sm horae-rpg-tpl-del" data-idx="${i}" title="${t('common.delete')}"><i class="fa-solid fa-trash"></i></button>
             </div>`;
         }).join('');
@@ -6769,7 +8331,7 @@ function _openEquipTemplateManageModal() {
             btn.onclick = () => {
                 const idx = parseInt(btn.dataset.idx);
                 const tpl = settings.equipmentTemplates[idx];
-                if (!confirm(t('confirm.deleteTheme', {name: tpl.name}))) return;
+                if (!confirm(t('confirm.deleteTheme', { name: tpl.name }))) return;
                 settings.equipmentTemplates.splice(idx, 1);
                 saveSettingsDebounced();
                 _render();
@@ -6799,6 +8361,7 @@ function _getCurConfig() {
 }
 
 function _saveCurData() {
+    _syncConfigsToRpg();
     const ctx = getContext();
     if (ctx?.saveChat) ctx.saveChat();
 }
@@ -6831,7 +8394,7 @@ function _renderCurrencyHint(config) {
     const sorted = [...denoms].sort((a, b) => a.rate - b.rate);
     const base = sorted[0];
     const parts = sorted.map(d => `${d.rate / base.rate}${d.name}`).join(' = ');
-    section.innerHTML = `<div class="horae-rpg-skills-empty" style="font-size:11px;opacity:.7">${t('ui.exchangeRate', {parts: escapeHtml(parts)})}</div>`;
+    section.innerHTML = `<div class="horae-rpg-skills-empty" style="font-size:11px;opacity:.7">${t('ui.exchangeRate', { parts: escapeHtml(parts) })}</div>`;
 }
 
 function _bindCurrencyEvents() {
@@ -6847,7 +8410,7 @@ function _bindCurrencyEvents() {
     });
 
     // 编辑币种 emoji
-    $(document).off('change', '.horae-rpg-cur-emoji').on('change', '.horae-rpg-cur-emoji', function() {
+    $(document).off('change', '.horae-rpg-cur-emoji').on('change', '.horae-rpg-cur-emoji', function () {
         const config = _getCurConfig();
         const idx = parseInt(this.dataset.idx);
         config.denominations[idx].emoji = this.value.trim();
@@ -6855,7 +8418,7 @@ function _bindCurrencyEvents() {
     });
 
     // 编辑币种名称
-    $(document).off('change', '.horae-rpg-cur-name').on('change', '.horae-rpg-cur-name', function() {
+    $(document).off('change', '.horae-rpg-cur-name').on('change', '.horae-rpg-cur-name', function () {
         const config = _getCurConfig();
         const idx = parseInt(this.dataset.idx);
         const oldName = config.denominations[idx].name;
@@ -6871,7 +8434,7 @@ function _bindCurrencyEvents() {
     });
 
     // 编辑兑换率
-    $(document).off('change', '.horae-rpg-cur-rate').on('change', '.horae-rpg-cur-rate', function() {
+    $(document).off('change', '.horae-rpg-cur-rate').on('change', '.horae-rpg-cur-rate', function () {
         const config = _getCurConfig();
         const idx = parseInt(this.dataset.idx);
         const val = Math.max(1, parseInt(this.value) || 1);
@@ -6884,12 +8447,21 @@ function _bindCurrencyEvents() {
     });
 
     // 删除币种
-    $(document).off('click', '.horae-rpg-cur-del').on('click', '.horae-rpg-cur-del', function() {
+    $(document).off('click', '.horae-rpg-cur-del').on('click', '.horae-rpg-cur-del', function () {
         const config = _getCurConfig();
         const idx = parseInt(this.dataset.idx);
         const name = config.denominations[idx].name;
         if (!confirm(t('confirm.deleteTable'))) return;
         config.denominations.splice(idx, 1);
+        const c = _ensureRpgConfigs();
+        if (c) {
+            if (!Array.isArray(c._deletedCurrencies)) c._deletedCurrencies = [];
+            c._deletedCurrencies = c._deletedCurrencies.filter(item => !(typeof item === 'string' && item === name));
+            const at = Math.max(0, (horaeManager.getChat()?.length || 1) - 1);
+            const existing = c._deletedCurrencies.find(item => item?.name === name);
+            if (existing) existing.at = at;
+            else c._deletedCurrencies.push({ name, at });
+        }
         // 清除所有角色该币种的数值
         const chat = horaeManager.getChat();
         const curData = chat?.[0]?.horae_meta?.rpg?.currency;
@@ -6899,6 +8471,8 @@ function _bindCurrencyEvents() {
                 if (!Object.keys(curData[owner]).length) delete curData[owner];
             }
         }
+        const meta = chat?.[0]?.horae_meta;
+        if (meta?.rpg) meta.rpg._deletedCurrencies = c?._deletedCurrencies || meta.rpg._deletedCurrencies || [];
         _saveCurData();
         renderCurrencyConfig();
         horaeManager.init(getContext(), settings);
@@ -6921,7 +8495,7 @@ function _bindCurrencyEvents() {
     $('#horae-rpg-cur-import').off('click').on('click', () => {
         document.getElementById('horae-rpg-cur-import-file')?.click();
     });
-    $('#horae-rpg-cur-import-file').off('change').on('change', function() {
+    $('#horae-rpg-cur-import-file').off('change').on('change', function () {
         const file = this.files?.[0];
         if (!file) return;
         const reader = new FileReader();
@@ -6929,7 +8503,7 @@ function _bindCurrencyEvents() {
             try {
                 const imported = JSON.parse(e.target.result);
                 if (!imported.denominations?.length) { showToast(t('toast.invalidFile'), 'error'); return; }
-                if (!confirm(t('confirm.importReputation', {n: imported.denominations.length}))) return;
+                if (!confirm(t('confirm.importReputation', { n: imported.denominations.length }))) return;
                 const config = _getCurConfig();
                 const existingNames = new Set(config.denominations.map(d => d.name));
                 let added = 0;
@@ -6943,9 +8517,9 @@ function _bindCurrencyEvents() {
                 horaeManager.init(getContext(), settings);
                 _refreshSystemPromptDisplay();
                 updateTokenCounter();
-                showToast(t('toast.currencyImported', {n: added}), 'success');
+                showToast(t('toast.currencyImported', { n: added }), 'success');
             } catch (err) {
-                showToast(t('toast.importFailed', {error: err.message}), 'error');
+                showToast(t('toast.importFailed', { error: err.message }), 'error');
             }
         };
         reader.readAsText(file);
@@ -7132,8 +8706,8 @@ function _bindStrongholdEvents() {
                 return kids.length + kids.reduce((s, k) => s + countDescendants(k.id), 0);
             }
             const desc = countDescendants(id);
-            const childDesc = desc > 0 ? t('ui.andChildNodes', {n: desc}) : '';
-            const msg = t('confirm.deleteStronghold', {name: node.name, childDesc}) + (desc > 0 ? ' ' + t('confirm.deleteStrongholdUndo') : '');
+            const childDesc = desc > 0 ? t('ui.andChildNodes', { n: desc }) : '';
+            const msg = t('confirm.deleteStronghold', { name: node.name, childDesc }) + (desc > 0 ? ' ' + t('confirm.deleteStrongholdUndo') : '');
             if (!confirm(msg)) return;
             const chat = horaeManager.getChat();
             const rpg = chat?.[0]?.horae_meta?.rpg;
@@ -7180,7 +8754,7 @@ function _bindStrongholdEvents() {
     $('#horae-rpg-sh-import').off('click').on('click', () => {
         document.getElementById('horae-rpg-sh-import-file')?.click();
     });
-    $('#horae-rpg-sh-import-file').off('change').on('change', function() {
+    $('#horae-rpg-sh-import-file').off('change').on('change', function () {
         const file = this.files?.[0];
         if (!file) return;
         const reader = new FileReader();
@@ -7213,8 +8787,8 @@ function _bindStrongholdEvents() {
                 _saveStrongholdData();
                 renderStrongholdTree();
                 _bindStrongholdEvents();
-                showToast(t('toast.strongholdImported', {n: added}), 'success');
-            } catch (err) { showToast(t('toast.importFailed', {error: err.message}), 'error'); }
+                showToast(t('toast.strongholdImported', { n: added }), 'success');
+            } catch (err) { showToast(t('toast.importFailed', { error: err.message }), 'error'); }
         };
         reader.readAsText(file);
         this.value = '';
@@ -7264,7 +8838,7 @@ function renderLevelValues() {
         if (!chat2[0].horae_meta.rpg) chat2[0].horae_meta.rpg = {};
         const rpgData = chat2[0].horae_meta.rpg;
         const curLv = rpgData.levels?.[charName] ?? '';
-        const newLv = prompt(t('toast.levelPrompt', {name: charName}), curLv);
+        const newLv = prompt(t('toast.levelPrompt', { name: charName }), curLv);
         if (newLv === null) return;
         const lvVal = parseInt(newLv);
         if (isNaN(lvVal) || lvVal < 0) { showToast(t('toast.invalidLevelNumber'), 'warning'); return; }
@@ -7281,7 +8855,7 @@ function renderLevelValues() {
         getContext().saveChat();
         renderLevelValues();
         updateAllRpgHuds();
-        showToast(t('toast.levelSet', {name: charName, level: lvVal, xp: xpMax}), 'success');
+        showToast(t('toast.levelSet', { name: charName, level: lvVal, xp: xpMax }), 'success');
     };
 
     section.querySelectorAll('.horae-rpg-lv-edit').forEach(btn => {
@@ -7359,6 +8933,8 @@ function _matchPresentChars(present, rpg) {
     const userName = getContext().name1 || '';
     const allRpgNames = new Set([
         ...Object.keys(rpg.bars || {}), ...Object.keys(rpg.status || {}),
+        ...Object.keys(rpg.skills || {}), ...Object.keys(rpg.attributes || {}),
+        ...Object.keys(rpg.reputation || {}), ...Object.keys(rpg.equipment || {}),
         ...Object.keys(rpg.levels || {}), ...Object.keys(rpg.xp || {}),
         ...Object.keys(rpg.currency || {}),
     ]);
@@ -7442,12 +9018,23 @@ function _buildRpgSnapshotMap(chat) {
         bars: {}, status: {}, skills: {}, attributes: {},
         levels: { ...(baseRpg.levels || {}) },
         xp: { ...(baseRpg.xp || {}) },
-        currency: JSON.parse(JSON.stringify(baseRpg.currency || {})),
+        currency: {},
     };
     const resolve = (raw) => horaeManager._resolveRpgOwner(raw);
     const _bCfgs = chat[0]?.horae_meta?._rpgConfigs;
     const curConfig = _bCfgs?.currencyConfig || baseRpg.currencyConfig || { denominations: [] };
     const validDenoms = new Set((curConfig.denominations || []).map(d => d.name));
+    const deletedCurrencies = _bCfgs?._deletedCurrencies || baseRpg._deletedCurrencies || [];
+    const isDeletedCurrencyAt = (name, messageIndex) => {
+        for (const item of deletedCurrencies || []) {
+            if (typeof item === 'string') {
+                if (item === name) return true;
+                continue;
+            }
+            if (item?.name === name && messageIndex <= (item.at ?? Number.MAX_SAFE_INTEGER)) return true;
+        }
+        return false;
+    };
 
     for (let i = 0; i < chat.length; i++) {
         const changes = chat[i]?.horae_meta?._rpgChanges;
@@ -7483,7 +9070,8 @@ function _buildRpgSnapshotMap(chat) {
             }
             for (const c of (changes.currency || [])) {
                 const o = resolve(c.owner);
-                if (!validDenoms.has(c.name)) continue;
+                if (isDeletedCurrencyAt(c.name, i)) continue;
+                if (validDenoms.size > 0 && !validDenoms.has(c.name)) continue;
                 if (!acc.currency[o]) acc.currency[o] = {};
                 if (c.isDelta) {
                     acc.currency[o][c.name] = (acc.currency[o][c.name] || 0) + c.value;
@@ -7548,13 +9136,14 @@ function refreshAllDisplays() {
     updateLocationMemoryDisplay();
     updateRpgDisplay();
     updateTokenCounter();
+    refreshHoraePorts();
 }
 
 /** chat[0] 上的全局键——无法由 rebuild 系列函数重建，需在 meta 重置时保留 */
 const _GLOBAL_META_KEYS = [
     'autoSummaries', '_deletedNpcs', '_deletedAgendaTexts',
     'locationMemory', 'relationships', 'rpg',
-    '_rpgConfigs', '_pendingScanReview',
+    '_rpgConfigs', '_pendingScanReview', '_userAddedNpcs',
 ];
 
 function _saveGlobalMeta(meta) {
@@ -7568,13 +9157,22 @@ function _saveGlobalMeta(meta) {
 
 function _restoreGlobalMeta(meta, saved) {
     if (!saved || !meta) return;
+    // 空对象/空数组视为缺失（createEmptyMeta 会先放 {} 占位）
+    const isEmptyObj = (v) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0;
+    const isEmptyArr = (v) => Array.isArray(v) && v.length === 0;
+    const isMissing = (v) => v === undefined || v === null || isEmptyObj(v) || isEmptyArr(v);
     for (const key of _GLOBAL_META_KEYS) {
         if (saved[key] === undefined) continue;
-        if (meta[key] === undefined) {
+        if (isMissing(meta[key])) {
             meta[key] = saved[key];
-        } else if (key === 'rpg' && typeof saved[key] === 'object' && typeof meta[key] === 'object') {
+            continue;
+        }
+        // rpg / _rpgConfigs 子键级回填
+        if ((key === 'rpg' || key === '_rpgConfigs')
+            && typeof saved[key] === 'object' && !Array.isArray(saved[key])
+            && typeof meta[key] === 'object' && !Array.isArray(meta[key])) {
             for (const rk of Object.keys(saved[key])) {
-                if (meta[key][rk] === undefined) {
+                if (isMissing(meta[key][rk])) {
                     meta[key][rk] = saved[key][rk];
                 }
             }
@@ -7644,9 +9242,12 @@ function _restoreCompressedFlags(meta, saved) {
 }
 
 /**
- * 清理孤儿摘要：如果某个 active 摘要的卡片事件在整个聊天中找不到，
- * 则清除该摘要范围内的 _compressedBy / is_hidden，并将摘要标记为 inactive。
- * 返回清理的摘要数量。
+ * 摘要卡片完整性修复（「只补不杀」策略）：
+ * 旧版：若 active 摘要的 events 卡片不见了，就关闭整个摘要、回退原始时间线
+ *       → 导致玩了几层后摘要莫名「掉」回去
+ * 新版：autoSummaries 是单一可信源；若 events 卡片缺失，就在范围首楼层补回一张虚拟卡片
+ *       → events 数组变化（rebuild/分支/导入）也不会把用户审核保留的摘要弄丢
+ * 返回修复的摘要数量（补回卡片的数量），保持函数名兼容旧调用点。
  */
 function cleanOrphanSummaries() {
     const chat = horaeManager.getChat();
@@ -7654,48 +9255,69 @@ function cleanOrphanSummaries() {
     const sums = chat[0]?.horae_meta?.autoSummaries;
     if (!sums?.length) return 0;
 
-    let cleaned = 0;
+    let restored = 0;
     for (const s of sums) {
         if (!s.active || !s.range || !s.id) continue;
         const summaryId = s.id;
+
         let cardFound = false;
+        let cardMsgIdx = -1;
         for (let i = s.range[0]; i <= s.range[1] && i < chat.length; i++) {
             const evts = chat[i]?.horae_meta?.events;
             if (evts?.some(e => e._summaryId === summaryId && e.isSummary)) {
                 cardFound = true;
+                cardMsgIdx = i;
                 break;
             }
         }
         if (cardFound) continue;
 
-        console.log(`[Horae] 孤儿摘要 ${summaryId}: 卡片事件缺失，清理压缩标记`);
-        s.active = false;
-        for (let i = s.range[0]; i <= s.range[1] && i < chat.length; i++) {
-            if (i === 0 || !chat[i]) continue;
-            if (chat[i].is_hidden) {
-                chat[i].is_hidden = false;
-                const $el = $(`.mes[mesid="${i}"]`);
-                if ($el.length) $el.attr('is_hidden', 'false');
+        // 卡片缺失但摘要仍 active → 在范围首条非 user 楼层补一张虚拟卡片回去
+        const targetIdx = (() => {
+            for (let i = s.range[0]; i <= s.range[1] && i < chat.length; i++) {
+                if (i === 0) continue;
+                if (chat[i] && !chat[i].is_user) return i;
             }
-            const evts = chat[i]?.horae_meta?.events;
-            if (evts) {
-                for (const evt of evts) {
-                    if (evt._compressedBy === summaryId) delete evt._compressedBy;
-                }
+            for (let i = s.range[0]; i <= s.range[1] && i < chat.length; i++) {
+                if (i > 0 && chat[i]) return i;
             }
+            return -1;
+        })();
+
+        if (targetIdx === -1) {
+            console.warn(`[Horae] cleanOrphanSummaries: 摘要 ${summaryId} 范围 [${s.range}] 内无可用消息，跳过补卡`);
+            continue;
         }
-        cleaned++;
+
+        if (!chat[targetIdx].horae_meta) chat[targetIdx].horae_meta = createEmptyMeta();
+        if (!Array.isArray(chat[targetIdx].horae_meta.events)) chat[targetIdx].horae_meta.events = [];
+
+        // 摘要内容真源：summaryText（编辑后落点）→ summary → title → 兜底
+        const cardText = (typeof s.summaryText === 'string' && s.summaryText)
+            ? s.summaryText
+            : (s.summary || s.title || `[${t('label.summary')}]`);
+        chat[targetIdx].horae_meta.events.push({
+            level: s.level || 'major',
+            summary: cardText,
+            timestamp: s.timestamp || chat[targetIdx].horae_meta.timestamp || null,
+            isSummary: true,
+            _summaryId: summaryId,
+            _restored: true,
+        });
+        injectHoraeTagToMessage(targetIdx, chat[targetIdx].horae_meta);
+        console.log(`[Horae] 摘要 ${summaryId} 卡片已在 #${targetIdx} 自动补回`);
+        restored++;
     }
-    if (cleaned > 0) {
-        console.log(`[Horae] cleanOrphanSummaries: 清理了 ${cleaned} 个孤儿摘要`);
+    if (restored > 0) {
+        console.log(`[Horae] cleanOrphanSummaries: 自动补回了 ${restored} 张缺失的摘要卡片`);
     }
-    return cleaned;
+    return restored;
 }
 
 /**
  * 校验并修复摘要范围内消息的 is_hidden 和 _compressedBy 状态，
  * 防止 SillyTavern 重渲染或 saveChat 竞态导致隐藏/压缩标记丢失。
- * 会先清理孤儿摘要，再对仍然有效的摘要补全标记。
+ * 会先「补回」缺失的摘要卡片（不再 deactivate），再对仍然有效的摘要补全标记。
  */
 async function enforceHiddenState() {
     const chat = horaeManager.getChat();
@@ -7703,13 +9325,13 @@ async function enforceHiddenState() {
     const sums = chat[0]?.horae_meta?.autoSummaries;
     if (!sums?.length) return;
 
-    const orphansCleaned = cleanOrphanSummaries();
+    const cardsRestored = cleanOrphanSummaries();
 
     let fixed = 0;
     for (const s of sums) {
-        if (!s.active || !s.range) continue;
+        if (!s.active) continue;
         const summaryId = s.id;
-        for (let i = s.range[0]; i <= s.range[1]; i++) {
+        for (const i of getSummaryMsgIndices(s)) {
             if (i === 0 || !chat[i]) continue;
             if (!chat[i].is_hidden) {
                 chat[i].is_hidden = true;
@@ -7728,14 +9350,14 @@ async function enforceHiddenState() {
             }
         }
     }
-    if (fixed > 0 || orphansCleaned > 0) {
-        console.log(`[Horae] enforceHiddenState: 修复了 ${fixed} 处摘要状态, 清理了 ${orphansCleaned} 个孤儿`);
+    if (fixed > 0 || cardsRestored > 0) {
+        console.log(`[Horae] enforceHiddenState: 修复 ${fixed} 处隐藏/压缩状态, 自动补回 ${cardsRestored} 张缺失摘要卡片`);
         await getContext().saveChat();
     }
 }
 
 /**
- * 手动一键修复：先清理孤儿摘要，再对仍然有效的活跃摘要
+ * 手动一键修复：先「补回」缺失的摘要卡片，再对仍然有效的活跃摘要
  * 强制恢复 is_hidden + _compressedBy，并同步 DOM 属性。返回修复的条目数。
  */
 function repairAllSummaryStates() {
@@ -7744,13 +9366,13 @@ function repairAllSummaryStates() {
     const sums = chat[0]?.horae_meta?.autoSummaries;
     if (!sums?.length) return 0;
 
-    const orphansCleaned = cleanOrphanSummaries();
+    const cardsRestored = cleanOrphanSummaries();
 
     let fixed = 0;
     for (const s of sums) {
-        if (!s.active || !s.range) continue;
+        if (!s.active) continue;
         const summaryId = s.id;
-        for (let i = s.range[0]; i <= s.range[1]; i++) {
+        for (const i of getSummaryMsgIndices(s)) {
             if (i === 0 || !chat[i]) continue;
             if (!chat[i].is_hidden) {
                 chat[i].is_hidden = true;
@@ -7769,11 +9391,11 @@ function repairAllSummaryStates() {
             }
         }
     }
-    if (fixed > 0 || orphansCleaned > 0) {
-        console.log(`[Horae] repairAllSummaryStates: 修复了 ${fixed} 处, 清理了 ${orphansCleaned} 个孤儿`);
+    if (fixed > 0 || cardsRestored > 0) {
+        console.log(`[Horae] repairAllSummaryStates: 修复 ${fixed} 处, 自动补回 ${cardsRestored} 张缺失摘要卡片`);
         getContext().saveChat();
     }
-    return fixed + orphansCleaned;
+    return fixed + cardsRestored;
 }
 
 /** 刷新所有已展开的底部面板 */
@@ -7800,11 +9422,11 @@ function refreshVisiblePanels() {
 function updateLocationMemoryDisplay() {
     const listEl = document.getElementById('horae-location-list');
     if (!listEl) return;
-    
+
     const locMem = horaeManager.getLocationMemory();
     const entries = Object.entries(locMem).filter(([, info]) => !info._deleted);
     const currentLoc = horaeManager.getLatestState()?.scene?.location || '';
-    
+
     if (entries.length === 0) {
         listEl.innerHTML = `
             <div class="horae-empty-state">
@@ -7814,12 +9436,12 @@ function updateLocationMemoryDisplay() {
             </div>`;
         return;
     }
-    
+
     // 按父级分组：「酒馆·大厅」→ parent=酒馆, child=大厅
     const SEP = /[·・\-\/\|]/;
     const groups = {};   // { parentName: { info?, children: [{name,info}] } }
     const standalone = []; // 无子级的独立条目
-    
+
     for (const [name, info] of entries) {
         const sepMatch = name.match(SEP);
         if (sepMatch) {
@@ -7841,7 +9463,7 @@ function updateLocationMemoryDisplay() {
             }
         }
     }
-    
+
     const buildCard = (name, info, indent = false) => {
         const isCurrent = name === currentLoc || currentLoc.includes(name) || name.includes(currentLoc);
         const currentClass = isCurrent ? 'horae-location-current' : '';
@@ -7862,7 +9484,7 @@ function updateLocationMemoryDisplay() {
                 ${dateStr ? `<div class="horae-loc-date">${dateStr}</div>` : ''}
             </div>`;
     };
-    
+
     let html = '';
     // 渲染有子级的分组
     for (const [parentName, group] of Object.entries(groups)) {
@@ -7880,9 +9502,9 @@ function updateLocationMemoryDisplay() {
     }
     // 渲染独立条目
     for (const { name, info } of standalone) html += buildCard(name, info, false);
-    
+
     listEl.innerHTML = html;
-    
+
     // 折叠切换
     listEl.querySelectorAll('.horae-loc-group-header').forEach(header => {
         header.addEventListener('click', () => {
@@ -7893,18 +9515,18 @@ function updateLocationMemoryDisplay() {
             icon.className = `fa-solid fa-chevron-${hidden ? 'down' : 'right'} horae-loc-fold-icon`;
         });
     });
-    
+
     listEl.querySelectorAll('.horae-loc-edit').forEach(btn => {
         btn.addEventListener('click', () => {
             const name = btn.closest('.horae-location-card').dataset.locationName;
             openLocationEditModal(name);
         });
     });
-    
+
     listEl.querySelectorAll('.horae-loc-delete').forEach(btn => {
         btn.addEventListener('click', async () => {
             const name = btn.closest('.horae-location-card').dataset.locationName;
-            if (!confirm(t('confirm.deleteLocation', {name}))) return;
+            if (!confirm(t('confirm.deleteLocation', { name }))) return;
             const chat = horaeManager.getChat();
             if (chat?.[0]?.horae_meta?.locationMemory) {
                 // 标记为已删除而非直接delete，防止rebuildLocationMemory从历史消息重建
@@ -7928,7 +9550,7 @@ function openLocationEditModal(locationName) {
     const locMem = horaeManager.getLocationMemory();
     const isNew = !locationName || !locMem[locationName];
     const existing = isNew ? { desc: '' } : locMem[locationName];
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -7958,23 +9580,23 @@ function openLocationEditModal(locationName) {
     `;
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     document.getElementById('horae-edit-modal').addEventListener('click', (e) => {
         if (e.target.id === 'horae-edit-modal') closeEditModal();
     });
-    
+
     document.getElementById('horae-loc-save').addEventListener('click', async (e) => {
         e.stopPropagation();
         const name = document.getElementById('horae-loc-edit-name').value.trim();
         const desc = document.getElementById('horae-loc-edit-desc').value.trim();
         if (!name) { showToast(t('toast.locationNameRequired'), 'warning'); return; }
-        
+
         const chat = horaeManager.getChat();
         if (!chat?.length) return;
         if (!chat[0].horae_meta) chat[0].horae_meta = createEmptyMeta();
         if (!chat[0].horae_meta.locationMemory) chat[0].horae_meta.locationMemory = {};
         const mem = chat[0].horae_meta.locationMemory;
-        
+
         const now = new Date().toISOString();
         if (isNew) {
             mem[name] = { desc, firstSeen: now, lastUpdated: now, _userEdited: true };
@@ -8004,13 +9626,13 @@ function openLocationEditModal(locationName) {
         } else {
             mem[name] = { ...existing, desc, lastUpdated: now, _userEdited: true };
         }
-        
+
         await getContext().saveChat();
         closeEditModal();
         updateLocationMemoryDisplay();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('horae-loc-cancel').addEventListener('click', () => closeEditModal());
 }
 
@@ -8021,14 +9643,14 @@ function openLocationMergeModal() {
     closeEditModal();
     const locMem = horaeManager.getLocationMemory();
     const entries = Object.entries(locMem).filter(([, info]) => !info._deleted);
-    
+
     if (entries.length < 2) {
         showToast(t('toast.mergeMin2'), 'warning');
         return;
     }
-    
+
     const options = entries.map(([name]) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
-    
+
     const modalHtml = `
         <div id="horae-edit-modal" class="horae-modal">
             <div class="horae-modal-content">
@@ -8065,66 +9687,66 @@ function openLocationMergeModal() {
     `;
     document.body.insertAdjacentHTML('beforeend', modalHtml);
     preventModalBubble();
-    
+
     if (entries.length >= 2) {
         document.getElementById('horae-merge-target').selectedIndex = 1;
     }
-    
+
     document.getElementById('horae-edit-modal').addEventListener('click', (e) => {
         if (e.target.id === 'horae-edit-modal') closeEditModal();
     });
-    
+
     const updatePreview = () => {
         const source = document.getElementById('horae-merge-source').value;
         const target = document.getElementById('horae-merge-target').value;
         const previewEl = document.getElementById('horae-merge-preview');
         const textEl = document.getElementById('horae-merge-preview-text');
-        
+
         if (source === target) {
             previewEl.style.display = 'block';
             textEl.textContent = t('ui.sameSourceTarget');
             return;
         }
-        
+
         const sourceDesc = locMem[source]?.desc || '';
         const targetDesc = locMem[target]?.desc || '';
         const merged = targetDesc + (targetDesc && sourceDesc ? '\n' : '') + sourceDesc;
         previewEl.style.display = 'block';
-        textEl.textContent = t('ui.mergePreview', {source, target, desc: merged.substring(0, 100) + (merged.length > 100 ? '...' : '')});
+        textEl.textContent = t('ui.mergePreview', { source, target, desc: merged.substring(0, 100) + (merged.length > 100 ? '...' : '') });
     };
-    
+
     document.getElementById('horae-merge-source').addEventListener('change', updatePreview);
     document.getElementById('horae-merge-target').addEventListener('change', updatePreview);
     updatePreview();
-    
+
     document.getElementById('horae-merge-confirm').addEventListener('click', async (e) => {
         e.stopPropagation();
         const source = document.getElementById('horae-merge-source').value;
         const target = document.getElementById('horae-merge-target').value;
-        
+
         if (source === target) {
             showToast(t('toast.mergeSameError'), 'warning');
             return;
         }
-        
-        if (!confirm(t('confirm.deleteLocation', {name: source}))) return;
-        
+
+        if (!confirm(t('confirm.deleteLocation', { name: source }))) return;
+
         const chat = horaeManager.getChat();
         const mem = chat?.[0]?.horae_meta?.locationMemory;
         if (!mem) return;
-        
+
         const sourceDesc = mem[source]?.desc || '';
         const targetDesc = mem[target]?.desc || '';
         mem[target].desc = targetDesc + (targetDesc && sourceDesc ? '\n' : '') + sourceDesc;
         mem[target].lastUpdated = new Date().toISOString();
         delete mem[source];
-        
+
         await getContext().saveChat();
         closeEditModal();
         updateLocationMemoryDisplay();
         showToast(t('toast.saveSuccess'), 'success');
     });
-    
+
     document.getElementById('horae-merge-cancel').addEventListener('click', () => closeEditModal());
 }
 
@@ -8155,7 +9777,7 @@ async function scrollToMessage(messageId) {
         return;
     }
     // 消息不在 DOM 中（被酒馆折叠/懒加载），提示用户展开
-    if (!confirm(t('confirm.jumpToFarMessage', {id: messageId}))) return;
+    if (!confirm(t('confirm.jumpToFarMessage', { id: messageId }))) return;
     try {
         const slashModule = await import('/scripts/slash-commands.js');
         const exec = slashModule.executeSlashCommandsWithOptions;
@@ -8167,11 +9789,11 @@ async function scrollToMessage(messageId) {
             messageEl.classList.add('horae-highlight');
             setTimeout(() => messageEl.classList.remove('horae-highlight'), 2000);
         } else {
-            showToast(t('toast.jumpFailed', {id: messageId}), 'warning');
+            showToast(t('toast.jumpFailed', { id: messageId }), 'warning');
         }
     } catch (err) {
         console.warn('[Horae] 跳转失败:', err);
-        showToast(t('toast.jumpError', {error: err.message || 'unknown'}), 'error');
+        showToast(t('toast.jumpError', { error: err.message || 'unknown' }), 'error');
     }
 }
 
@@ -8208,7 +9830,7 @@ function applyPanelWidth() {
 /** 内置预设主题 */
 const BUILTIN_THEMES = {
     'sakura': {
-        name: '樱花粉',
+        nameKey: 'themes.builtin.sakura',
         variables: {
             '--horae-primary': '#ec4899', '--horae-primary-light': '#f472b6', '--horae-primary-dark': '#be185d',
             '--horae-accent': '#fb923c', '--horae-success': '#34d399', '--horae-warning': '#fbbf24',
@@ -8219,7 +9841,7 @@ const BUILTIN_THEMES = {
         }
     },
     'forest': {
-        name: '森林绿',
+        nameKey: 'themes.builtin.forest',
         variables: {
             '--horae-primary': '#059669', '--horae-primary-light': '#34d399', '--horae-primary-dark': '#047857',
             '--horae-accent': '#fbbf24', '--horae-success': '#10b981', '--horae-warning': '#f59e0b',
@@ -8230,7 +9852,7 @@ const BUILTIN_THEMES = {
         }
     },
     'ocean': {
-        name: '海洋蓝',
+        nameKey: 'themes.builtin.ocean',
         variables: {
             '--horae-primary': '#3b82f6', '--horae-primary-light': '#60a5fa', '--horae-primary-dark': '#1d4ed8',
             '--horae-accent': '#f59e0b', '--horae-success': '#10b981', '--horae-warning': '#f59e0b',
@@ -8271,7 +9893,8 @@ function applyThemeMode() {
         document.getElementById('horae_drawer'),
         ...document.querySelectorAll('.horae-message-panel'),
         ...document.querySelectorAll('.horae-modal'),
-        ...document.querySelectorAll('.horae-rpg-hud')
+        ...document.querySelectorAll('.horae-rpg-hud'),
+        ...document.querySelectorAll('.horae-port-bottom-bar')
     ].filter(Boolean);
     targets.forEach(el => el.classList.toggle('horae-light', isLight));
 
@@ -8289,8 +9912,8 @@ function applyThemeMode() {
         // 日间自定义主题：必须追加 .horae-light 选择器以覆盖 style.css 中同名类的默认变量
         const needsLightOverride = isLight && mode !== 'light';
         const selectors = needsLightOverride
-            ? '#horae_drawer,\n#horae_drawer.horae-light,\n.horae-message-panel,\n.horae-message-panel.horae-light,\n.horae-modal,\n.horae-modal.horae-light,\n.horae-context-menu,\n.horae-context-menu.horae-light,\n.horae-rpg-hud,\n.horae-rpg-hud.horae-light,\n.horae-rpg-dice-panel,\n.horae-rpg-dice-panel.horae-light,\n.horae-progress-overlay,\n.horae-progress-overlay.horae-light'
-            : '#horae_drawer,\n.horae-message-panel,\n.horae-modal,\n.horae-context-menu,\n.horae-rpg-hud,\n.horae-rpg-dice-panel,\n.horae-progress-overlay';
+            ? '#horae_drawer,\n#horae_drawer.horae-light,\n.horae-message-panel,\n.horae-message-panel.horae-light,\n.horae-modal,\n.horae-modal.horae-light,\n.horae-context-menu,\n.horae-context-menu.horae-light,\n.horae-rpg-hud,\n.horae-rpg-hud.horae-light,\n.horae-port-bottom-bar,\n.horae-port-bottom-bar.horae-light,\n.horae-rpg-dice-panel,\n.horae-rpg-dice-panel.horae-light,\n.horae-progress-overlay,\n.horae-progress-overlay.horae-light'
+            : '#horae_drawer,\n.horae-message-panel,\n.horae-modal,\n.horae-context-menu,\n.horae-rpg-hud,\n.horae-port-bottom-bar,\n.horae-rpg-dice-panel,\n.horae-progress-overlay';
         themeStyleEl.textContent = `${selectors} {\n${vars}\n}`;
     } else {
         if (themeStyleEl) themeStyleEl.remove();
@@ -8329,7 +9952,7 @@ function applyCustomCSS() {
 /** 导出当前美化为JSON文件 */
 function exportTheme() {
     const theme = {
-        name: '我的Horae美化',
+        name: t('themes.defaultExportName'),
         author: '',
         version: '1.0',
         variables: {},
@@ -8381,7 +10004,7 @@ function importTheme() {
             settings.customThemes.push(theme);
             saveSettings();
             refreshThemeSelector();
-            showToast(t('toast.themeImported', {name: theme.name}), 'success');
+            showToast(t('toast.themeImported', { name: theme.name }), 'success');
         } catch (err) {
             showToast(t('toast.themeParseFailed'), 'error');
             console.error('[Horae] 导入美化失败:', err);
@@ -8400,7 +10023,7 @@ function refreshThemeSelector() {
     for (const [key, theme] of Object.entries(BUILTIN_THEMES)) {
         const opt = document.createElement('option');
         opt.value = key;
-        opt.textContent = `🎨 ${theme.name}`;
+        opt.textContent = `🎨 ${t(theme.nameKey)}`;
         sel.appendChild(opt);
     }
     // 用户导入的主题
@@ -8418,7 +10041,7 @@ function refreshThemeSelector() {
 function deleteCustomTheme(index) {
     const themes = settings.customThemes || [];
     if (!themes[index]) return;
-    if (!confirm(t('confirm.deleteTheme', {name: themes[index].name}))) return;
+    if (!confirm(t('confirm.deleteTheme', { name: themes[index].name }))) return;
     const currentMode = settings.themeMode || 'dark';
     themes.splice(index, 1);
     settings.customThemes = themes;
@@ -8519,6 +10142,48 @@ function _tdGenerateVars(hue, sat, brightness, accentHex, colorLight) {
     return v;
 }
 
+// Keep this list in sync with the fine-tuning picker variables.
+const _TD_FINE_VAR_NAMES = [
+    '--horae-primary',
+    '--horae-primary-light',
+    '--horae-primary-dark',
+    '--horae-accent',
+    '--horae-success',
+    '--horae-warning',
+    '--horae-danger',
+    '--horae-info',
+    '--horae-bg',
+    '--horae-bg-secondary',
+    '--horae-bg-hover',
+    '--horae-text',
+    '--horae-text-muted'
+];
+
+function _tdNormalizeOverrides(overrides) {
+    const out = {};
+    if (!overrides || typeof overrides !== 'object') return out;
+    for (const key of _TD_FINE_VAR_NAMES) {
+        const val = overrides[key];
+        if (typeof val === 'string' && val.trim()) out[key] = val.trim();
+    }
+    return out;
+}
+
+function _tdInferOverridesFromTheme(themeVars, baseVars) {
+    const out = {};
+    if (!themeVars || typeof themeVars !== 'object') return out;
+    for (const key of _TD_FINE_VAR_NAMES) {
+        const tv = themeVars[key];
+        if (typeof tv !== 'string' || !tv.trim()) continue;
+        const themeVal = tv.trim();
+        const baseVal = typeof baseVars?.[key] === 'string' ? baseVars[key].trim() : '';
+        if (!baseVal || themeVal.toLowerCase() !== baseVal.toLowerCase()) {
+            out[key] = themeVal;
+        }
+    }
+    return out;
+}
+
 function _tdBuildImageCSS(images, opacities, bgHex, drawerBg) {
     const parts = [];
     // 顶部图标（#horae_drawer）
@@ -8592,6 +10257,7 @@ function openThemeDesigner() {
         if (curTheme.drawerBg) savedDrawerBg = curTheme.drawerBg;
         if (curTheme._designerState) savedDesigner = curTheme._designerState;
     }
+    const savedOverrides = _tdNormalizeOverrides(savedDesigner?.overrides);
 
     const st = {
         hue: savedDesigner?.hue ?? initHsl.h,
@@ -8608,8 +10274,12 @@ function openThemeDesigner() {
         diceOpacity: savedDesigner?.diceOpacity ?? 15,
         radarColor: savedDesigner?.radarColor ?? '',
         radarLabel: savedDesigner?.radarLabel ?? '',
-        overrides: {}
+        overrides: { ...savedOverrides }
     };
+    if (!Object.keys(st.overrides).length && curTheme?.variables) {
+        const baseVars = _tdGenerateVars(st.hue, st.sat, st.bright, st.accent, st.colorLight);
+        st.overrides = _tdInferOverridesFromTheme(curTheme.variables, baseVars);
+    }
 
     const abortCtrl = new AbortController();
     const sig = abortCtrl.signal;
@@ -8800,13 +10470,14 @@ function openThemeDesigner() {
         let previewEl = document.getElementById('horae-designer-preview');
         if (!previewEl) { previewEl = document.createElement('style'); previewEl.id = 'horae-designer-preview'; document.head.appendChild(previewEl); }
         const cssLines = Object.entries(vars).map(([k, v]) => `  ${k}: ${v} !important;`).join('\n');
-        previewEl.textContent = `#horae_drawer, .horae-message-panel, .horae-modal, .horae-context-menu, .horae-rpg-hud, .horae-rpg-dice-panel, .horae-progress-overlay {\n${cssLines}\n}`;
+        previewEl.textContent = `#horae_drawer, .horae-message-panel, .horae-modal, .horae-context-menu, .horae-rpg-hud, .horae-port-bottom-bar, .horae-rpg-dice-panel, .horae-progress-overlay {\n${cssLines}\n}`;
 
         const isLight = st.bright > 50;
         drawer?.classList.toggle('horae-light', isLight);
         modal.classList.toggle('horae-light', isLight);
         document.querySelectorAll('.horae-message-panel').forEach(p => p.classList.toggle('horae-light', isLight));
         document.querySelectorAll('.horae-rpg-hud').forEach(h => h.classList.toggle('horae-light', isLight));
+        document.querySelectorAll('.horae-port-bottom-bar').forEach(b => b.classList.toggle('horae-light', isLight));
         document.querySelectorAll('.horae-rpg-dice-panel').forEach(d => d.classList.toggle('horae-light', isLight));
 
         let imgEl = document.getElementById('horae-designer-images');
@@ -9044,7 +10715,7 @@ function openThemeDesigner() {
             images: { ...st.images }, imageOpacity: { ...st.imgOp },
             drawerBg: st.drawerBg,
             isLight: st.bright > 50,
-            _designerState: { hue: st.hue, sat: st.sat, colorLight: st.colorLight, bright: st.bright, accent: st.accent, rpgColor: st.rpgColor, rpgOpacity: st.rpgOpacity, diceColor: st.diceColor, diceOpacity: st.diceOpacity, radarColor: st.radarColor, radarLabel: st.radarLabel },
+            _designerState: { hue: st.hue, sat: st.sat, colorLight: st.colorLight, bright: st.bright, accent: st.accent, rpgColor: st.rpgColor, rpgOpacity: st.rpgOpacity, diceColor: st.diceColor, diceOpacity: st.diceOpacity, radarColor: st.radarColor, radarLabel: st.radarLabel, overrides: { ...st.overrides } },
             css: _tdBuildImageCSS(st.images, st.imgOp, vars['--horae-bg'], st.drawerBg)
         };
         if (!settings.customThemes) settings.customThemes = [];
@@ -9057,7 +10728,7 @@ function openThemeDesigner() {
         saveSettings();
         applyThemeMode();
         refreshThemeSelector();
-        showToast(t('toast.themeSaved', {name}), 'success');
+        showToast(t('toast.themeSaved', { name }), 'success');
     }, { signal: sig });
 
     // ---- Export ----
@@ -9083,7 +10754,7 @@ function openThemeDesigner() {
             images: { ...st.images }, imageOpacity: { ...st.imgOp },
             drawerBg: st.drawerBg,
             isLight: st.bright > 50,
-            _designerState: { hue: st.hue, sat: st.sat, colorLight: st.colorLight, bright: st.bright, accent: st.accent, rpgColor: st.rpgColor, rpgOpacity: st.rpgOpacity, diceColor: st.diceColor, diceOpacity: st.diceOpacity, radarColor: st.radarColor, radarLabel: st.radarLabel },
+            _designerState: { hue: st.hue, sat: st.sat, colorLight: st.colorLight, bright: st.bright, accent: st.accent, rpgColor: st.rpgColor, rpgOpacity: st.rpgOpacity, diceColor: st.diceColor, diceOpacity: st.diceOpacity, radarColor: st.radarColor, radarLabel: st.radarLabel, overrides: { ...st.overrides } },
             css: _tdBuildImageCSS(st.images, st.imgOp, vars['--horae-bg'], st.drawerBg)
         };
         const blob = new Blob([JSON.stringify(theme, null, 2)], { type: 'application/json' });
@@ -9141,35 +10812,35 @@ function openThemeDesigner() {
  */
 function addMessagePanel(messageEl, messageIndex) {
     try {
-    const existingPanel = messageEl.querySelector('.horae-message-panel');
-    if (existingPanel) return;
-    
-    const meta = horaeManager.getMessageMeta(messageIndex);
-    if (!meta) return;
-    
-    // 格式化时间（标准日历添加周几）
-    let time = '--';
-    if (meta.timestamp?.story_date) {
-        const parsed = parseStoryDate(meta.timestamp.story_date);
-        if (parsed && parsed.type === 'standard') {
-            time = formatStoryDate(parsed, true);
-        } else {
-            time = meta.timestamp.story_date;
+        const existingPanel = messageEl.querySelector('.horae-message-panel');
+        if (existingPanel) return;
+
+        const meta = horaeManager.getMessageMeta(messageIndex);
+        if (!meta) return;
+
+        // 格式化时间（标准日历添加周几）
+        let time = '--';
+        if (meta.timestamp?.story_date) {
+            const parsed = parseStoryDate(meta.timestamp.story_date);
+            if (parsed && parsed.type === 'standard') {
+                time = formatStoryDate(parsed, true);
+            } else {
+                time = meta.timestamp.story_date;
+            }
+            if (meta.timestamp.story_time) {
+                time += ' ' + meta.timestamp.story_time;
+            }
         }
-        if (meta.timestamp.story_time) {
-            time += ' ' + meta.timestamp.story_time;
-        }
-    }
-    // 兼容新旧事件格式
-    const eventsArr = meta.events || (meta.event ? [meta.event] : []);
-    const eventSummary = eventsArr.length > 0 
-        ? eventsArr.map(e => e.summary).join(' | ') 
-        : t('ui.noSpecialEvents');
-    const charCount = meta.scene?.characters_present?.length || 0;
-    const isSkipped = !!meta._skipHorae;
-    const sideplayBtnStyle = settings.sideplayMode ? '' : 'display:none;';
-    
-    const panelHtml = `
+        // 兼容新旧事件格式
+        const eventsArr = meta.events || (meta.event ? [meta.event] : []);
+        const eventSummary = eventsArr.length > 0
+            ? eventsArr.map(e => e.summary).join(' | ')
+            : t('ui.noSpecialEvents');
+        const charCount = meta.scene?.characters_present?.length || 0;
+        const isSkipped = !!meta._skipHorae;
+        const sideplayBtnStyle = settings.sideplayMode ? '' : 'display:none;';
+
+        const panelHtml = `
         <div class="horae-message-panel${isSkipped ? ' horae-sideplay' : ''}" data-message-id="${messageIndex}">
             <div class="horae-panel-toggle">
                 <div class="horae-panel-icon">
@@ -9190,8 +10861,8 @@ function addMessagePanel(messageEl, messageIndex) {
                     <button class="horae-btn-rescan" title="${t('tooltip.rescan')}">
                         <i class="fa-solid fa-rotate"></i>
                     </button>
-                    <button class="horae-btn-expand" title="${t('tooltip.expandCollapse')}">
-                        <i class="fa-solid fa-chevron-down"></i>
+                    <button class="horae-btn-ai-analyze-header" title="${t('ui.aiAnalyzeTitle')}">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
                     </button>
                 </div>
             </div>
@@ -9200,30 +10871,31 @@ function addMessagePanel(messageEl, messageIndex) {
             </div>
         </div>
     `;
-    
-    const mesTextEl = messageEl.querySelector('.mes_text');
-    if (mesTextEl) {
-        mesTextEl.insertAdjacentHTML('afterend', panelHtml);
-        const panelEl = messageEl.querySelector('.horae-message-panel');
-        bindPanelEvents(panelEl);
-        if (!settings.showMessagePanel && panelEl) {
-            panelEl.style.display = 'none';
+
+        const mesTextEl = messageEl.querySelector('.mes_text');
+        if (mesTextEl) {
+            mesTextEl.insertAdjacentHTML('afterend', panelHtml);
+            const panelEl = messageEl.querySelector('.horae-message-panel');
+            bindPanelEvents(panelEl);
+            if (!settings.showMessagePanel && panelEl) {
+                panelEl.style.display = 'none';
+            }
+            // 应用自定义宽度和偏移
+            const w = Math.max(50, Math.min(100, settings.panelWidth || 100));
+            if (w < 100 && panelEl) {
+                panelEl.style.maxWidth = `${w}%`;
+            }
+            const ofs = Math.max(0, settings.panelOffset || 0);
+            if (ofs > 0 && panelEl) {
+                panelEl.style.marginLeft = `${ofs}px`;
+            }
+            // 继承主题模式
+            if (isLightMode() && panelEl) {
+                panelEl.classList.add('horae-light');
+            }
+            renderRpgHud(messageEl, messageIndex);
+            refreshHoraePorts(messageEl);
         }
-        // 应用自定义宽度和偏移
-        const w = Math.max(50, Math.min(100, settings.panelWidth || 100));
-        if (w < 100 && panelEl) {
-            panelEl.style.maxWidth = `${w}%`;
-        }
-        const ofs = Math.max(0, settings.panelOffset || 0);
-        if (ofs > 0 && panelEl) {
-            panelEl.style.marginLeft = `${ofs}px`;
-        }
-        // 继承主题模式
-        if (isLightMode() && panelEl) {
-            panelEl.classList.add('horae-light');
-        }
-        renderRpgHud(messageEl, messageIndex);
-    }
     } catch (err) {
         console.error(`[Horae] addMessagePanel #${messageIndex} 失败:`, err);
     }
@@ -9265,12 +10937,12 @@ function buildPanelRelationships(meta) {
     const presentChars = meta.scene?.characters_present || [];
     const rels = horaeManager.getRelationshipsForCharacters(presentChars);
     if (rels.length === 0) return '';
-    
+
     const rows = rels.map(r => {
         const noteStr = r.note ? ` <span class="horae-rel-note-sm">(${r.note})</span>` : '';
         return `<div class="horae-panel-rel-row">${r.from} <span class="horae-rel-arrow-sm">→</span> ${r.to}: <strong>${r.type}</strong>${noteStr}</div>`;
     }).join('');
-    
+
     return `
         <div class="horae-panel-row full-width">
             <label><i class="fa-solid fa-diagram-project"></i> ${t('characters.relationships')}</label>
@@ -9304,7 +10976,7 @@ function buildPanelContent(messageIndex, meta) {
             <button class="horae-delete-btn"><i class="fa-solid fa-xmark"></i></button>
         </div>
     `).join('');
-    
+
     // 物品分类由主页面管理，底部栏不显示
     const itemRows = Object.entries(meta.items || {}).map(([name, info]) => {
         return `
@@ -9320,7 +10992,7 @@ function buildPanelContent(messageIndex, meta) {
             </div>
         `;
     }).join('');
-    
+
     // 获取前一条消息的好感总值（使用缓存避免 O(n²) 重复遍历）
     const prevTotals = {};
     const chat = horaeManager.getChat();
@@ -9348,12 +11020,12 @@ function buildPanelContent(messageIndex, meta) {
     if (messageIndex > 0 && buildPanelContent._affCache[messageIndex - 1]) {
         Object.assign(prevTotals, buildPanelContent._affCache[messageIndex - 1]);
     }
-    
+
     const affectionRows = Object.entries(meta.affection || {}).map(([key, value]) => {
         // 解析当前层的值
         let delta = 0, newTotal = 0;
         const prevVal = prevTotals[key] || 0;
-        
+
         if (typeof value === 'object' && value !== null) {
             if (value.type === 'absolute') {
                 newTotal = parseFloat(value.value) || 0;
@@ -9366,7 +11038,7 @@ function buildPanelContent(messageIndex, meta) {
             delta = parseFloat(value) || 0;
             newTotal = prevVal + delta;
         }
-        
+
         const roundedDelta = Math.round(delta * 100) / 100;
         const roundedTotal = Math.round(newTotal * 100) / 100;
         const deltaStr = roundedDelta >= 0 ? `+${roundedDelta}` : `${roundedDelta}`;
@@ -9379,24 +11051,24 @@ function buildPanelContent(messageIndex, meta) {
             </div>
         `;
     }).join('');
-    
+
     // 兼容新旧事件格式
     const eventsArr = meta.events || (meta.event ? [meta.event] : []);
     const firstEvent = eventsArr[0] || {};
     const eventLevel = firstEvent.level || '';
     const eventSummary = firstEvent.summary || '';
-    const multipleEventsNote = eventsArr.length > 1 ? `<span class="horae-note">${t('ui.multipleEventsNote', {n: eventsArr.length})}</span>` : '';
-    
+    const multipleEventsNote = eventsArr.length > 1 ? `<span class="horae-note">${t('ui.multipleEventsNote', { n: eventsArr.length })}</span>` : '';
+
     return `
         <div class="horae-panel-grid">
             <div class="horae-panel-row">
                 <label><i class="fa-regular fa-clock"></i> ${t('label.time')}</label>
                 <div class="horae-panel-value">
                     <input type="text" class="horae-input-datetime" placeholder="${t('placeholder.dateTime')}" value="${escapeHtml((() => {
-                        let val = meta.timestamp?.story_date || '';
-                        if (meta.timestamp?.story_time) val += (val ? ' ' : '') + meta.timestamp.story_time;
-                        return val;
-                    })())}">
+        let val = meta.timestamp?.story_date || '';
+        if (meta.timestamp?.story_time) val += (val ? ' ' : '') + meta.timestamp.story_time;
+        return val;
+    })())}">
                 </div>
             </div>
             <div class="horae-panel-row">
@@ -9480,57 +11152,64 @@ function buildPanelContent(messageIndex, meta) {
  */
 function bindPanelEvents(panelEl) {
     if (!panelEl) return;
-    
+
     const messageId = parseInt(panelEl.dataset.messageId);
     const contentEl = panelEl.querySelector('.horae-panel-content');
-    
+
     // 头部区域事件只绑定一次，避免重复绑定导致 toggle 互相抵消
     if (!panelEl._horaeBound) {
         panelEl._horaeBound = true;
         const toggleEl = panelEl.querySelector('.horae-panel-toggle');
-        const expandBtn = panelEl.querySelector('.horae-btn-expand');
+        const headerAnalyzeBtn = panelEl.querySelector('.horae-btn-ai-analyze-header');
         const rescanBtn = panelEl.querySelector('.horae-btn-rescan');
-        
+
         const togglePanel = () => {
             const isHidden = contentEl.style.display === 'none';
             contentEl.style.display = isHidden ? 'block' : 'none';
-            const icon = expandBtn?.querySelector('i');
-            if (icon) icon.className = isHidden ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down';
         };
-        
+
         const sideplayBtn = panelEl.querySelector('.horae-btn-sideplay');
-        
+
         toggleEl?.addEventListener('click', (e) => {
-            if (e.target.closest('.horae-btn-expand') || e.target.closest('.horae-btn-rescan') || e.target.closest('.horae-btn-sideplay')) return;
+            if (e.target.closest('.horae-btn-ai-analyze-header') || e.target.closest('.horae-btn-rescan') || e.target.closest('.horae-btn-sideplay')) return;
             togglePanel();
         });
-        expandBtn?.addEventListener('click', togglePanel);
+        headerAnalyzeBtn?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            handlePanelAiAnalyzeAction(messageId, panelEl);
+        });
         rescanBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
-            rescanMessageMeta(messageId, panelEl);
+            rescanMessageMeta(messageId, panelEl).catch(err => {
+                console.error(`[Horae] 重扫消息失败 #${messageId}:`, err);
+            });
         });
         sideplayBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
-            toggleSideplay(messageId, panelEl);
+            toggleSideplay(messageId, panelEl).catch(err => {
+                console.error(`[Horae] 切换番外标记失败 #${messageId}:`, err);
+            });
         });
     }
-    
+
     // 标记面板已修改
     let panelDirty = false;
     contentEl?.addEventListener('input', () => { panelDirty = true; });
     contentEl?.addEventListener('change', () => { panelDirty = true; });
-    
+
     panelEl.querySelector('.horae-btn-save')?.addEventListener('click', () => {
-        savePanelData(panelEl, messageId);
+        savePanelData(panelEl, messageId).catch(err => {
+            console.error(`[Horae] 保存面板失败 #${messageId}:`, err);
+        });
         panelDirty = false;
     });
-    
+
     panelEl.querySelector('.horae-btn-cancel')?.addEventListener('click', () => {
         if (panelDirty && !confirm(t('confirm.closeUnsaved'))) return;
         contentEl.style.display = 'none';
         panelDirty = false;
     });
-    
+
     panelEl.querySelector('.horae-btn-open-drawer')?.addEventListener('click', () => {
         const drawerIcon = $('#horae_drawer_icon');
         const drawerContent = $('#horae_drawer_content');
@@ -9548,12 +11227,12 @@ function bindPanelEvents(panelEl) {
             drawerContent.removeClass('closedDrawer').addClass('openDrawer').css('display', '');
         }
     });
-    
+
     panelEl.querySelector('.horae-btn-add-costume')?.addEventListener('click', () => {
         const editor = panelEl.querySelector('.horae-costume-editor');
         const emptyHint = editor.querySelector('.horae-empty-hint');
         if (emptyHint) emptyHint.remove();
-        
+
         editor.insertAdjacentHTML('beforeend', `
             <div class="horae-editor-row">
                 <input type="text" class="char-input" placeholder="${t('placeholder.holderName')}">
@@ -9563,7 +11242,7 @@ function bindPanelEvents(panelEl) {
         `);
         bindDeleteButtons(editor);
     });
-    
+
     panelEl.querySelector('.horae-btn-add-mood')?.addEventListener('click', () => {
         const editor = panelEl.querySelector('.horae-mood-editor');
         if (!editor) return;
@@ -9576,12 +11255,12 @@ function bindPanelEvents(panelEl) {
         `);
         bindDeleteButtons(editor);
     });
-    
+
     panelEl.querySelector('.horae-btn-add-item')?.addEventListener('click', () => {
         const editor = panelEl.querySelector('.horae-items-editor');
         const emptyHint = editor.querySelector('.horae-empty-hint');
         if (emptyHint) emptyHint.remove();
-        
+
         editor.insertAdjacentHTML('beforeend', `
             <div class="horae-editor-row horae-item-row">
                 <input type="text" class="horae-item-icon" placeholder="📦" maxlength="2">
@@ -9596,12 +11275,12 @@ function bindPanelEvents(panelEl) {
         `);
         bindDeleteButtons(editor);
     });
-    
+
     panelEl.querySelector('.horae-btn-add-affection')?.addEventListener('click', () => {
         const editor = panelEl.querySelector('.horae-affection-editor');
         const emptyHint = editor.querySelector('.horae-empty-hint');
         if (emptyHint) emptyHint.remove();
-        
+
         editor.insertAdjacentHTML('beforeend', `
             <div class="horae-editor-row horae-affection-row" data-char="" data-prev="0">
                 <input type="text" class="horae-affection-char-input" placeholder="${t('placeholder.holderName')}">
@@ -9613,13 +11292,13 @@ function bindPanelEvents(panelEl) {
         bindDeleteButtons(editor);
         bindAffectionInputs(editor);
     });
-    
+
     // 添加待办事项行
     panelEl.querySelector('.horae-btn-add-agenda-row')?.addEventListener('click', () => {
         const editor = panelEl.querySelector('.horae-agenda-editor');
         const emptyHint = editor.querySelector('.horae-empty-hint');
         if (emptyHint) emptyHint.remove();
-        
+
         editor.insertAdjacentHTML('beforeend', `
             <div class="horae-editor-row horae-agenda-edit-row">
                 <input type="text" class="horae-agenda-date" style="flex:0 0 90px;max-width:90px;" value="" placeholder="${t('label.date')}">
@@ -9629,13 +11308,13 @@ function bindPanelEvents(panelEl) {
         `);
         bindDeleteButtons(editor);
     });
-    
+
     // 绑定好感度输入联动
     bindAffectionInputs(panelEl.querySelector('.horae-affection-editor'));
-    
+
     // 绑定现有删除按钮
     bindDeleteButtons(panelEl);
-    
+
     // 快速解析按钮（不消耗API）
     panelEl.querySelector('.horae-btn-quick-scan')?.addEventListener('click', async () => {
         const chat = horaeManager.getChat();
@@ -9644,15 +11323,15 @@ function bindPanelEvents(panelEl) {
             showToast(t('toast.cannotGetContent'), 'error');
             return;
         }
-        
+
         // 先尝试解析标准标签
         let parsed = horaeManager.parseHoraeTag(message.mes);
-        
+
         // 如果没有标签，尝试宽松解析
         if (!parsed) {
             parsed = horaeManager.parseLooseFormat(message.mes);
         }
-        
+
         if (parsed) {
             // 获取现有元数据并合并
             const existingMeta = horaeManager.getMessageMeta(messageId) || createEmptyMeta();
@@ -9674,79 +11353,111 @@ function bindPanelEvents(panelEl) {
                 horaeManager._updateLocationMemory(parsed.scene.location, parsed.scene.scene_desc);
             }
             horaeManager.setMessageMeta(messageId, newMeta);
-            
+            injectHoraeTagToMessage(messageId, newMeta);
+
             const contentEl = panelEl.querySelector('.horae-panel-content');
             if (contentEl) {
                 contentEl.innerHTML = buildPanelContent(messageId, newMeta);
                 bindPanelEvents(panelEl);
             }
-            
-            getContext().saveChat();
+
+            await getContext().saveChat();
             refreshAllDisplays();
             showToast(t('toast.saveSuccess'), 'success');
         } else {
             showToast(t('toast.noFormatData'), 'warning');
         }
     });
-    
-    // AI分析按钮（消耗API）
-    panelEl.querySelector('.horae-btn-ai-analyze')?.addEventListener('click', async () => {
-        const chat = horaeManager.getChat();
-        const message = chat[messageId];
-        if (!message) {
-            showToast(t('toast.cannotGetContent'), 'error');
+
+    panelEl.querySelector('.horae-btn-ai-analyze')?.addEventListener('click', () => {
+        handlePanelAiAnalyzeAction(messageId, panelEl);
+    });
+}
+
+async function handlePanelAiAnalyzeAction(messageId, panelEl) {
+    if (_panelAiAnalyzeInProgress) {
+        showToast(t('ui.analyzing'), 'info');
+        return;
+    }
+
+    const chat = horaeManager.getChat();
+    const message = chat?.[messageId];
+    if (!message) {
+        showToast(t('toast.cannotGetContent'), 'error');
+        return;
+    }
+
+    const existingMeta = horaeManager.getMessageMeta(messageId);
+    const hasExistingData = !!(
+        existingMeta?.timestamp?.story_date ||
+        existingMeta?.scene?.location ||
+        existingMeta?.events?.length ||
+        existingMeta?.agenda?.length ||
+        existingMeta?.items && Object.keys(existingMeta.items).length > 0
+    );
+    if (hasExistingData && !confirm(t('confirm.reanalyzeMessage'))) return;
+
+    await runPanelAiAnalyze(messageId, panelEl, message);
+}
+
+async function runPanelAiAnalyze(messageId, panelEl, message) {
+    const buttons = [
+        panelEl.querySelector('.horae-btn-ai-analyze'),
+        panelEl.querySelector('.horae-btn-ai-analyze-header')
+    ].filter(Boolean);
+    const originals = buttons.map(btn => btn.innerHTML);
+
+    _panelAiAnalyzeInProgress = true;
+    buttons.forEach(btn => {
+        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i>`;
+        btn.disabled = true;
+    });
+
+    try {
+        const result = await analyzeMessageWithAI(message.mes, { messageIndex: messageId });
+        if (!result) {
+            showToast(t('toast.aiAnalysisNoData'), 'warning');
             return;
         }
-        
-        const btn = panelEl.querySelector('.horae-btn-ai-analyze');
-        const originalText = btn.innerHTML;
-        btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${t('ui.analyzing')}`;
-        btn.disabled = true;
-        
-        try {
-            // 调用AI分析
-            const result = await analyzeMessageWithAI(message.mes);
-            
-            if (result) {
-                const existingMeta = horaeManager.getMessageMeta(messageId) || createEmptyMeta();
-                const newMeta = horaeManager.mergeParsedToMeta(existingMeta, result);
-                if (newMeta._tableUpdates) {
-                    horaeManager.applyTableUpdates(newMeta._tableUpdates);
-                    delete newMeta._tableUpdates;
-                }
-                // 处理已完成待办
-                if (result.deletedAgenda && result.deletedAgenda.length > 0) {
-                    horaeManager.removeCompletedAgenda(result.deletedAgenda);
-                }
-                // 全局同步
-                if (result.relationships?.length > 0) {
-                    horaeManager._mergeRelationships(result.relationships);
-                }
-                if (result.scene?.scene_desc && result.scene?.location) {
-                    horaeManager._updateLocationMemory(result.scene.location, result.scene.scene_desc);
-                }
-                horaeManager.setMessageMeta(messageId, newMeta);
-                
-                const contentEl = panelEl.querySelector('.horae-panel-content');
-                if (contentEl) {
-                    contentEl.innerHTML = buildPanelContent(messageId, newMeta);
-                    bindPanelEvents(panelEl);
-                }
-                
-                getContext().saveChat();
-                refreshAllDisplays();
-                showToast(t('toast.saveSuccess'), 'success');
-            } else {
-                showToast(t('toast.aiAnalysisNoData'), 'warning');
-            }
-        } catch (error) {
-            console.error('[Horae] AI分析失败:', error);
-            showToast(t('toast.aiAnalysisFailed', {error: error.message}), 'error');
-        } finally {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
+
+        const existingMeta = horaeManager.getMessageMeta(messageId) || createEmptyMeta();
+        const newMeta = horaeManager.mergeParsedToMeta(existingMeta, result);
+        if (newMeta._tableUpdates) {
+            horaeManager.applyTableUpdates(newMeta._tableUpdates);
+            delete newMeta._tableUpdates;
         }
-    });
+        if (result.deletedAgenda?.length > 0) {
+            horaeManager.removeCompletedAgenda(result.deletedAgenda);
+        }
+        if (result.relationships?.length > 0) {
+            horaeManager._mergeRelationships(result.relationships);
+        }
+        if (result.scene?.scene_desc && result.scene?.location) {
+            horaeManager._updateLocationMemory(result.scene.location, result.scene.scene_desc);
+        }
+
+        horaeManager.setMessageMeta(messageId, newMeta);
+        injectHoraeTagToMessage(messageId, newMeta);
+
+        const contentEl = panelEl.querySelector('.horae-panel-content');
+        if (contentEl) {
+            contentEl.innerHTML = buildPanelContent(messageId, newMeta);
+            bindPanelEvents(panelEl);
+        }
+
+        await getContext().saveChat();
+        refreshAllDisplays();
+        showToast(t('toast.saveSuccess'), 'success');
+    } catch (error) {
+        console.error('[Horae] AI分析失败:', error);
+        showToast(t('toast.aiAnalysisFailed', { error: error.message }), 'error');
+    } finally {
+        _panelAiAnalyzeInProgress = false;
+        buttons.forEach((btn, idx) => {
+            btn.innerHTML = originals[idx];
+            btn.disabled = false;
+        });
+    }
 }
 
 /**
@@ -9772,18 +11483,18 @@ function bindDeleteButtons(container) {
  */
 function bindAffectionInputs(container) {
     if (!container) return;
-    
+
     container.querySelectorAll('.horae-affection-row').forEach(row => {
         const deltaInput = row.querySelector('.horae-affection-delta');
         const totalInput = row.querySelector('.horae-affection-total');
         const prevVal = parseFloat(row.dataset.prev) || 0;
-        
+
         deltaInput?.addEventListener('input', () => {
             const deltaStr = deltaInput.value.replace(/[^\d\.\-+]/g, '');
             const delta = parseFloat(deltaStr) || 0;
             totalInput.value = parseFloat((prevVal + delta).toFixed(2));
         });
-        
+
         totalInput?.addEventListener('input', () => {
             const total = parseFloat(totalInput.value) || 0;
             const delta = parseFloat((total - prevVal).toFixed(2));
@@ -9793,14 +11504,32 @@ function bindAffectionInputs(container) {
 }
 
 /** 切换消息的番外/小剧场标记 */
-function toggleSideplay(messageId, panelEl) {
+async function toggleSideplay(messageId, panelEl) {
     const meta = horaeManager.getMessageMeta(messageId);
     if (!meta) return;
     const wasSkipped = !!meta._skipHorae;
     meta._skipHorae = !wasSkipped;
     horaeManager.setMessageMeta(messageId, meta);
-    getContext().saveChat();
-    
+
+    // 关系网络/场景记忆会从全量消息重建，需排除番外消息后立即回收
+    horaeManager.rebuildRelationships();
+    horaeManager.rebuildLocationMemory();
+
+    // 向量索引同步：番外消息从索引移除；取消番外则补回索引
+    if (settings.vectorEnabled && vectorManager.isReady) {
+        try {
+            if (meta._skipHorae) {
+                await vectorManager.removeMessage(messageId);
+            } else {
+                await vectorManager.addMessage(messageId, meta);
+            }
+        } catch (err) {
+            console.warn(`[Horae] 同步番外向量索引失败 #${messageId}:`, err);
+        }
+    }
+
+    await getContext().saveChat();
+
     // 重建面板
     const messageEl = panelEl.closest('.mes');
     if (messageEl) {
@@ -9812,23 +11541,23 @@ function toggleSideplay(messageId, panelEl) {
 }
 
 /** 重新扫描消息并更新面板（完全替换） */
-function rescanMessageMeta(messageId, panelEl) {
+async function rescanMessageMeta(messageId, panelEl) {
     // 从DOM获取最新的消息内容（用户可能已编辑）
     const messageEl = panelEl.closest('.mes');
     if (!messageEl) {
         showToast(t('toast.msgElementNotFound'), 'error');
         return;
     }
-    
+
     // 获取文本内容（包括隐藏的horae标签）
     // 先尝试从chat数组获取最新内容
     const context = window.SillyTavern?.getContext?.() || getContext?.();
     let messageContent = '';
-    
+
     if (context?.chat?.[messageId]) {
         messageContent = context.chat[messageId].mes;
     }
-    
+
     // 如果chat中没有或为空，从DOM获取
     if (!messageContent) {
         const mesTextEl = messageEl.querySelector('.mes_text');
@@ -9836,40 +11565,40 @@ function rescanMessageMeta(messageId, panelEl) {
             messageContent = mesTextEl.innerHTML;
         }
     }
-    
+
     if (!messageContent) {
         showToast(t('toast.cannotGetContent'), 'error');
         return;
     }
-    
+
     const parsed = horaeManager.parseHoraeTag(messageContent);
-    
+
     if (parsed) {
         const existingMeta = horaeManager.getMessageMeta(messageId);
         // 用 mergeParsedToMeta 以空 meta 为基础，确保所有字段一致处理
         const newMeta = horaeManager.mergeParsedToMeta(createEmptyMeta(), parsed);
-        
+
         // 只保留原有的NPC数据（如果新解析中没有）
         if ((!parsed.npcs || Object.keys(parsed.npcs).length === 0) && existingMeta?.npcs) {
             newMeta.npcs = existingMeta.npcs;
         }
-        
+
         // 无新agenda则保留旧数据
         if ((!newMeta.agenda || newMeta.agenda.length === 0) && existingMeta?.agenda?.length > 0) {
             newMeta.agenda = existingMeta.agenda;
         }
-        
+
         // 处理表格更新
         if (newMeta._tableUpdates) {
             horaeManager.applyTableUpdates(newMeta._tableUpdates);
             delete newMeta._tableUpdates;
         }
-        
+
         // 处理已完成待办
         if (parsed.deletedAgenda && parsed.deletedAgenda.length > 0) {
             horaeManager.removeCompletedAgenda(parsed.deletedAgenda);
         }
-        
+
         // 全局同步：关系网络合并到 chat[0]
         if (parsed.relationships?.length > 0) {
             horaeManager._mergeRelationships(parsed.relationships);
@@ -9878,16 +11607,17 @@ function rescanMessageMeta(messageId, panelEl) {
         if (parsed.scene?.scene_desc && parsed.scene?.location) {
             horaeManager._updateLocationMemory(parsed.scene.location, parsed.scene.scene_desc);
         }
-        
+
         horaeManager.setMessageMeta(messageId, newMeta);
-        getContext().saveChat();
-        
+        injectHoraeTagToMessage(messageId, newMeta);
+        await getContext().saveChat();
+
         panelEl.remove();
         addMessagePanel(messageEl, messageId);
-        
+
         // 同时刷新主显示
         refreshAllDisplays();
-        
+
         showToast(t('toast.saveSuccess'), 'success');
     } else {
         // 无标签，清空数据（保留NPC）
@@ -9897,11 +11627,11 @@ function rescanMessageMeta(messageId, panelEl) {
             newMeta.npcs = existingMeta.npcs;
         }
         horaeManager.setMessageMeta(messageId, newMeta);
-        
+
         panelEl.remove();
         addMessagePanel(messageEl, messageId);
         refreshAllDisplays();
-        
+
         showToast(t('toast.noHoraeTagsFound'), 'warning');
     }
 }
@@ -9909,11 +11639,11 @@ function rescanMessageMeta(messageId, panelEl) {
 /**
  * 保存面板数据
  */
-function savePanelData(panelEl, messageId) {
+async function savePanelData(panelEl, messageId) {
     // 获取现有的 meta，保留面板中没有编辑区的数据（如 NPC）
     const existingMeta = horaeManager.getMessageMeta(messageId);
     const meta = createEmptyMeta();
-    
+
     // 保留面板中没有编辑区的数据
     if (existingMeta?.npcs) {
         meta.npcs = JSON.parse(JSON.stringify(existingMeta.npcs));
@@ -9927,7 +11657,18 @@ function savePanelData(panelEl, messageId) {
     if (existingMeta?.mood && Object.keys(existingMeta.mood).length > 0) {
         meta.mood = JSON.parse(JSON.stringify(existingMeta.mood));
     }
-    
+    // 底部栏不编辑这些只读字段，保存时沿用原值。
+    if (existingMeta?.deletedItems?.length) {
+        meta.deletedItems = JSON.parse(JSON.stringify(existingMeta.deletedItems));
+    }
+    if (existingMeta?.deletedAgenda?.length) {
+        meta.deletedAgenda = JSON.parse(JSON.stringify(existingMeta.deletedAgenda));
+    }
+    if (existingMeta?.tableContributions) {
+        meta.tableContributions = JSON.parse(JSON.stringify(existingMeta.tableContributions));
+    }
+    const savedCompressedFlags = _saveCompressedFlags(existingMeta);
+
     // 分离日期时间
     const datetimeVal = (panelEl.querySelector('.horae-input-datetime')?.value || '').trim();
     const clockMatch = datetimeVal.match(/\b(\d{1,2}:\d{2})\s*$/);
@@ -9939,13 +11680,13 @@ function savePanelData(panelEl, messageId) {
         meta.timestamp.story_time = '';
     }
     meta.timestamp.absolute = new Date().toISOString();
-    
+
     // 场景
     meta.scene.location = panelEl.querySelector('.horae-input-location')?.value || '';
     meta.scene.atmosphere = panelEl.querySelector('.horae-input-atmosphere')?.value || '';
     const charsInput = panelEl.querySelector('.horae-input-characters')?.value || '';
     meta.scene.characters_present = charsInput.split(/[,，]/).map(s => s.trim()).filter(Boolean);
-    
+
     // 服装
     panelEl.querySelectorAll('.horae-costume-editor .horae-editor-row').forEach(row => {
         const inputs = row.querySelectorAll('input');
@@ -9957,7 +11698,7 @@ function savePanelData(panelEl, messageId) {
             }
         }
     });
-    
+
     // 情绪
     panelEl.querySelectorAll('.horae-mood-editor .horae-mood-row').forEach(row => {
         const charEl = row.querySelector('.mood-char');
@@ -9966,13 +11707,13 @@ function savePanelData(panelEl, messageId) {
         const emotion = emotionInput?.value?.trim();
         if (char && emotion) meta.mood[char] = emotion;
     });
-    
+
     // 物品配对处理
     const itemMainRows = panelEl.querySelectorAll('.horae-items-editor .horae-item-row');
     const itemDescRows = panelEl.querySelectorAll('.horae-items-editor .horae-item-desc-row');
     const latestState = horaeManager.getLatestState();
     const existingItems = latestState.items || {};
-    
+
     itemMainRows.forEach((row, idx) => {
         const iconInput = row.querySelector('.horae-item-icon');
         const nameInput = row.querySelector('.horae-item-name');
@@ -9980,7 +11721,7 @@ function savePanelData(panelEl, messageId) {
         const locationInput = row.querySelector('.horae-item-location');
         const descRow = itemDescRows[idx];
         const descInput = descRow?.querySelector('.horae-item-description');
-        
+
         if (nameInput) {
             const name = nameInput.value.trim();
             if (name) {
@@ -9996,31 +11737,38 @@ function savePanelData(panelEl, messageId) {
             }
         }
     });
-    
-    // 事件
+
+    // 底部栏只编辑第一条事件，后续事件和压缩标记需保留。
     const eventLevel = panelEl.querySelector('.horae-input-event-level')?.value;
     const eventSummary = panelEl.querySelector('.horae-input-event-summary')?.value;
+    const restEvents = Array.isArray(existingMeta?.events) ? existingMeta.events.slice(1) : [];
     if (eventLevel && eventSummary) {
         meta.events = [{
             is_important: eventLevel === '重要' || eventLevel === '关键' || eventLevel === '關鍵',
             level: eventLevel,
             summary: eventSummary
-        }];
+        }, ...restEvents];
+    } else if (restEvents.length > 0) {
+        // 第一条事件被清空但后续事件仍需保留
+        meta.events = restEvents;
     }
-    
+    if (savedCompressedFlags?.length) {
+        _restoreCompressedFlags(meta, savedCompressedFlags);
+    }
+
     panelEl.querySelectorAll('.horae-affection-editor .horae-affection-row').forEach(row => {
         const charSpan = row.querySelector('.horae-affection-char');
         const charInput = row.querySelector('.horae-affection-char-input');
         const totalInput = row.querySelector('.horae-affection-total');
-        
+
         const key = charSpan?.textContent?.trim() || charInput?.value?.trim() || '';
         const total = parseFloat(totalInput?.value) || 0;
-        
+
         if (key) {
             meta.affection[key] = { type: 'absolute', value: total };
         }
     });
-    
+
     // 兼容旧格式
     panelEl.querySelectorAll('.horae-affection-editor .horae-editor-row:not(.horae-affection-row)').forEach(row => {
         const inputs = row.querySelectorAll('input');
@@ -10032,7 +11780,7 @@ function savePanelData(panelEl, messageId) {
             }
         }
     });
-    
+
     const agendaItems = [];
     panelEl.querySelectorAll('.horae-agenda-editor .horae-agenda-edit-row').forEach(row => {
         const dateInput = row.querySelector('.horae-agenda-date');
@@ -10046,15 +11794,16 @@ function savePanelData(panelEl, messageId) {
             agendaItems.push({ date, text, source, done: false });
         }
     });
-    if (agendaItems.length > 0) {
+
+    const agendaEditor = panelEl.querySelector('.horae-agenda-editor');
+    if (agendaEditor) {
         meta.agenda = agendaItems;
     } else if (existingMeta?.agenda?.length > 0) {
-        // 无编辑行时保留原有待办
         meta.agenda = existingMeta.agenda;
     }
-    
+
     horaeManager.setMessageMeta(messageId, meta);
-    
+
     // 全局同步
     if (meta.relationships?.length > 0) {
         horaeManager._mergeRelationships(meta.relationships);
@@ -10062,20 +11811,20 @@ function savePanelData(panelEl, messageId) {
     if (meta.scene?.scene_desc && meta.scene?.location) {
         horaeManager._updateLocationMemory(meta.scene.location, meta.scene.scene_desc);
     }
-    
+
     // 同步写入正文标签
     injectHoraeTagToMessage(messageId, meta);
-    
-    getContext().saveChat();
-    
+
+    await getContext().saveChat();
+
     showToast(t('toast.saveSuccess'), 'success');
     refreshAllDisplays();
-    
+
     // 更新面板摘要
     const summaryTime = panelEl.querySelector('.horae-summary-time');
     const summaryEvent = panelEl.querySelector('.horae-summary-event');
     const summaryChars = panelEl.querySelector('.horae-summary-chars');
-    
+
     if (summaryTime) {
         if (meta.timestamp.story_date) {
             const parsed = parseStoryDate(meta.timestamp.story_date);
@@ -10093,32 +11842,32 @@ function savePanelData(panelEl, messageId) {
         summaryEvent.textContent = evts.length > 0 ? evts.map(e => e.summary).join(' | ') : t('ui.noSpecialEvents');
     }
     if (summaryChars) {
-        summaryChars.textContent = t('ui.presentCount', {n: meta.scene.characters_present.length});
+        summaryChars.textContent = t('ui.presentCount', { n: meta.scene.characters_present.length });
     }
 }
 
 /** 构建 <horae> 标签字符串 */
 function buildHoraeTagFromMeta(meta) {
     const lines = [];
-    
+
     if (meta.timestamp?.story_date) {
         let timeLine = `time:${meta.timestamp.story_date}`;
         if (meta.timestamp.story_time) timeLine += ` ${meta.timestamp.story_time}`;
         lines.push(timeLine);
     }
-    
+
     if (meta.scene?.location) {
         lines.push(`location:${meta.scene.location}`);
     }
-    
+
     if (meta.scene?.atmosphere) {
         lines.push(`atmosphere:${meta.scene.atmosphere}`);
     }
-    
+
     if (meta.scene?.characters_present?.length > 0) {
         lines.push(`characters:${meta.scene.characters_present.join(',')}`);
     }
-    
+
     if (meta.costumes) {
         for (const [char, costume] of Object.entries(meta.costumes)) {
             if (char && costume) {
@@ -10126,7 +11875,7 @@ function buildHoraeTagFromMeta(meta) {
             }
         }
     }
-    
+
     if (meta.items) {
         for (const [name, info] of Object.entries(meta.items)) {
             if (!name) continue;
@@ -10138,14 +11887,14 @@ function buildHoraeTagFromMeta(meta) {
             lines.push(`item${imp}:${icon}${name}${desc}=${holder}${loc}`);
         }
     }
-    
+
     // deleted items
     if (meta.deletedItems?.length > 0) {
         for (const item of meta.deletedItems) {
             lines.push(`item-:${item}`);
         }
     }
-    
+
     if (meta.affection) {
         for (const [name, value] of Object.entries(meta.affection)) {
             if (!name) continue;
@@ -10160,7 +11909,7 @@ function buildHoraeTagFromMeta(meta) {
             }
         }
     }
-    
+
     // npcs（使用新格式：npc:名|外貌=性格@关系~扩展字段）
     if (meta.npcs) {
         for (const [name, info] of Object.entries(meta.npcs)) {
@@ -10185,13 +11934,19 @@ function buildHoraeTagFromMeta(meta) {
             lines.push(npcLine);
         }
     }
-    
+
     if (meta.agenda?.length > 0) {
         for (const item of meta.agenda) {
             if (item.text) {
                 const datePart = item.date ? `${item.date}|` : '';
                 lines.push(`agenda:${datePart}${item.text}`);
             }
+        }
+    }
+
+    if (meta.deletedAgenda?.length > 0) {
+        for (const text of meta.deletedAgenda) {
+            if (text) lines.push(`agenda-:${text}`);
         }
     }
 
@@ -10212,7 +11967,7 @@ function buildHoraeTagFromMeta(meta) {
     if (meta.scene?.scene_desc) {
         lines.push(`scene_desc:${meta.scene.scene_desc}`);
     }
-    
+
     if (lines.length === 0) return '';
     return `<horae>\n${lines.join('\n')}\n</horae>`;
 }
@@ -10221,11 +11976,11 @@ function buildHoraeTagFromMeta(meta) {
 function buildHoraeEventTagFromMeta(meta) {
     const events = meta.events || (meta.event ? [meta.event] : []);
     if (events.length === 0) return '';
-    
+
     const lines = events
         .filter(e => e.summary)
         .map(e => `event:${e.level || '一般'}|${e.summary}`);
-    
+
     if (lines.length === 0) return '';
     return `<horaeevent>\n${lines.join('\n')}\n</horaeevent>`;
 }
@@ -10235,14 +11990,14 @@ function injectHoraeTagToMessage(messageId, meta) {
     try {
         const chat = horaeManager.getChat();
         if (!chat?.[messageId]) return;
-        
+
         const message = chat[messageId];
         let mes = message.mes;
-        
+
         // === 处理 <horae> 标签 ===
         const newHoraeTag = buildHoraeTagFromMeta(meta);
         const hasHoraeTag = /<horae>[\s\S]*?<\/horae>/i.test(mes);
-        
+
         if (hasHoraeTag) {
             mes = newHoraeTag
                 ? mes.replace(/<horae>[\s\S]*?<\/horae>/gi, newHoraeTag)
@@ -10250,11 +12005,11 @@ function injectHoraeTagToMessage(messageId, meta) {
         } else if (newHoraeTag) {
             mes = mes.trimEnd() + '\n\n' + newHoraeTag;
         }
-        
+
         // === 处理 <horaeevent> 标签 ===
         const newEventTag = buildHoraeEventTagFromMeta(meta);
         const hasEventTag = /<horaeevent>[\s\S]*?<\/horaeevent>/i.test(mes);
-        
+
         if (hasEventTag) {
             mes = newEventTag
                 ? mes.replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, newEventTag)
@@ -10262,7 +12017,7 @@ function injectHoraeTagToMessage(messageId, meta) {
         } else if (newEventTag) {
             mes = mes.trimEnd() + '\n' + newEventTag;
         }
-        
+
         message.mes = mes;
         console.log(`[Horae] 已同步写入消息 #${messageId} 的标签`);
     } catch (error) {
@@ -10280,7 +12035,7 @@ function injectHoraeTagToMessage(messageId, meta) {
 function openDrawerLegacy() {
     const drawerIcon = $('#horae_drawer_icon');
     const drawerContent = $('#horae_drawer_content');
-    
+
     if (drawerIcon.hasClass('closedIcon')) {
         // 关闭其他抽屉
         $('.openDrawer').not('#horae_drawer_content').not('.pinnedOpen').addClass('resizing').each((_, el) => {
@@ -10319,7 +12074,7 @@ function openDrawerLegacy() {
  */
 async function initDrawer() {
     const toggle = $('#horae_drawer .drawer-toggle');
-    
+
     if (isNewNavbarVersion()) {
         toggle.on('click', doNavbarIconClick);
         console.log(`[Horae] 使用新版导航栏模式`);
@@ -10334,16 +12089,17 @@ async function initDrawer() {
  * 初始化标签页切换
  */
 function initTabs() {
-    $('.horae-tab').on('click', function() {
-        const tabId = $(this).data('tab');
-        
+    $('#horae_drawer').off('click.horaeTabs', '.horae-tab').on('click.horaeTabs', '.horae-tab', function () {
+        const $tab = $(this);
+        const tabId = $tab.data('tab');
+
         $('.horae-tab').removeClass('active');
-        $(this).addClass('active');
-        
+        $tab.addClass('active');
+
         $('.horae-tab-content').removeClass('active');
         $(`#horae-tab-${tabId}`).addClass('active');
-        
-        switch(tabId) {
+
+        switch (tabId) {
             case 'status':
                 updateStatusDisplay();
                 break;
@@ -10357,6 +12113,16 @@ function initTabs() {
             case 'items':
                 updateItemsDisplay();
                 break;
+            default: {
+                if ($tab.hasClass('horae-port-tab')) {
+                    const portId = $tab.attr('data-port-id');
+                    const port = portId ? horaePorts.get(portId) : null;
+                    const root = document.querySelector(
+                        `.horae-port-tab-content[data-port-id="${CSS.escape(portId || '')}"] .horae-port-root`);
+                    if (port && root) _renderPortIntoRoot(port, root, { container: root.parentElement });
+                }
+                break;
+            }
         }
     });
 }
@@ -10370,12 +12136,15 @@ function initTabs() {
  */
 function initSettingsEvents() {
     $('#horae-btn-restart-tutorial').on('click', () => startTutorial());
-    
-    $('#horae-setting-ui-language').val(settings.uiLanguage || 'auto').on('change', async function() {
+
+    $('#horae-setting-ui-language').val(settings.uiLanguage || 'auto').on('change', async function () {
         const prev = settings.uiLanguage;
         settings.uiLanguage = this.value;
         saveSettings();
         const newLang = await setLanguage(this.value === 'auto' ? 'auto' : this.value);
+        await ensurePromptDefaults(detectEffectiveAiLang(settings));
+        horaeManager.init(getContext(), settings);
+        _refreshSystemPromptDisplay();
         applyI18nToDOM(document.getElementById('horae-drawer') || document);
         initTabs();
         refreshAllDisplays();
@@ -10384,81 +12153,115 @@ function initSettingsEvents() {
             alert(t('confirm.languageChanged', { lang: langNames[newLang] || newLang }));
         }
     });
-    
-    $('#horae-setting-ai-output-language').val(settings.aiOutputLanguage || 'auto').on('change', function() {
+
+    $('#horae-setting-ai-output-language').val(settings.aiOutputLanguage || 'auto').on('change', async function () {
         settings.aiOutputLanguage = this.value;
         saveSettings();
+        await ensurePromptDefaults(detectEffectiveAiLang(settings));
         horaeManager.init(getContext(), settings);
         _refreshSystemPromptDisplay();
         updateTokenCounter();
     });
 
-    $('#horae-setting-enabled').on('change', function() {
+    $('#horae-setting-enabled').on('change', function () {
         settings.enabled = this.checked;
         saveSettings();
     });
-    
-    $('#horae-setting-auto-parse').on('change', function() {
+
+    $('#horae-setting-auto-parse').on('change', function () {
         settings.autoParse = this.checked;
         saveSettings();
     });
-    
-    $('#horae-setting-inject-context').on('change', function() {
+
+    $('#horae-setting-auto-fill-prev-timeline').on('change', function () {
+        settings.autoFillPrevTimelineOnSend = this.checked;
+        saveSettings();
+    });
+
+    $('#horae-setting-inject-context').on('change', function () {
         settings.injectContext = this.checked;
         saveSettings();
     });
-    
-    $('#horae-setting-show-panel').on('change', function() {
+
+    $('#horae-setting-use-main-preset').on('change', function () {
+        settings.useMainPresetForAiTasks = this.checked;
+        saveSettings();
+    });
+
+    $('#horae-setting-show-panel').on('change', function () {
         settings.showMessagePanel = this.checked;
         saveSettings();
         document.querySelectorAll('.horae-message-panel').forEach(panel => {
             panel.style.display = this.checked ? '' : 'none';
         });
     });
-    
-    $('#horae-setting-show-top-icon').on('change', function() {
+
+    $('#horae-setting-show-top-icon').on('change', function () {
         settings.showTopIcon = this.checked;
         saveSettings();
         applyTopIconVisibility();
     });
-    
-    $('#horae-setting-context-depth').on('change', function() {
-        settings.contextDepth = parseInt(this.value);
-        if (isNaN(settings.contextDepth) || settings.contextDepth < 0) settings.contextDepth = 15;
-        saveSettings();
-        horaeManager.init(getContext(), settings);
-        updateTokenCounter();
-    });
-    
-    $('#horae-setting-injection-position').on('change', function() {
-        settings.injectionPosition = parseInt(this.value) || 1;
+
+    $('#horae-setting-injection-position').on('change', function () {
+        const val = parseInt(this.value, 10);
+        settings.injectionPosition = Number.isNaN(val) ? 1 : Math.max(0, val);
         saveSettings();
     });
-    
+
+    $('#horae-setting-injection-depth-source').on('change', function () {
+        const v = String(this.value || 'system');
+        settings.injectionDepthSource = (v === 'preset') ? 'preset' : 'system';
+        saveSettings();
+    });
+
+    $('#horae-setting-timeline-injection-mode').on('change', function () {
+        const v = String(this.value || 'inline');
+        settings.timelineInjectionMode = (v === 'separate') ? 'separate' : 'inline';
+        saveSettings();
+    });
+
     $('#horae-btn-scan-all, #horae-btn-scan-history').on('click', scanHistoryWithProgress);
     $('#horae-btn-ai-scan').on('click', batchAIScan);
     $('#horae-btn-undo-ai-scan').on('click', undoAIScan);
-    
+
     $('#horae-btn-fix-summaries').on('click', () => {
         const result = repairAllSummaryStates();
         if (result > 0) {
             updateTimelineDisplay();
-            showToast(t('toast.fixedSummaryStates', {n: result}), 'success');
+            showToast(t('toast.fixedSummaryStates', { n: result }), 'success');
         } else {
-            showToast(t('toast.fixedSummaryStates', {n: 0}), 'info');
+            showToast(t('toast.fixedSummaryStates', { n: 0 }), 'info');
         }
     });
-    
+
+    $('#horae-btn-auto-summary-now').on('click', async () => {
+        if (_summaryInProgress) {
+            showToast(t('toast.autoSummaryInProgress'), 'info');
+            return;
+        }
+        if (!settings.enabled || !settings.autoSummaryEnabled || !settings.sendTimeline) {
+            showToast(t('toast.autoSummaryDisabled'), 'warning');
+            return;
+        }
+        showToast(t('toast.autoSummaryTriggered'), 'info');
+        try {
+            await checkAutoSummary();
+        } catch (err) {
+            console.error('[Horae] manual auto-summary trigger failed:', err);
+            showToast(t('toast.autoSummaryFailed', { error: err?.message || err }), 'error');
+        }
+    });
+
     $('#horae-timeline-filter').on('change', updateTimelineDisplay);
     $('#horae-timeline-search').on('input', updateTimelineDisplay);
-    
+
     $('#horae-btn-add-agenda').on('click', () => openAgendaEditModal(null));
     $('#horae-btn-add-relationship').on('click', () => openRelationshipEditModal(null));
     $('#horae-btn-add-location').on('click', () => openLocationEditModal(null));
     $('#horae-btn-merge-locations').on('click', openLocationMergeModal);
 
     // RPG 属性条配置
-    $(document).on('input', '.horae-rpg-config-key', function() {
+    $(document).on('input', '.horae-rpg-config-key:not([data-type="attr"])', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgBarConfig?.[i]) {
             const val = this.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
@@ -10469,7 +12272,7 @@ function initSettingsEvents() {
             updateTokenCounter();
         }
     });
-    $(document).on('input', '.horae-rpg-config-name', function() {
+    $(document).on('input', '.horae-rpg-config-name:not([data-type="attr"])', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgBarConfig?.[i]) {
             settings.rpgBarConfig[i].name = this.value.trim() || settings.rpgBarConfig[i].key.toUpperCase();
@@ -10479,14 +12282,49 @@ function initSettingsEvents() {
             updateTokenCounter();
         }
     });
-    $(document).on('input', '.horae-rpg-config-color', function() {
+    $(document).on('input', '.horae-rpg-config-desc', function () {
+        const i = parseInt(this.dataset.idx);
+        if (settings.rpgBarConfig?.[i]) {
+            settings.rpgBarConfig[i].desc = this.value.trim();
+            saveSettings();
+            horaeManager.init(getContext(), settings);
+            _refreshSystemPromptDisplay();
+            updateTokenCounter();
+        }
+    });
+    $(document).on('input', '.horae-rpg-config-min, .horae-rpg-config-max, .horae-rpg-config-default-max', function () {
+        const i = parseInt(this.dataset.idx);
+        const bar = settings.rpgBarConfig?.[i];
+        if (!bar) return;
+        const n = parseInt(this.value, 10);
+        if (!Number.isFinite(n)) return;
+        if (this.classList.contains('horae-rpg-config-min')) bar.min = n;
+        if (this.classList.contains('horae-rpg-config-max')) bar.max = n;
+        if (this.classList.contains('horae-rpg-config-default-max')) bar.defaultMax = n;
+        _normalizeRpgBarConfigInPlace();
+        saveSettings();
+        horaeManager.init(getContext(), settings);
+        _refreshSystemPromptDisplay();
+        updateTokenCounter();
+    });
+    $(document).on('change', '.horae-rpg-config-required-check', function () {
+        const i = parseInt(this.dataset.idx);
+        if (settings.rpgBarConfig?.[i]) {
+            settings.rpgBarConfig[i].required = this.checked;
+            saveSettings();
+            horaeManager.init(getContext(), settings);
+            _refreshSystemPromptDisplay();
+            updateTokenCounter();
+        }
+    });
+    $(document).on('input', '.horae-rpg-config-color', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgBarConfig?.[i]) {
             settings.rpgBarConfig[i].color = this.value;
             saveSettings();
         }
     });
-    $(document).on('click', '.horae-rpg-config-del', function() {
+    $(document).on('click', '.horae-rpg-config-del', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgBarConfig?.[i]) {
             settings.rpgBarConfig.splice(i, 1);
@@ -10500,7 +12338,7 @@ function initSettingsEvents() {
     // 属性条：恢复默认
     $('#horae-rpg-bar-reset').on('click', () => {
         if (!confirm(t('confirm.restoreDefaultBars'))) return;
-        settings.rpgBarConfig = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.rpgBarConfig));
+        settings.rpgBarConfig = _getDefaultRpgBarConfig();
         saveSettings(); renderBarConfig();
         horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
         showToast(t('toast.rpgBarsRestored'), 'success');
@@ -10540,7 +12378,7 @@ function initSettingsEvents() {
         horaeManager.rebuildRpgData();
         await getContext().saveChat();
         refreshAllDisplays();
-        showToast(t('toast.staleDataCleaned', {n: cleaned, keys: keyList}), 'success');
+        showToast(t('toast.staleDataCleaned', { n: cleaned, keys: keyList }), 'success');
     });
     // 属性条：导出
     $('#horae-rpg-bar-export').on('click', () => {
@@ -10550,7 +12388,7 @@ function initSettingsEvents() {
     });
     // 属性条：导入
     $('#horae-rpg-bar-import').on('click', () => document.getElementById('horae-rpg-bar-import-file')?.click());
-    $('#horae-rpg-bar-import-file').on('change', function() {
+    $('#horae-rpg-bar-import-file').on('change', function () {
         const file = this.files?.[0];
         if (!file) return;
         const reader = new FileReader();
@@ -10559,10 +12397,11 @@ function initSettingsEvents() {
                 const arr = JSON.parse(reader.result);
                 if (!Array.isArray(arr) || !arr.every(b => b.key && b.name)) throw new Error('invalid');
                 settings.rpgBarConfig = arr;
+                _normalizeRpgBarConfigInPlace();
                 saveSettings(); renderBarConfig();
                 horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
-                showToast(t('toast.rpgBarsImported', {n: arr.length}), 'success');
-            } catch (e) { showToast(t('toast.importFailed', {error: e.message}), 'error'); }
+                showToast(t('toast.rpgBarsImported', { n: arr.length }), 'success');
+            } catch (e) { showToast(t('toast.importFailed', { error: e.message }), 'error'); }
         };
         reader.readAsText(file);
         this.value = '';
@@ -10583,7 +12422,7 @@ function initSettingsEvents() {
     });
     // 属性面板：导入
     $('#horae-rpg-attr-import').on('click', () => document.getElementById('horae-rpg-attr-import-file')?.click());
-    $('#horae-rpg-attr-import-file').on('change', function() {
+    $('#horae-rpg-attr-import-file').on('change', function () {
         const file = this.files?.[0];
         if (!file) return;
         const reader = new FileReader();
@@ -10594,8 +12433,8 @@ function initSettingsEvents() {
                 settings.rpgAttributeConfig = arr;
                 saveSettings(); renderAttrConfig();
                 horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
-                showToast(t('toast.rpgAttrsImported', {n: arr.length}), 'success');
-            } catch (e) { showToast(t('toast.importFailed', {error: e.message}), 'error'); }
+                showToast(t('toast.rpgAttrsImported', { n: arr.length }), 'success');
+            } catch (e) { showToast(t('toast.importFailed', { error: e.message }), 'error'); }
         };
         reader.readAsText(file);
         this.value = '';
@@ -10606,7 +12445,7 @@ function initSettingsEvents() {
         const existing = new Set(settings.rpgBarConfig.map(b => b.key));
         let newKey = 'bar1';
         for (let n = 1; existing.has(newKey); n++) newKey = `bar${n}`;
-        settings.rpgBarConfig.push({ key: newKey, name: newKey.toUpperCase(), color: '#a78bfa' });
+        settings.rpgBarConfig.push({ key: newKey, name: newKey.toUpperCase(), color: '#a78bfa', min: 0, max: 100, defaultMax: 100, required: true, desc: '' });
         saveSettings();
         renderBarConfig();
         horaeManager.init(getContext(), settings);
@@ -10615,7 +12454,7 @@ function initSettingsEvents() {
     });
 
     // 角色卡内编辑属性按钮
-    $(document).on('click', '.horae-rpg-charattr-edit', function() {
+    $(document).on('click', '.horae-rpg-charattr-edit', function () {
         const charName = this.dataset.char;
         if (!charName) return;
         const form = document.getElementById('horae-rpg-charattr-form');
@@ -10639,7 +12478,7 @@ function initSettingsEvents() {
             const k = inp.dataset.key;
             if (existing[k] !== undefined) inp.value = existing[k];
         });
-        form.querySelector('#horae-rpg-charattr-save-inline').addEventListener('click', function() {
+        form.querySelector('#horae-rpg-charattr-save-inline').addEventListener('click', function () {
             const name = this.dataset.char;
             const vals = {};
             let hasVal = false;
@@ -10760,7 +12599,7 @@ function initSettingsEvents() {
             form.style.display = 'none';
         });
     });
-    $(document).on('click', '.horae-rpg-skill-del', function() {
+    $(document).on('click', '.horae-rpg-skill-del', function () {
         const owner = this.dataset.owner;
         const skillName = this.dataset.skill;
         const chat = getContext().chat;
@@ -10780,7 +12619,7 @@ function initSettingsEvents() {
     });
 
     // 属性面板配置
-    $(document).on('input', '.horae-rpg-config-key[data-type="attr"]', function() {
+    $(document).on('input', '.horae-rpg-config-key[data-type="attr"]', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgAttributeConfig?.[i]) {
             const val = this.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
@@ -10788,21 +12627,21 @@ function initSettingsEvents() {
             saveSettings(); horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
         }
     });
-    $(document).on('input', '.horae-rpg-config-name[data-type="attr"]', function() {
+    $(document).on('input', '.horae-rpg-config-name[data-type="attr"]', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgAttributeConfig?.[i]) {
             settings.rpgAttributeConfig[i].name = this.value.trim() || settings.rpgAttributeConfig[i].key.toUpperCase();
             saveSettings(); horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
         }
     });
-    $(document).on('input', '.horae-rpg-attr-desc', function() {
+    $(document).on('input', '.horae-rpg-attr-desc', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgAttributeConfig?.[i]) {
             settings.rpgAttributeConfig[i].desc = this.value.trim();
             saveSettings();
         }
     });
-    $(document).on('click', '.horae-rpg-attr-del', function() {
+    $(document).on('click', '.horae-rpg-attr-del', function () {
         const i = parseInt(this.dataset.idx);
         if (settings.rpgAttributeConfig?.[i]) {
             settings.rpgAttributeConfig.splice(i, 1);
@@ -10830,7 +12669,7 @@ function initSettingsEvents() {
     // 货币系统事件绑定
     _bindCurrencyEvents();
     // 属性面板开关
-    $('#horae-setting-rpg-attrs').on('change', function() {
+    $('#horae-setting-rpg-attrs').on('change', function () {
         settings.sendRpgAttributes = this.checked;
         saveSettings();
         _syncRpgTabVisibility();
@@ -10838,9 +12677,9 @@ function initSettingsEvents() {
         updateRpgDisplay();
     });
     // RPG 自定义提示词
-    $('#horae-custom-rpg-prompt').on('input', function() {
+    $('#horae-custom-rpg-prompt').on('input', function () {
         const val = this.value;
-        settings.customRpgPrompt = (val.trim() === horaeManager.getDefaultRpgPrompt().trim()) ? '' : val;
+        settings.customRpgPrompt = (val.trim() === horaeManager.getDefaultRpgPromptResolved().trim()) ? '' : val;
         $('#horae-rpg-prompt-count').text(val.length);
         saveSettings(); horaeManager.init(getContext(), settings);
         _refreshSystemPromptDisplay(); updateTokenCounter();
@@ -10849,26 +12688,22 @@ function initSettingsEvents() {
         if (!confirm(t('confirm.restoreRpgPrompts'))) return;
         settings.customRpgPrompt = '';
         saveSettings();
-        const def = horaeManager.getDefaultRpgPrompt();
+        const def = horaeManager.getDefaultRpgPromptResolved();
         $('#horae-custom-rpg-prompt').val(def);
         $('#horae-rpg-prompt-count').text(def.length);
         horaeManager.init(getContext(), settings); _refreshSystemPromptDisplay(); updateTokenCounter();
     });
 
     // ── 提示词预设存档 ──
-    const _PRESET_PROMPT_KEYS = [
-        'customSystemPrompt', 'customBatchPrompt', 'customAnalysisPrompt',
-        'customCompressPrompt', 'customAutoSummaryPrompt', 'customTablesPrompt',
-        'customLocationPrompt', 'customRelationshipPrompt', 'customMoodPrompt',
-        'customRpgPrompt'
-    ];
+    const _PRESET_PROMPT_KEYS = [...PROMPT_SETTING_KEYS];
     function _collectCurrentPrompts() {
         const obj = {};
-        for (const k of _PRESET_PROMPT_KEYS) obj[k] = settings[k] || '';
+        for (const k of _PRESET_PROMPT_KEYS) obj[k] = _normalizeLf(settings[k] || '');
         return obj;
     }
     function _applyPresetPrompts(prompts) {
-        for (const k of _PRESET_PROMPT_KEYS) settings[k] = prompts[k] || '';
+        for (const k of _PRESET_PROMPT_KEYS) settings[k] = _normalizeLf(prompts[k] || '');
+        _normalizePromptTextFields(settings, _PRESET_PROMPT_KEYS);
         saveSettings();
         const pairs = [
             ['customSystemPrompt', 'horae-custom-system-prompt', 'horae-system-prompt-count', () => horaeManager.getDefaultSystemPrompt()],
@@ -10876,11 +12711,12 @@ function initSettingsEvents() {
             ['customAnalysisPrompt', 'horae-custom-analysis-prompt', 'horae-analysis-prompt-count', () => getDefaultAnalysisPrompt()],
             ['customCompressPrompt', 'horae-custom-compress-prompt', 'horae-compress-prompt-count', () => getDefaultCompressPrompt()],
             ['customAutoSummaryPrompt', 'horae-custom-auto-summary-prompt', 'horae-auto-summary-prompt-count', () => getDefaultAutoSummaryPrompt()],
+            ['customAutoResummaryPrompt', 'horae-custom-auto-resummary-prompt', 'horae-auto-resummary-prompt-count', () => getDefaultAutoResummaryPrompt()],
             ['customTablesPrompt', 'horae-custom-tables-prompt', 'horae-tables-prompt-count', () => horaeManager.getDefaultTablesPrompt()],
             ['customLocationPrompt', 'horae-custom-location-prompt', 'horae-location-prompt-count', () => horaeManager.getDefaultLocationPrompt()],
             ['customRelationshipPrompt', 'horae-custom-relationship-prompt', 'horae-relationship-prompt-count', () => horaeManager.getDefaultRelationshipPrompt()],
             ['customMoodPrompt', 'horae-custom-mood-prompt', 'horae-mood-prompt-count', () => horaeManager.getDefaultMoodPrompt()],
-            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPrompt()],
+            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPromptResolved()],
         ];
         for (const [key, textareaId, countId, getDefault] of pairs) {
             const val = settings[key] || getDefault();
@@ -10893,18 +12729,63 @@ function initSettingsEvents() {
         const body = document.getElementById('horae-prompt-collapse-body');
         if (body) body.style.display = '';
     }
+    function _ensureBuiltInPromptPresets() {
+        if (!Array.isArray(settings.promptPresets)) settings.promptPresets = [];
+        const BUILTIN_DEFS = [
+            { id: '_builtin_default', i18nKey: 'prompts.builtinPresets.default', presetName: 'default' },
+            { id: '_builtin_vector_summary', i18nKey: 'prompts.builtinPresets.vectorSummary', presetName: 'vector-summary' },
+        ];
+        let changed = false;
+        for (let i = 0; i < BUILTIN_DEFS.length; i++) {
+            const def = BUILTIN_DEFS[i];
+            const idx = settings.promptPresets.findIndex(p => p && p.builtin && p.id === def.id);
+            const data = {
+                id: def.id,
+                i18nKey: def.i18nKey,
+                builtin: true,
+                presetName: def.presetName,
+                name: t(def.i18nKey),
+                prompts: {},
+            };
+            if (idx === -1) {
+                settings.promptPresets.splice(i, 0, data);
+                changed = true;
+            } else {
+                const existing = settings.promptPresets[idx];
+                existing.id = data.id;
+                existing.i18nKey = data.i18nKey;
+                existing.builtin = true;
+                existing.presetName = data.presetName;
+                existing.name = data.name;
+                existing.prompts = {};
+                if (idx !== i) {
+                    const [item] = settings.promptPresets.splice(idx, 1);
+                    settings.promptPresets.splice(i, 0, item);
+                    changed = true;
+                }
+            }
+        }
+        if (changed) saveSettings();
+    }
+    function _presetDisplayName(p) {
+        if (!p) return '';
+        return p.i18nKey ? t(p.i18nKey) : (p.name || '');
+    }
     function _renderPresetSelect() {
         const sel = $('#horae-prompt-preset-select');
         sel.empty();
         const presets = settings.promptPresets || [];
         if (presets.length === 0) {
-            sel.append('<option value="-1">（无预设）</option>');
+            sel.append(`<option value="-1">${t('prompts.noPresets')}</option>`);
         } else {
             for (let i = 0; i < presets.length; i++) {
-                sel.append(`<option value="${i}">${presets[i].name}</option>`);
+                const p = presets[i];
+                const prefix = p.builtin ? '⭐ ' : '';
+                sel.append(`<option value="${i}">${prefix}${_presetDisplayName(p)}</option>`);
             }
         }
     }
+    _ensureBuiltInPromptPresets();
     _renderPresetSelect();
 
     $('#horae-prompt-preset-load').on('click', () => {
@@ -10912,18 +12793,27 @@ function initSettingsEvents() {
         const presets = settings.promptPresets || [];
         if (idx < 0 || idx >= presets.length) { showToast(t('toast.selectPresetFirst'), 'warning'); return; }
         if (!confirm(t('confirm.importPromptsReplace'))) return;
-        _applyPresetPrompts(presets[idx].prompts);
-        showToast(t('toast.presetLoaded', {name: presets[idx].name}), 'success');
+        const target = presets[idx];
+        let promptsData;
+        if (target.builtin && target.presetName) {
+            const lang = detectEffectiveAiLang(settings);
+            promptsData = getPresetPromptsSync(lang, target.presetName) || {};
+        } else {
+            promptsData = target.prompts || {};
+        }
+        _applyPresetPrompts(promptsData);
+        showToast(t('toast.presetLoaded', { name: _presetDisplayName(target) }), 'success');
     });
 
     $('#horae-prompt-preset-save').on('click', () => {
         const idx = parseInt($('#horae-prompt-preset-select').val());
         const presets = settings.promptPresets || [];
         if (idx < 0 || idx >= presets.length) { showToast(t('toast.selectPresetFirst'), 'warning'); return; }
+        if (presets[idx].builtin) { showToast(t('toast.builtinPresetCannotOverwrite'), 'warning'); return; }
         if (!confirm(t('confirm.importPromptsReplace'))) return;
         presets[idx].prompts = _collectCurrentPrompts();
         saveSettings();
-        showToast(t('toast.presetSaved', {name: presets[idx].name}), 'success');
+        showToast(t('toast.presetSaved', { name: _presetDisplayName(presets[idx]) }), 'success');
     });
 
     $('#horae-prompt-preset-new').on('click', () => {
@@ -10934,14 +12824,15 @@ function initSettingsEvents() {
         saveSettings();
         _renderPresetSelect();
         $('#horae-prompt-preset-select').val(settings.promptPresets.length - 1);
-        showToast(t('toast.presetCreated', {name: name.trim()}), 'success');
+        showToast(t('toast.presetCreated', { name: name.trim() }), 'success');
     });
 
     $('#horae-prompt-preset-delete').on('click', () => {
         const idx = parseInt($('#horae-prompt-preset-select').val());
         const presets = settings.promptPresets || [];
         if (idx < 0 || idx >= presets.length) { showToast(t('toast.selectPresetFirst'), 'warning'); return; }
-        if (!confirm(t('confirm.deleteTheme', {name: presets[idx].name}))) return;
+        if (presets[idx].builtin) { showToast(t('toast.builtinPresetCannotDelete'), 'warning'); return; }
+        if (!confirm(t('confirm.deleteTheme', { name: _presetDisplayName(presets[idx]) }))) return;
         presets.splice(idx, 1);
         saveSettings();
         _renderPresetSelect();
@@ -10974,9 +12865,9 @@ function initSettingsEvents() {
                 _applyPresetPrompts(data.prompts);
                 const body = document.getElementById('horae-prompt-collapse-body');
                 if (body) body.style.display = '';
-                showToast(t('toast.promptsExported'), 'success');
+                showToast(t('toast.promptsImported'), 'success');
             } catch (err) {
-                showToast(t('toast.importFailed', {error: err.message}), 'error');
+                showToast(t('toast.importFailed', { error: err.message }), 'error');
             }
         };
         input.click();
@@ -10993,11 +12884,12 @@ function initSettingsEvents() {
             ['customAnalysisPrompt', 'horae-custom-analysis-prompt', 'horae-analysis-prompt-count', () => getDefaultAnalysisPrompt()],
             ['customCompressPrompt', 'horae-custom-compress-prompt', 'horae-compress-prompt-count', () => getDefaultCompressPrompt()],
             ['customAutoSummaryPrompt', 'horae-custom-auto-summary-prompt', 'horae-auto-summary-prompt-count', () => getDefaultAutoSummaryPrompt()],
+            ['customAutoResummaryPrompt', 'horae-custom-auto-resummary-prompt', 'horae-auto-resummary-prompt-count', () => getDefaultAutoResummaryPrompt()],
             ['customTablesPrompt', 'horae-custom-tables-prompt', 'horae-tables-prompt-count', () => horaeManager.getDefaultTablesPrompt()],
             ['customLocationPrompt', 'horae-custom-location-prompt', 'horae-location-prompt-count', () => horaeManager.getDefaultLocationPrompt()],
             ['customRelationshipPrompt', 'horae-custom-relationship-prompt', 'horae-relationship-prompt-count', () => horaeManager.getDefaultRelationshipPrompt()],
             ['customMoodPrompt', 'horae-custom-mood-prompt', 'horae-mood-prompt-count', () => horaeManager.getDefaultMoodPrompt()],
-            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPrompt()],
+            ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPromptResolved()],
         ];
         for (const [, textareaId, countId, getDefault] of pairs) {
             const val = getDefault();
@@ -11012,17 +12904,17 @@ function initSettingsEvents() {
 
     // ── Horae 全局配置 导出/导入/重置 ──
     const _SETTINGS_EXPORT_KEYS = [
-        'enabled','autoParse','injectContext','showMessagePanel','showTopIcon',
-        'contextDepth','injectionPosition',
-        'sendTimeline','sendCharacters','sendItems',
-        'sendLocationMemory','sendRelationships','sendMood',
-        'antiParaphraseMode','sideplayMode',
-        'aiScanIncludeNpc','aiScanIncludeAffection','aiScanIncludeScene','aiScanIncludeRelationship',
-        'rpgMode','sendRpgBars','sendRpgSkills','sendRpgAttributes','sendRpgReputation',
-        'sendRpgEquipment','sendRpgLevel','sendRpgCurrency','sendRpgStronghold','rpgDiceEnabled',
-        'rpgBarsUserOnly','rpgSkillsUserOnly','rpgAttrsUserOnly','rpgReputationUserOnly',
-        'rpgEquipmentUserOnly','rpgLevelUserOnly','rpgCurrencyUserOnly','rpgUserOnly',
-        'rpgBarConfig','rpgAttributeConfig','rpgAttrViewMode','equipmentTemplates',
+        'enabled', 'autoParse', 'autoFillPrevTimelineOnSend', 'injectContext', 'useMainPresetForAiTasks', 'showMessagePanel', 'showTopIcon',
+        'injectionDepthSource', 'injectionPosition', 'timelineInjectionMode',
+        'sendTimeline', 'contextDepth', 'sendCharacters', 'sendItems',
+        'sendLocationMemory', 'sendRelationships', 'sendMood',
+        'antiParaphraseMode', 'sideplayMode',
+        'aiScanIncludeNpc', 'aiScanIncludeAffection', 'aiScanIncludeScene', 'aiScanIncludeRelationship',
+        'rpgMode', 'sendRpgBars', 'sendRpgSkills', 'sendRpgAttributes', 'sendRpgReputation',
+        'sendRpgEquipment', 'sendRpgLevel', 'sendRpgCurrency', 'sendRpgStronghold', 'rpgDiceEnabled',
+        'rpgStrictPresentOnly', 'rpgBarsUserOnly', 'rpgSkillsUserOnly', 'rpgAttrsUserOnly', 'rpgReputationUserOnly',
+        'rpgEquipmentUserOnly', 'rpgLevelUserOnly', 'rpgCurrencyUserOnly', 'rpgUserOnly',
+        'rpgBarConfig', 'rpgAttributeConfig', 'rpgAttrViewMode', 'equipmentTemplates',
         ..._PRESET_PROMPT_KEYS,
     ];
 
@@ -11061,35 +12953,45 @@ function initSettingsEvents() {
                     showToast(t('toast.invalidFile'), 'warning');
                     return;
                 }
-                if (!confirm(t('confirm.importSettings', {n: keys.length}))) return;
+                if (!confirm(t('confirm.importSettings', { n: keys.length }))) return;
                 for (const k of keys) {
                     settings[k] = JSON.parse(JSON.stringify(imported[k]));
                 }
+                _normalizeAutoSummarySettingsInPlace(imported);
+                _normalizePromptSettingsInPlace();
+                _normalizeVectorRecallPresetsInPlace();
+                _migrateLegacyVectorSettings(settings);
+                _ensureLocalizedRpgDefaults();
+                _normalizeRpgSettingsInPlace();
+                await ensurePromptDefaults(detectEffectiveAiLang(settings));
                 saveSettings();
                 syncSettingsToUI();
-                try { renderBarConfig(); } catch (_) {}
-                try { renderAttrConfig(); } catch (_) {}
+                try { renderBarConfig(); } catch (_) { }
+                try { renderAttrConfig(); } catch (_) { }
                 horaeManager.init(getContext(), settings);
                 _refreshSystemPromptDisplay();
                 updateTokenCounter();
-                showToast(t('toast.settingsImported', {n: keys.length}), 'success');
+                showToast(t('toast.settingsImported', { n: keys.length }), 'success');
             } catch (err) {
                 console.error('[Horae] 导入配置失败:', err);
-                showToast(t('toast.importFailed', {error: err.message}), 'error');
+                showToast(t('toast.importFailed', { error: err.message }), 'error');
             }
         };
         input.click();
     });
 
-    $('#horae-settings-reset').on('click', () => {
+    $('#horae-settings-reset').on('click', async () => {
         if (!confirm(t('confirm.resetAllSettings'))) return;
         for (const k of _SETTINGS_EXPORT_KEYS) {
             settings[k] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS[k]));
         }
+        _ensureLocalizedRpgDefaults({ force: true });
+        _normalizeRpgSettingsInPlace();
+        await ensurePromptDefaults(detectEffectiveAiLang(settings));
         saveSettings();
         syncSettingsToUI();
-        try { renderBarConfig(); } catch (_) {}
-        try { renderAttrConfig(); } catch (_) {}
+        try { renderBarConfig(); } catch (_) { }
+        try { renderAttrConfig(); } catch (_) { }
         horaeManager.init(getContext(), settings);
         _refreshSystemPromptDisplay();
         updateTokenCounter();
@@ -11099,7 +13001,7 @@ function initSettingsEvents() {
     $('#horae-btn-agenda-select-all').on('click', selectAllAgenda);
     $('#horae-btn-agenda-delete').on('click', deleteSelectedAgenda);
     $('#horae-btn-agenda-cancel-select').on('click', exitAgendaMultiSelect);
-    
+
     $('#horae-btn-timeline-multiselect').on('click', () => {
         if (timelineMultiSelectMode) {
             exitTimelineMultiSelect();
@@ -11111,15 +13013,22 @@ function initSettingsEvents() {
     $('#horae-btn-timeline-compress').on('click', compressSelectedTimelineEvents);
     $('#horae-btn-timeline-delete').on('click', deleteSelectedTimelineEvents);
     $('#horae-btn-timeline-cancel-select').on('click', exitTimelineMultiSelect);
-    
+
     $('#horae-items-search').on('input', updateItemsDisplay);
     $('#horae-items-filter').on('change', updateItemsDisplay);
     $('#horae-items-holder-filter').on('change', updateItemsDisplay);
-    
+
+    $('#horae-btn-items-multiselect').on('click', () => {
+        itemsMultiSelectMode ? exitMultiSelectMode() : enterMultiSelectMode();
+    });
     $('#horae-btn-items-select-all').on('click', selectAllItems);
     $('#horae-btn-items-delete').on('click', deleteSelectedItems);
     $('#horae-btn-items-cancel-select').on('click', exitMultiSelectMode);
-    
+
+    $('#horae-btn-npc-add').on('click', (e) => {
+        e.stopPropagation();
+        openNpcAddModal();
+    });
     $('#horae-btn-npc-multiselect').on('click', () => {
         npcMultiSelectMode ? exitNpcMultiSelect() : enterNpcMultiSelect();
     });
@@ -11133,34 +13042,43 @@ function initSettingsEvents() {
     });
     $('#horae-btn-npc-delete').on('click', deleteSelectedNpcs);
     $('#horae-btn-npc-cancel-select').on('click', exitNpcMultiSelect);
-    
+
     $('#horae-btn-items-refresh').on('click', () => {
         updateItemsDisplay();
         showToast(t('toast.itemsRefreshed'), 'info');
     });
-    
-    $('#horae-setting-send-timeline').on('change', function() {
+
+    $('#horae-setting-send-timeline').on('change', function () {
         settings.sendTimeline = this.checked;
         saveSettings();
         horaeManager.init(getContext(), settings);
         updateTokenCounter();
     });
-    
-    $('#horae-setting-send-characters').on('change', function() {
+
+    $('#horae-setting-context-depth').on('change', function () {
+        const val = parseInt(this.value, 10);
+        settings.contextDepth = Number.isNaN(val) ? 15 : Math.max(0, val);
+        this.value = settings.contextDepth;
+        saveSettings();
+        horaeManager.init(getContext(), settings);
+        updateTokenCounter();
+    });
+
+    $('#horae-setting-send-characters').on('change', function () {
         settings.sendCharacters = this.checked;
         saveSettings();
         horaeManager.init(getContext(), settings);
         updateTokenCounter();
     });
-    
-    $('#horae-setting-send-items').on('change', function() {
+
+    $('#horae-setting-send-items').on('change', function () {
         settings.sendItems = this.checked;
         saveSettings();
         horaeManager.init(getContext(), settings);
         updateTokenCounter();
     });
-    
-    $('#horae-setting-send-location-memory').on('change', function() {
+
+    $('#horae-setting-send-location-memory').on('change', function () {
         settings.sendLocationMemory = this.checked;
         saveSettings();
         $('#horae-location-prompt-group').toggle(this.checked);
@@ -11169,8 +13087,8 @@ function initSettingsEvents() {
         _refreshSystemPromptDisplay();
         updateTokenCounter();
     });
-    
-    $('#horae-setting-send-relationships').on('change', function() {
+
+    $('#horae-setting-send-relationships').on('change', function () {
         settings.sendRelationships = this.checked;
         saveSettings();
         $('#horae-relationship-section').toggle(this.checked);
@@ -11180,8 +13098,8 @@ function initSettingsEvents() {
         updateTokenCounter();
         if (this.checked) updateRelationshipDisplay();
     });
-    
-    $('#horae-setting-send-mood').on('change', function() {
+
+    $('#horae-setting-send-mood').on('change', function () {
         settings.sendMood = this.checked;
         saveSettings();
         $('#horae-mood-prompt-group').toggle(this.checked);
@@ -11190,7 +13108,7 @@ function initSettingsEvents() {
         updateTokenCounter();
     });
 
-    $('#horae-setting-anti-paraphrase').on('change', function() {
+    $('#horae-setting-anti-paraphrase').on('change', function () {
         settings.antiParaphraseMode = this.checked;
         saveSettings();
         horaeManager.init(getContext(), settings);
@@ -11198,7 +13116,7 @@ function initSettingsEvents() {
         updateTokenCounter();
     });
 
-    $('#horae-setting-sideplay-mode').on('change', function() {
+    $('#horae-setting-sideplay-mode').on('change', function () {
         settings.sideplayMode = this.checked;
         saveSettings();
         document.querySelectorAll('.horae-message-panel').forEach(p => {
@@ -11208,7 +13126,7 @@ function initSettingsEvents() {
     });
 
     // RPG 模式
-    $('#horae-setting-rpg-mode').on('change', function() {
+    $('#horae-setting-rpg-mode').on('change', function () {
         settings.rpgMode = this.checked;
         saveSettings();
         $('#horae-rpg-sub-options').toggle(this.checked);
@@ -11220,8 +13138,8 @@ function initSettingsEvents() {
         if (this.checked) updateRpgDisplay();
     });
     // RPG 仅限主角 - 总开关联动所有子模块
-    const _rpgUoKeys = ['rpgBarsUserOnly','rpgSkillsUserOnly','rpgAttrsUserOnly','rpgReputationUserOnly','rpgEquipmentUserOnly','rpgLevelUserOnly','rpgCurrencyUserOnly'];
-    const _rpgUoIds = ['bars','skills','attrs','reputation','equipment','level','currency'];
+    const _rpgUoKeys = ['rpgBarsUserOnly', 'rpgSkillsUserOnly', 'rpgAttrsUserOnly', 'rpgReputationUserOnly', 'rpgEquipmentUserOnly', 'rpgLevelUserOnly', 'rpgCurrencyUserOnly'];
+    const _rpgUoIds = ['bars', 'skills', 'attrs', 'reputation', 'equipment', 'level', 'currency'];
     function _syncRpgUserOnlyMaster() {
         const allOn = _rpgUoKeys.every(k => !!settings[k]);
         settings.rpgUserOnly = allOn;
@@ -11234,16 +13152,20 @@ function initSettingsEvents() {
         updateTokenCounter();
         updateRpgDisplay();
     }
-    $('#horae-setting-rpg-user-only').on('change', function() {
+    $('#horae-setting-rpg-user-only').on('change', function () {
         const val = this.checked;
         settings.rpgUserOnly = val;
         for (const k of _rpgUoKeys) settings[k] = val;
         for (const id of _rpgUoIds) $(`#horae-setting-rpg-${id}-uo`).prop('checked', val);
         _rpgUoRefresh();
     });
+    $('#horae-setting-rpg-strict-present').on('change', function () {
+        settings.rpgStrictPresentOnly = this.checked;
+        _rpgUoRefresh();
+    });
     for (let i = 0; i < _rpgUoIds.length; i++) {
         const id = _rpgUoIds[i], key = _rpgUoKeys[i];
-        $(`#horae-setting-rpg-${id}-uo`).on('change', function() {
+        $(`#horae-setting-rpg-${id}-uo`).on('change', function () {
             settings[key] = this.checked;
             _syncRpgUserOnlyMaster();
             _rpgUoRefresh();
@@ -11260,7 +13182,7 @@ function initSettingsEvents() {
         { checkId: 'horae-setting-rpg-currency', settingKey: 'sendRpgCurrency', uoId: 'horae-setting-rpg-currency-uo' },
     ];
     for (const m of _rpgModulePairs) {
-        $(`#${m.checkId}`).on('change', function() {
+        $(`#${m.checkId}`).on('change', function () {
             settings[m.settingKey] = this.checked;
             $(`#${m.uoId}`).closest('label').toggle(this.checked);
             saveSettings();
@@ -11271,7 +13193,7 @@ function initSettingsEvents() {
             updateRpgDisplay();
         });
     }
-    $('#horae-setting-rpg-stronghold').on('change', function() {
+    $('#horae-setting-rpg-stronghold').on('change', function () {
         settings.sendRpgStronghold = this.checked;
         saveSettings();
         _syncRpgTabVisibility();
@@ -11280,7 +13202,7 @@ function initSettingsEvents() {
         updateTokenCounter();
         updateRpgDisplay();
     });
-    $('#horae-setting-rpg-dice').on('change', function() {
+    $('#horae-setting-rpg-dice').on('change', function () {
         settings.rpgDiceEnabled = this.checked;
         saveSettings();
         renderDicePanel();
@@ -11294,7 +13216,7 @@ function initSettingsEvents() {
     });
 
     // 自动摘要折叠面板
-    $('#horae-autosummary-collapse-toggle').on('click', function() {
+    $('#horae-autosummary-collapse-toggle').on('click', function () {
         const body = $('#horae-autosummary-collapse-body');
         const icon = $(this).find('.horae-collapse-icon');
         body.slideToggle(200);
@@ -11302,58 +13224,97 @@ function initSettingsEvents() {
     });
 
     // 自动摘要设置
-    $('#horae-setting-auto-summary').on('change', function() {
+    $('#horae-setting-auto-summary').on('change', function () {
         settings.autoSummaryEnabled = this.checked;
         saveSettings();
         $('#horae-auto-summary-options').toggle(this.checked);
     });
-    $('#horae-setting-auto-summary-keep').on('change', function() {
+    $('#horae-setting-auto-summary-keep').on('change', function () {
         settings.autoSummaryKeepRecent = Math.max(3, parseInt(this.value) || 10);
         this.value = settings.autoSummaryKeepRecent;
         saveSettings();
     });
-    $('#horae-setting-auto-summary-mode').on('change', function() {
-        settings.autoSummaryBufferMode = this.value;
+    $('#horae-setting-auto-summary-mode').on('change', function () {
+        settings.autoSummaryBufferMode = this.value === 'tokens' ? 'tokens' : 'messages';
+        _syncAutoSummaryLegacyBufferLimit();
+        _syncAutoSummaryTriggerLimitInput();
         saveSettings();
         updateAutoSummaryHint();
     });
-    $('#horae-setting-auto-summary-limit').on('change', function() {
-        settings.autoSummaryBufferLimit = Math.max(5, parseInt(this.value) || 20);
-        this.value = settings.autoSummaryBufferLimit;
+    $('#horae-setting-auto-summary-source').on('change', function () {
+        settings.autoSummarySourceMode = this.value === 'events' ? 'events' : 'fulltext';
         saveSettings();
     });
-    $('#horae-setting-auto-summary-batch-msgs').on('change', function() {
+    $('#horae-setting-auto-summary-limit').on('change', function () {
+        if (settings.autoSummaryBufferMode === 'tokens') {
+            settings.autoSummaryBufferTokenLimit = Math.max(1000, parseInt(this.value, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+        } else {
+            settings.autoSummaryBufferMsgLimit = Math.max(5, parseInt(this.value, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+        }
+        _syncAutoSummaryLegacyBufferLimit();
+        _syncAutoSummaryTriggerLimitInput();
+        saveSettings();
+    });
+    $('#horae-setting-auto-summary-resummary-threshold').on('change', function () {
+        const raw = parseInt(this.value, 10);
+        if (!Number.isFinite(raw)) {
+            settings.autoSummaryResummaryThreshold = 10;
+        } else if (raw <= 0) {
+            settings.autoSummaryResummaryThreshold = 0;
+        } else {
+            settings.autoSummaryResummaryThreshold = Math.max(2, raw);
+        }
+        this.value = settings.autoSummaryResummaryThreshold;
+        saveSettings();
+    });
+    $('#horae-setting-auto-summary-batch-msgs').on('change', function () {
         settings.autoSummaryBatchMaxMsgs = Math.max(5, parseInt(this.value) || 50);
         this.value = settings.autoSummaryBatchMaxMsgs;
         saveSettings();
     });
-    $('#horae-setting-auto-summary-batch-tokens').on('change', function() {
+    $('#horae-setting-auto-summary-batch-tokens').on('change', function () {
         settings.autoSummaryBatchMaxTokens = Math.max(10000, parseInt(this.value) || 80000);
         this.value = settings.autoSummaryBatchMaxTokens;
         saveSettings();
     });
-    $('#horae-setting-auto-summary-custom-api').on('change', function() {
-        settings.autoSummaryUseCustomApi = this.checked;
+    $('#horae-setting-aux-api-enabled').on('change', function () {
+        settings.auxApiEnabled = this.checked;
         saveSettings();
-        $('#horae-auto-summary-api-options').toggle(this.checked);
+        $('#horae-aux-api-options').toggle(this.checked);
     });
-    $('#horae-setting-auto-summary-api-url').on('input change', function() {
-        settings.autoSummaryApiUrl = this.value;
-        saveSettings();
-    });
-    $('#horae-setting-auto-summary-api-key').on('input change', function() {
-        settings.autoSummaryApiKey = this.value;
+    $('#horae-setting-aux-api-url').on('input change', function () {
+        settings.auxApiUrl = this.value;
         saveSettings();
     });
-    $('#horae-setting-auto-summary-model').on('change', function() {
-        settings.autoSummaryModel = this.value;
+    $('#horae-setting-aux-api-key').on('input change', function () {
+        settings.auxApiKey = this.value;
+        saveSettings();
+    });
+    $('#horae-setting-aux-api-model').on('change', function () {
+        settings.auxApiModel = this.value;
+        saveSettings();
+    });
+    $('#horae-setting-aux-api-analysis').on('change', function () {
+        settings.auxApiUseForAnalysis = this.checked;
+        saveSettings();
+    });
+    $('#horae-setting-aux-api-summary').on('change', function () {
+        settings.auxApiUseForSummary = this.checked;
+        saveSettings();
+    });
+    $('#horae-setting-aux-api-manual-compress').on('change', function () {
+        settings.auxApiUseForManualCompress = this.checked;
+        saveSettings();
+    });
+    $('#horae-setting-aux-api-fallback').on('change', function () {
+        settings.auxApiFallbackToMain = this.checked;
         saveSettings();
     });
 
     $('#horae-btn-fetch-models').on('click', fetchAndPopulateModels);
     $('#horae-btn-test-sub-api').on('click', testSubApiConnection);
-    
-    $('#horae-setting-panel-width').on('change', function() {
+
+    $('#horae-setting-panel-width').on('change', function () {
         let val = parseInt(this.value) || 100;
         val = Math.max(50, Math.min(100, val));
         this.value = val;
@@ -11361,7 +13322,7 @@ function initSettingsEvents() {
         saveSettings();
         applyPanelWidth();
     });
-    $('#horae-setting-panel-offset').on('input', function() {
+    $('#horae-setting-panel-offset').on('input', function () {
         const val = Math.max(0, parseInt(this.value) || 0);
         settings.panelOffset = val;
         $('#horae-panel-offset-value').text(`${val}px`);
@@ -11370,7 +13331,7 @@ function initSettingsEvents() {
     });
 
     // 主题模式切换
-    $('#horae-setting-theme-mode').on('change', function() {
+    $('#horae-setting-theme-mode').on('change', function () {
         settings.themeMode = this.value;
         saveSettings();
         applyThemeMode();
@@ -11380,7 +13341,7 @@ function initSettingsEvents() {
     $('#horae-btn-theme-export').on('click', exportTheme);
     $('#horae-btn-theme-import').on('click', importTheme);
     $('#horae-btn-theme-designer').on('click', openThemeDesigner);
-    $('#horae-btn-theme-delete').on('click', function() {
+    $('#horae-btn-theme-delete').on('click', function () {
         const mode = settings.themeMode || 'dark';
         if (!mode.startsWith('custom-')) {
             showToast(t('toast.onlyDeleteImported'), 'warning');
@@ -11390,14 +13351,14 @@ function initSettingsEvents() {
     });
 
     // 自定义CSS
-    $('#horae-custom-css').on('change', function() {
+    $('#horae-custom-css').on('change', function () {
         settings.customCSS = this.value;
         saveSettings();
         applyCustomCSS();
     });
-    
+
     $('#horae-btn-refresh').on('click', refreshAllDisplays);
-    
+
     $('#horae-btn-add-table-local').on('click', () => addNewExcelTable('local'));
     $('#horae-btn-add-table-character').on('click', () => {
         if (getContext()?.characterId == null) {
@@ -11418,13 +13379,14 @@ function initSettingsEvents() {
         }
     });
     renderCustomTablesList();
-    
+
     $('#horae-btn-export').on('click', exportData);
     $('#horae-btn-import').on('click', importData);
+    $('#horae-btn-carry-new-chat').on('click', createNewChatWithCarryover);
     $('#horae-btn-clear').on('click', clearAllData);
-    
+
     // 好感度显示/隐藏（不可用hidden类名，酒馆全局有display:none规则）
-    $('#horae-affection-toggle').on('click', function() {
+    $('#horae-affection-toggle').on('click', function () {
         const list = $('#horae-affection-list');
         const icon = $(this).find('i');
         if (list.is(':visible')) {
@@ -11437,9 +13399,9 @@ function initSettingsEvents() {
             $(this).removeClass('horae-eye-off');
         }
     });
-    
+
     // 自定义提示词
-    $('#horae-custom-system-prompt').on('input', function() {
+    $('#horae-custom-system-prompt').on('input', function () {
         const val = this.value;
         // 与默认一致时视为未自定义
         settings.customSystemPrompt = (val.trim() === horaeManager.getDefaultSystemPrompt().trim()) ? '' : val;
@@ -11448,14 +13410,14 @@ function initSettingsEvents() {
         horaeManager.init(getContext(), settings);
         updateTokenCounter();
     });
-    
-    $('#horae-custom-batch-prompt').on('input', function() {
+
+    $('#horae-custom-batch-prompt').on('input', function () {
         const val = this.value;
         settings.customBatchPrompt = (val.trim() === getDefaultBatchPrompt().trim()) ? '' : val;
         $('#horae-batch-prompt-count').text(val.length);
         saveSettings();
     });
-    
+
     $('#horae-btn-reset-system-prompt').on('click', () => {
         if (!confirm(t('confirm.restoreRpgPrompts'))) return;
         settings.customSystemPrompt = '';
@@ -11467,7 +13429,7 @@ function initSettingsEvents() {
         updateTokenCounter();
         showToast(t('toast.promptsRestored'), 'success');
     });
-    
+
     $('#horae-btn-reset-batch-prompt').on('click', () => {
         if (!confirm(t('confirm.restoreRpgPrompts'))) return;
         settings.customBatchPrompt = '';
@@ -11479,7 +13441,7 @@ function initSettingsEvents() {
     });
 
     // AI分析提示词
-    $('#horae-custom-analysis-prompt').on('input', function() {
+    $('#horae-custom-analysis-prompt').on('input', function () {
         const val = this.value;
         settings.customAnalysisPrompt = (val.trim() === getDefaultAnalysisPrompt().trim()) ? '' : val;
         $('#horae-analysis-prompt-count').text(val.length);
@@ -11497,7 +13459,7 @@ function initSettingsEvents() {
     });
 
     // 剧情压缩提示词
-    $('#horae-custom-compress-prompt').on('input', function() {
+    $('#horae-custom-compress-prompt').on('input', function () {
         const val = this.value;
         settings.customCompressPrompt = (val.trim() === getDefaultCompressPrompt().trim()) ? '' : val;
         $('#horae-compress-prompt-count').text(val.length);
@@ -11515,7 +13477,7 @@ function initSettingsEvents() {
     });
 
     // 自动摘要提示词
-    $('#horae-custom-auto-summary-prompt').on('input', function() {
+    $('#horae-custom-auto-summary-prompt').on('input', function () {
         const val = this.value;
         settings.customAutoSummaryPrompt = (val.trim() === getDefaultAutoSummaryPrompt().trim()) ? '' : val;
         $('#horae-auto-summary-prompt-count').text(val.length);
@@ -11532,8 +13494,26 @@ function initSettingsEvents() {
         showToast(t('toast.promptsRestored'), 'success');
     });
 
+    // 二次总结提示词
+    $('#horae-custom-auto-resummary-prompt').on('input', function () {
+        const val = this.value;
+        settings.customAutoResummaryPrompt = (val.trim() === getDefaultAutoResummaryPrompt().trim()) ? '' : val;
+        $('#horae-auto-resummary-prompt-count').text(val.length);
+        saveSettings();
+    });
+
+    $('#horae-btn-reset-auto-resummary-prompt').on('click', () => {
+        if (!confirm(t('confirm.restoreRpgPrompts'))) return;
+        settings.customAutoResummaryPrompt = '';
+        saveSettings();
+        const def = getDefaultAutoResummaryPrompt();
+        $('#horae-custom-auto-resummary-prompt').val(def);
+        $('#horae-auto-resummary-prompt-count').text(def.length);
+        showToast(t('toast.promptsRestored'), 'success');
+    });
+
     // 表格填写规则提示词
-    $('#horae-custom-tables-prompt').on('input', function() {
+    $('#horae-custom-tables-prompt').on('input', function () {
         const val = this.value;
         settings.customTablesPrompt = (val.trim() === horaeManager.getDefaultTablesPrompt().trim()) ? '' : val;
         $('#horae-tables-prompt-count').text(val.length);
@@ -11555,7 +13535,7 @@ function initSettingsEvents() {
     });
 
     // 场景记忆提示词
-    $('#horae-custom-location-prompt').on('input', function() {
+    $('#horae-custom-location-prompt').on('input', function () {
         const val = this.value;
         settings.customLocationPrompt = (val.trim() === horaeManager.getDefaultLocationPrompt().trim()) ? '' : val;
         $('#horae-location-prompt-count').text(val.length);
@@ -11577,7 +13557,7 @@ function initSettingsEvents() {
     });
 
     // 关系网络提示词
-    $('#horae-custom-relationship-prompt').on('input', function() {
+    $('#horae-custom-relationship-prompt').on('input', function () {
         const val = this.value;
         settings.customRelationshipPrompt = (val.trim() === horaeManager.getDefaultRelationshipPrompt().trim()) ? '' : val;
         $('#horae-relationship-prompt-count').text(val.length);
@@ -11599,7 +13579,7 @@ function initSettingsEvents() {
     });
 
     // 情绪追踪提示词
-    $('#horae-custom-mood-prompt').on('input', function() {
+    $('#horae-custom-mood-prompt').on('input', function () {
         const val = this.value;
         settings.customMoodPrompt = (val.trim() === horaeManager.getDefaultMoodPrompt().trim()) ? '' : val;
         $('#horae-mood-prompt-count').text(val.length);
@@ -11621,15 +13601,39 @@ function initSettingsEvents() {
     });
 
     // 提示词区域折叠切换
-    $('#horae-prompt-collapse-toggle').on('click', function() {
+    $('#horae-prompt-collapse-toggle').on('click', function () {
         const body = $('#horae-prompt-collapse-body');
         const icon = $(this).find('.horae-collapse-icon');
         body.slideToggle(200);
         icon.toggleClass('collapsed');
     });
 
+    // 高级设置折叠切换
+    $('#horae-advanced-collapse-toggle').on('click', function () {
+        const body = $('#horae-advanced-collapse-body');
+        const icon = $(this).find('.horae-collapse-icon');
+        body.slideToggle(200);
+        icon.toggleClass('collapsed');
+    });
+
+    // 自定义表格折叠切换
+    $('#horae-custom-tables-collapse-toggle').on('click', function () {
+        const body = $('#horae-custom-tables-collapse-body');
+        const icon = $(this).find('.horae-collapse-icon');
+        body.slideToggle(200);
+        icon.toggleClass('collapsed');
+    });
+
+    // 发送给AI的内容折叠切换
+    $('#horae-send-to-ai-collapse-toggle').on('click', function () {
+        const body = $('#horae-send-to-ai-collapse-body');
+        const icon = $(this).find('.horae-collapse-icon');
+        body.slideToggle(200);
+        icon.toggleClass('collapsed');
+    });
+
     // 自定义CSS区域折叠切换
-    $('#horae-css-collapse-toggle').on('click', function() {
+    $('#horae-css-collapse-toggle').on('click', function () {
         const body = $('#horae-css-collapse-body');
         const icon = $(this).find('.horae-collapse-icon');
         body.slideToggle(200);
@@ -11637,14 +13641,14 @@ function initSettingsEvents() {
     });
 
     // 向量记忆区域折叠切换
-    $('#horae-vector-collapse-toggle').on('click', function() {
+    $('#horae-vector-collapse-toggle').on('click', function () {
         const body = $('#horae-vector-collapse-body');
         const icon = $(this).find('.horae-collapse-icon');
         body.slideToggle(200);
         icon.toggleClass('collapsed');
     });
 
-    $('#horae-setting-vector-enabled').on('change', function() {
+    $('#horae-setting-vector-enabled').on('change', function () {
         settings.vectorEnabled = this.checked;
         saveSettings();
         $('#horae-vector-options').toggle(this.checked);
@@ -11656,7 +13660,7 @@ function initSettingsEvents() {
         }
     });
 
-    $('#horae-setting-vector-source').on('change', function() {
+    $('#horae-setting-vector-source').on('change', function () {
         settings.vectorSource = this.value;
         saveSettings();
         _syncVectorSourceUI();
@@ -11668,7 +13672,7 @@ function initSettingsEvents() {
         }
     });
 
-    $('#horae-setting-vector-model').on('change', function() {
+    $('#horae-setting-vector-model').on('change', function () {
         settings.vectorModel = this.value;
         saveSettings();
         if (settings.vectorEnabled) {
@@ -11679,7 +13683,7 @@ function initSettingsEvents() {
         }
     });
 
-    $('#horae-setting-vector-dtype').on('change', function() {
+    $('#horae-setting-vector-dtype').on('change', function () {
         settings.vectorDtype = this.value;
         saveSettings();
         if (settings.vectorEnabled) {
@@ -11690,17 +13694,17 @@ function initSettingsEvents() {
         }
     });
 
-    $('#horae-setting-vector-api-url').on('change', function() {
+    $('#horae-setting-vector-api-url').on('change', function () {
         settings.vectorApiUrl = this.value.trim();
         saveSettings();
     });
 
-    $('#horae-setting-vector-api-key').on('change', function() {
+    $('#horae-setting-vector-api-key').on('change', function () {
         settings.vectorApiKey = this.value.trim();
         saveSettings();
     });
 
-    $('#horae-setting-vector-api-model').on('change', function() {
+    $('#horae-setting-vector-api-model').on('change', function () {
         settings.vectorApiModel = this.value.trim();
         saveSettings();
         if (settings.vectorEnabled && settings.vectorSource === 'api') {
@@ -11711,61 +13715,156 @@ function initSettingsEvents() {
         }
     });
 
-    $('#horae-setting-vector-pure-mode').on('change', function() {
+    $('#horae-setting-vector-pure-mode').on('change', function () {
         settings.vectorPureMode = this.checked;
         saveSettings();
     });
 
-    $('#horae-setting-vector-rerank-enabled').on('change', function() {
+    $('#horae-setting-vector-debug-log').on('change', function () {
+        settings.vectorDebugLog = this.checked;
+        saveSettings();
+    });
+
+    $('#horae-setting-vector-rerank-enabled').on('change', function () {
         settings.vectorRerankEnabled = this.checked;
         saveSettings();
         $('#horae-vector-rerank-options').toggle(this.checked);
     });
 
-    $('#horae-setting-vector-rerank-fulltext').on('change', function() {
+    $('#horae-setting-vector-rerank-fulltext').on('change', function () {
         settings.vectorRerankFullText = this.checked;
         saveSettings();
     });
 
-    $('#horae-setting-vector-rerank-model').on('change', function() {
+    $('#horae-setting-vector-rerank-model').on('change', function () {
         settings.vectorRerankModel = this.value.trim();
         saveSettings();
     });
 
     $('#horae-btn-fetch-embed-models').on('click', fetchEmbeddingModels);
     $('#horae-btn-fetch-rerank-models').on('click', fetchRerankModels);
+    $('#horae-btn-test-vector-api').on('click', testVectorApiConnection);
 
-    $('#horae-setting-vector-rerank-url').on('change', function() {
+    const loadSelectedVectorRecallPreset = () => {
+        const preset = _getSelectedVectorRecallPreset();
+        if (!preset) {
+            showToast(t('toast.selectPresetFirst'), 'warning');
+            return;
+        }
+        _applyVectorRecallPresetValues(preset.values);
+        settings.vectorRecallPresetSelected = $('#horae-vector-recall-preset-select').val() || 'builtin:small';
+        saveSettings();
+        _syncVectorRecallPresetInputs();
+        showToast(t('toast.presetLoaded', { name: preset.name }), 'success');
+    };
+
+    $('#horae-vector-recall-preset-select').on('change', loadSelectedVectorRecallPreset);
+    $('#horae-vector-recall-preset-load').on('click', loadSelectedVectorRecallPreset);
+
+    $('#horae-vector-recall-preset-save').on('click', () => {
+        const preset = _getSelectedVectorRecallPreset();
+        if (!preset) { showToast(t('toast.selectPresetFirst'), 'warning'); return; }
+        if (preset.type !== 'custom') {
+            showToast(t('toast.vectorBuiltinPresetReadonly'), 'warning');
+            return;
+        }
+        settings.vectorRecallPresets[preset.index].values = _collectCurrentVectorRecallPresetValues();
+        saveSettings();
+        showToast(t('toast.presetSaved', { name: preset.name }), 'success');
+    });
+
+    $('#horae-vector-recall-preset-new').on('click', () => {
+        const name = prompt(t('vector.newRecallPresetPrompt'));
+        if (!name?.trim()) return;
+        if (!Array.isArray(settings.vectorRecallPresets)) settings.vectorRecallPresets = [];
+        settings.vectorRecallPresets.push({
+            name: name.trim(),
+            values: _collectCurrentVectorRecallPresetValues(),
+        });
+        settings.vectorRecallPresetSelected = `custom:${settings.vectorRecallPresets.length - 1}`;
+        saveSettings();
+        _renderVectorRecallPresetSelect();
+        showToast(t('toast.presetCreated', { name: name.trim() }), 'success');
+    });
+
+    $('#horae-vector-recall-preset-delete').on('click', () => {
+        const preset = _getSelectedVectorRecallPreset();
+        if (!preset) { showToast(t('toast.selectPresetFirst'), 'warning'); return; }
+        if (preset.type !== 'custom') {
+            showToast(t('toast.vectorBuiltinPresetReadonly'), 'warning');
+            return;
+        }
+        if (!confirm(t('confirm.deleteTheme', { name: preset.name }))) return;
+        settings.vectorRecallPresets.splice(preset.index, 1);
+        settings.vectorRecallPresetSelected = 'builtin:small';
+        saveSettings();
+        _renderVectorRecallPresetSelect();
+        showToast(t('toast.saveSuccess'), 'success');
+    });
+
+    $('#horae-setting-vector-rerank-url').on('change', function () {
         settings.vectorRerankUrl = this.value.trim();
         saveSettings();
     });
 
-    $('#horae-setting-vector-rerank-key').on('change', function() {
+    $('#horae-setting-vector-rerank-key').on('change', function () {
         settings.vectorRerankKey = this.value.trim();
         saveSettings();
     });
 
-    $('#horae-setting-vector-topk').on('change', function() {
+    $('#horae-setting-vector-rerank-candidates').on('change', function () {
+        const v = parseInt(this.value, 10);
+        settings.vectorRerankCandidates = (Number.isFinite(v) && v >= 5) ? v : 25;
+        this.value = settings.vectorRerankCandidates;
+        saveSettings();
+    });
+
+    $('#horae-setting-vector-rerank-recall-threshold').on('change', function () {
+        const v = parseFloat(this.value);
+        settings.vectorRerankRecallThreshold = (Number.isFinite(v) && v >= 0 && v <= 0.8) ? v : 0.3;
+        this.value = settings.vectorRerankRecallThreshold;
+        saveSettings();
+    });
+
+    $('#horae-setting-vector-rerank-min-score').on('change', function () {
+        const v = parseFloat(this.value);
+        settings.vectorRerankMinScore = (Number.isFinite(v) && v >= 0 && v <= 1) ? v : 0.5;
+        this.value = settings.vectorRerankMinScore;
+        saveSettings();
+    });
+
+    $('#horae-vector-debug-toggle').on('click', function () {
+        const $body = $('#horae-vector-debug-body');
+        const $icon = $(this).find('.horae-collapse-icon');
+        const isHidden = $body.is(':hidden');
+        $body.slideToggle(160);
+        $icon.toggleClass('collapsed', !isHidden);
+        if (isHidden) _renderVectorDebugInfo();
+    });
+    $('#horae-btn-vector-debug-refresh').on('click', _renderVectorDebugInfo);
+    $('#horae-btn-vector-debug-copy').on('click', _copyVectorDebugInfo);
+
+    $('#horae-setting-vector-topk').on('change', function () {
         settings.vectorTopK = parseInt(this.value) || 5;
         saveSettings();
     });
 
-    $('#horae-setting-vector-threshold').on('change', function() {
+    $('#horae-setting-vector-threshold').on('change', function () {
         settings.vectorThreshold = parseFloat(this.value) || 0.72;
         saveSettings();
     });
 
-    $('#horae-setting-vector-fulltext-count').on('change', function() {
+    $('#horae-setting-vector-fulltext-count').on('change', function () {
         settings.vectorFullTextCount = parseInt(this.value) || 0;
         saveSettings();
     });
 
-    $('#horae-setting-vector-fulltext-threshold').on('change', function() {
+    $('#horae-setting-vector-fulltext-threshold').on('change', function () {
         settings.vectorFullTextThreshold = parseFloat(this.value) || 0.9;
         saveSettings();
     });
 
-    $('#horae-setting-vector-strip-tags').on('change', function() {
+    $('#horae-setting-vector-strip-tags').on('change', function () {
         settings.vectorStripTags = this.value.trim();
         saveSettings();
     });
@@ -11784,11 +13883,12 @@ function _refreshSystemPromptDisplay() {
         ['customAnalysisPrompt', 'horae-custom-analysis-prompt', 'horae-analysis-prompt-count', () => getDefaultAnalysisPrompt()],
         ['customCompressPrompt', 'horae-custom-compress-prompt', 'horae-compress-prompt-count', () => getDefaultCompressPrompt()],
         ['customAutoSummaryPrompt', 'horae-custom-auto-summary-prompt', 'horae-auto-summary-prompt-count', () => getDefaultAutoSummaryPrompt()],
+        ['customAutoResummaryPrompt', 'horae-custom-auto-resummary-prompt', 'horae-auto-resummary-prompt-count', () => getDefaultAutoResummaryPrompt()],
         ['customTablesPrompt', 'horae-custom-tables-prompt', 'horae-tables-prompt-count', () => horaeManager.getDefaultTablesPrompt()],
         ['customLocationPrompt', 'horae-custom-location-prompt', 'horae-location-prompt-count', () => horaeManager.getDefaultLocationPrompt()],
         ['customRelationshipPrompt', 'horae-custom-relationship-prompt', 'horae-relationship-prompt-count', () => horaeManager.getDefaultRelationshipPrompt()],
         ['customMoodPrompt', 'horae-custom-mood-prompt', 'horae-mood-prompt-count', () => horaeManager.getDefaultMoodPrompt()],
-        ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPrompt()],
+        ['customRpgPrompt', 'horae-custom-rpg-prompt', 'horae-rpg-prompt-count', () => horaeManager.getDefaultRpgPromptResolved()],
     ];
     for (const [key, textareaId, countId, getDefault] of pairs) {
         if (settings[key]) continue;
@@ -11802,37 +13902,194 @@ function _syncVectorSourceUI() {
     const isApi = settings.vectorSource === 'api';
     $('#horae-vector-local-options').toggle(!isApi);
     $('#horae-vector-api-options').toggle(isApi);
+    $('#horae-vector-api-recall-options').toggle(isApi);
+    $('#horae-vector-api-rerank-section').toggle(isApi);
+}
+
+function _renderVectorRecallPresetSelect() {
+    const sel = document.getElementById('horae-vector-recall-preset-select');
+    if (!sel) return;
+    sel.innerHTML = '';
+
+    for (const preset of BUILTIN_VECTOR_RECALL_PRESETS) {
+        const opt = document.createElement('option');
+        opt.value = `builtin:${preset.id}`;
+        opt.textContent = t(preset.labelKey);
+        sel.appendChild(opt);
+    }
+
+    const customPresets = Array.isArray(settings.vectorRecallPresets) ? settings.vectorRecallPresets : [];
+    if (customPresets.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = t('vector.customRecallPresets');
+        customPresets.forEach((preset, index) => {
+            const opt = document.createElement('option');
+            opt.value = `custom:${index}`;
+            opt.textContent = preset.name;
+            group.appendChild(opt);
+        });
+        sel.appendChild(group);
+    }
+
+    const selected = settings.vectorRecallPresetSelected || 'builtin:small';
+    sel.value = selected;
+    if (sel.value !== selected) sel.value = 'builtin:small';
+}
+
+function _getSelectedVectorRecallPreset() {
+    const selected = String($('#horae-vector-recall-preset-select').val() || settings.vectorRecallPresetSelected || 'builtin:small');
+    if (selected.startsWith('builtin:')) {
+        const id = selected.slice('builtin:'.length);
+        const preset = BUILTIN_VECTOR_RECALL_PRESETS.find(p => p.id === id);
+        return preset ? { type: 'builtin', id, name: t(preset.labelKey), values: preset.values } : null;
+    }
+    if (selected.startsWith('custom:')) {
+        const idx = parseInt(selected.slice('custom:'.length), 10);
+        const preset = settings.vectorRecallPresets?.[idx];
+        return preset ? { type: 'custom', index: idx, name: preset.name, values: preset.values } : null;
+    }
+    return null;
+}
+
+function _formatDebugSimilarity(v) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return '-';
+    return v.toFixed(3);
+}
+
+function _renderVectorDebugInfo() {
+    const $box = $('#horae-vector-debug-content');
+    if (!$box.length) return;
+    const info = (typeof vectorManager !== 'undefined' && vectorManager?.getLastDebugInfo) ? vectorManager.getLastDebugInfo() : null;
+    if (!info) {
+        $box.html(`<div class="horae-empty-hint">${t('vector.debugEmpty') || ''}</div>`);
+        return;
+    }
+    const escape = (s) => $('<div>').text(s == null ? '' : String(s)).html();
+    const ts = new Date(info.timestamp || Date.now()).toLocaleString();
+
+    const queryRows = [
+        [t('vector.debugQueryUser'), info.query?.user],
+        [t('vector.debugQueryState'), info.query?.state],
+        [t('vector.debugQueryMerged'), info.query?.merged],
+    ].map(([k, v]) => `<div class="horae-vector-debug-row"><span class="horae-vector-debug-key">${escape(k)}</span><span class="horae-vector-debug-val">${escape(v || '-')}</span></div>`).join('');
+
+    const settingsLine = info.settings
+        ? `topK=${info.settings.topK} / threshold=${info.settings.threshold}${typeof info.settings.effectiveThreshold === 'number' && info.settings.effectiveThreshold !== info.settings.threshold ? ` (eff=${info.settings.effectiveThreshold.toFixed(3)})` : ''} / pureMode=${info.settings.pureMode} / rerank=${info.settings.useRerank}${info.settings.useRerank ? ` / minScore=${_formatDebugSimilarity(info.settings.rerankMinScore)} / candidates=${info.settings.rerankCandidates}` : ''}`
+        : '';
+
+    const renderHits = (rows) => {
+        if (!rows || rows.length === 0) return `<div class="horae-empty-hint">${escape(t('vector.debugNone') || '-')}</div>`;
+        return `<table class="horae-vector-debug-table"><thead><tr><th>#</th><th>${escape(t('vector.debugColScore'))}</th><th>${escape(t('vector.debugColSource'))}</th><th>${escape(t('vector.debugColPreview'))}</th></tr></thead><tbody>${rows.map(r => `<tr><td>${r.messageIndex}</td><td>${_formatDebugSimilarity(r.similarity)}</td><td>${escape(r.source || '-')}</td><td>${escape(r.docPreview || '')}</td></tr>`).join('')}</tbody></table>`;
+    };
+
+    let rerankBlock = '';
+    if (info.rerank) {
+        if (info.rerank.error) {
+            rerankBlock = `<div class="horae-empty-hint">${escape(t('vector.debugRerankError'))}: ${escape(info.rerank.error)}</div>`;
+        } else if (info.rerank.enabled && Array.isArray(info.rerank.output)) {
+            const rerankRows = info.rerank.output.map(r => `<tr class="${r.passed ? '' : 'horae-vector-debug-dropped'}"><td>${r.messageIndex ?? '-'}</td><td>${_formatDebugSimilarity(r.relevance)}</td><td>${r.passed ? '✓' : '✗'}</td></tr>`).join('');
+            rerankBlock = `
+                <div class="horae-vector-debug-row"><span class="horae-vector-debug-key">${escape(t('vector.debugRerankInfo'))}</span><span class="horae-vector-debug-val">minScore=${_formatDebugSimilarity(info.rerank.minScore)} / fullText=${info.rerank.useFullText} / passed=${info.rerank.passedCount}/${info.rerank.output.length}${info.rerank.retainedTop1 ? ' / Top1 retained' : ''}</span></div>
+                <table class="horae-vector-debug-table"><thead><tr><th>#</th><th>${escape(t('vector.debugColScore'))}</th><th>${escape(t('vector.debugColPassed'))}</th></tr></thead><tbody>${rerankRows}</tbody></table>
+            `;
+        }
+    }
+
+    $box.html(`
+        <div class="horae-vector-debug-meta">
+            <span><i class="fa-regular fa-clock"></i> ${escape(ts)}</span>
+            <span><i class="fa-solid fa-database"></i> ${escape(t('vector.debugIndexedCount'))}: ${info.indexedCount ?? '-'}</span>
+        </div>
+        <div class="horae-vector-debug-section">
+            <div class="horae-vector-debug-title">${escape(t('vector.debugQueryTitle'))}</div>
+            ${queryRows}
+            <div class="horae-vector-debug-row"><span class="horae-vector-debug-key">${escape(t('vector.debugSettings'))}</span><span class="horae-vector-debug-val">${escape(settingsLine)}</span></div>
+        </div>
+        <div class="horae-vector-debug-section">
+            <div class="horae-vector-debug-title">${escape(t('vector.debugStructured'))} (${(info.structured || []).length})</div>
+            ${renderHits(info.structured)}
+        </div>
+        <div class="horae-vector-debug-section">
+            <div class="horae-vector-debug-title">${escape(t('vector.debugEmbedding'))} (${(info.embedding || []).length})</div>
+            ${renderHits(info.embedding)}
+        </div>
+        ${rerankBlock ? `<div class="horae-vector-debug-section"><div class="horae-vector-debug-title">${escape(t('vector.debugRerank'))}</div>${rerankBlock}</div>` : ''}
+        <div class="horae-vector-debug-section">
+            <div class="horae-vector-debug-title">${escape(t('vector.debugFinal'))} (${(info.final || []).length})</div>
+            ${renderHits(info.final)}
+        </div>
+        <div class="horae-vector-debug-section">
+            <div class="horae-vector-debug-title">${escape(t('vector.debugRecallText'))}</div>
+            <pre class="horae-vector-debug-pre">${escape(info.recallText || '')}</pre>
+        </div>
+    `);
+}
+
+function _copyVectorDebugInfo() {
+    const info = (typeof vectorManager !== 'undefined' && vectorManager?.getLastDebugInfo) ? vectorManager.getLastDebugInfo() : null;
+    if (!info) {
+        showToast(t('vector.debugEmpty'), 'info');
+        return;
+    }
+    try {
+        const text = JSON.stringify(info, null, 2);
+        navigator.clipboard.writeText(text).then(
+            () => showToast(t('vector.debugCopied'), 'success'),
+            () => showToast(t('vector.debugCopyFailed'), 'error'),
+        );
+    } catch (err) {
+        showToast(t('vector.debugCopyFailed') + ': ' + (err?.message || ''), 'error');
+    }
+}
+
+function _syncVectorRecallPresetInputs() {
+    $('#horae-setting-vector-pure-mode').prop('checked', !!settings.vectorPureMode);
+    $('#horae-setting-vector-debug-log').prop('checked', !!settings.vectorDebugLog);
+    $('#horae-setting-vector-rerank-enabled').prop('checked', !!settings.vectorRerankEnabled);
+    $('#horae-vector-rerank-options').toggle(!!settings.vectorRerankEnabled);
+    $('#horae-setting-vector-rerank-fulltext').prop('checked', !!settings.vectorRerankFullText);
+    $('#horae-setting-vector-rerank-candidates').val(settings.vectorRerankCandidates ?? 25);
+    $('#horae-setting-vector-rerank-recall-threshold').val(settings.vectorRerankRecallThreshold ?? 0.3);
+    $('#horae-setting-vector-rerank-min-score').val(settings.vectorRerankMinScore ?? 0.5);
+    $('#horae-setting-vector-topk').val(settings.vectorTopK || 5);
+    $('#horae-setting-vector-threshold').val(settings.vectorThreshold || 0.72);
+    $('#horae-setting-vector-fulltext-count').val(settings.vectorFullTextCount ?? 3);
+    $('#horae-setting-vector-fulltext-threshold').val(settings.vectorFullTextThreshold ?? 0.9);
 }
 
 function syncSettingsToUI() {
     $('#horae-setting-enabled').prop('checked', settings.enabled);
     $('#horae-setting-auto-parse').prop('checked', settings.autoParse);
+    $('#horae-setting-auto-fill-prev-timeline').prop('checked', settings.autoFillPrevTimelineOnSend === true);
     $('#horae-setting-inject-context').prop('checked', settings.injectContext);
+    $('#horae-setting-use-main-preset').prop('checked', !!settings.useMainPresetForAiTasks);
     $('#horae-setting-show-panel').prop('checked', settings.showMessagePanel);
     $('#horae-setting-show-top-icon').prop('checked', settings.showTopIcon !== false);
     $('#horae-ext-show-top-icon').prop('checked', settings.showTopIcon !== false);
-    $('#horae-setting-context-depth').val(settings.contextDepth);
+    $('#horae-setting-injection-depth-source').val(settings.injectionDepthSource === 'preset' ? 'preset' : 'system');
     $('#horae-setting-injection-position').val(settings.injectionPosition);
+    $('#horae-setting-timeline-injection-mode').val(settings.timelineInjectionMode === 'separate' ? 'separate' : 'inline');
     $('#horae-setting-send-timeline').prop('checked', settings.sendTimeline);
+    $('#horae-setting-context-depth').val(Number.isFinite(parseInt(settings.contextDepth, 10)) ? Math.max(0, parseInt(settings.contextDepth, 10)) : 15);
     $('#horae-setting-send-characters').prop('checked', settings.sendCharacters);
     $('#horae-setting-send-items').prop('checked', settings.sendItems);
-    
+
     applyTopIconVisibility();
-    
+
     // 场景记忆
     $('#horae-setting-send-location-memory').prop('checked', !!settings.sendLocationMemory);
     $('#horae-location-prompt-group').toggle(!!settings.sendLocationMemory);
     $('.horae-tab[data-tab="locations"]').toggle(!!settings.sendLocationMemory);
-    
+
     // 关系网络
     $('#horae-setting-send-relationships').prop('checked', !!settings.sendRelationships);
     $('#horae-relationship-section').toggle(!!settings.sendRelationships);
     $('#horae-relationship-prompt-group').toggle(!!settings.sendRelationships);
-    
+
     // 情绪追踪
     $('#horae-setting-send-mood').prop('checked', !!settings.sendMood);
     $('#horae-mood-prompt-group').toggle(!!settings.sendMood);
-    
+
     // 反转述模式
     $('#horae-setting-anti-paraphrase').prop('checked', !!settings.antiParaphraseMode);
     // 番外模式
@@ -11841,6 +14098,7 @@ function syncSettingsToUI() {
     // RPG 模式
     $('#horae-setting-rpg-mode').prop('checked', !!settings.rpgMode);
     $('#horae-rpg-sub-options').toggle(!!settings.rpgMode);
+    $('#horae-setting-rpg-strict-present').prop('checked', !!settings.rpgStrictPresentOnly);
     $('#horae-setting-rpg-bars').prop('checked', settings.sendRpgBars !== false);
     $('#horae-setting-rpg-attrs').prop('checked', settings.sendRpgAttributes !== false);
     $('#horae-setting-rpg-skills').prop('checked', settings.sendRpgSkills !== false);
@@ -11873,16 +14131,27 @@ function syncSettingsToUI() {
     $('#horae-auto-summary-options').toggle(!!settings.autoSummaryEnabled);
     $('#horae-setting-auto-summary-keep').val(settings.autoSummaryKeepRecent || 10);
     $('#horae-setting-auto-summary-mode').val(settings.autoSummaryBufferMode || 'messages');
-    $('#horae-setting-auto-summary-limit').val(settings.autoSummaryBufferLimit || 20);
+    $('#horae-setting-auto-summary-source').val(_getAutoSummarySourceMode());
+    _syncAutoSummaryLegacyBufferLimit();
+    _syncAutoSummaryTriggerLimitInput();
+    updateAutoSummaryHint();
+    {
+        const raw = parseInt(settings.autoSummaryResummaryThreshold, 10);
+        const thresholdVal = Number.isFinite(raw) ? raw : 10;
+        $('#horae-setting-auto-summary-resummary-threshold').val(thresholdVal);
+    }
     $('#horae-setting-auto-summary-batch-msgs').val(settings.autoSummaryBatchMaxMsgs || 50);
     $('#horae-setting-auto-summary-batch-tokens').val(settings.autoSummaryBatchMaxTokens || 80000);
-    $('#horae-setting-auto-summary-custom-api').prop('checked', !!settings.autoSummaryUseCustomApi);
-    $('#horae-auto-summary-api-options').toggle(!!settings.autoSummaryUseCustomApi);
-    $('#horae-setting-auto-summary-api-url').val(settings.autoSummaryApiUrl || '');
-    $('#horae-setting-auto-summary-api-key').val(settings.autoSummaryApiKey || '');
-    // 如果已有保存的模型名，初始化 select 选项
-    const _savedModel = settings.autoSummaryModel || '';
-    const _modelSel = document.getElementById('horae-setting-auto-summary-model');
+    $('#horae-setting-aux-api-enabled').prop('checked', !!settings.auxApiEnabled);
+    $('#horae-aux-api-options').toggle(!!settings.auxApiEnabled);
+    $('#horae-setting-aux-api-url').val(settings.auxApiUrl || '');
+    $('#horae-setting-aux-api-key').val(settings.auxApiKey || '');
+    $('#horae-setting-aux-api-analysis').prop('checked', settings.auxApiUseForAnalysis !== false);
+    $('#horae-setting-aux-api-summary').prop('checked', settings.auxApiUseForSummary !== false);
+    $('#horae-setting-aux-api-manual-compress').prop('checked', !!settings.auxApiUseForManualCompress);
+    $('#horae-setting-aux-api-fallback').prop('checked', !!settings.auxApiFallbackToMain);
+    const _savedModel = settings.auxApiModel || '';
+    const _modelSel = document.getElementById('horae-setting-aux-api-model');
     if (_savedModel && _modelSel) {
         _modelSel.innerHTML = '';
         const opt = document.createElement('option');
@@ -11898,16 +14167,18 @@ function syncSettingsToUI() {
     const analysisPromptVal = settings.customAnalysisPrompt || getDefaultAnalysisPrompt();
     const compressPromptVal = settings.customCompressPrompt || getDefaultCompressPrompt();
     const autoSumPromptVal = settings.customAutoSummaryPrompt || getDefaultAutoSummaryPrompt();
+    const autoResumPromptVal = settings.customAutoResummaryPrompt || getDefaultAutoResummaryPrompt();
     const tablesPromptVal = settings.customTablesPrompt || horaeManager.getDefaultTablesPrompt();
     const locationPromptVal = settings.customLocationPrompt || horaeManager.getDefaultLocationPrompt();
     const relPromptVal = settings.customRelationshipPrompt || horaeManager.getDefaultRelationshipPrompt();
     const moodPromptVal = settings.customMoodPrompt || horaeManager.getDefaultMoodPrompt();
-    const rpgPromptVal = settings.customRpgPrompt || horaeManager.getDefaultRpgPrompt();
+    const rpgPromptVal = settings.customRpgPrompt || horaeManager.getDefaultRpgPromptResolved();
     $('#horae-custom-system-prompt').val(sysPrompt);
     $('#horae-custom-batch-prompt').val(batchPromptVal);
     $('#horae-custom-analysis-prompt').val(analysisPromptVal);
     $('#horae-custom-compress-prompt').val(compressPromptVal);
     $('#horae-custom-auto-summary-prompt').val(autoSumPromptVal);
+    $('#horae-custom-auto-resummary-prompt').val(autoResumPromptVal);
     $('#horae-custom-tables-prompt').val(tablesPromptVal);
     $('#horae-custom-location-prompt').val(locationPromptVal);
     $('#horae-custom-relationship-prompt').val(relPromptVal);
@@ -11918,12 +14189,13 @@ function syncSettingsToUI() {
     $('#horae-analysis-prompt-count').text(analysisPromptVal.length);
     $('#horae-compress-prompt-count').text(compressPromptVal.length);
     $('#horae-auto-summary-prompt-count').text(autoSumPromptVal.length);
+    $('#horae-auto-resummary-prompt-count').text(autoResumPromptVal.length);
     $('#horae-tables-prompt-count').text(tablesPromptVal.length);
     $('#horae-location-prompt-count').text(locationPromptVal.length);
     $('#horae-relationship-prompt-count').text(relPromptVal.length);
     $('#horae-mood-prompt-count').text(moodPromptVal.length);
     $('#horae-rpg-prompt-count').text(rpgPromptVal.length);
-    
+
     // 面板宽度和偏移
     $('#horae-setting-panel-width').val(settings.panelWidth || 100);
     const ofs = settings.panelOffset || 0;
@@ -11960,6 +14232,7 @@ function syncSettingsToUI() {
         }
     }
     $('#horae-setting-vector-pure-mode').prop('checked', !!settings.vectorPureMode);
+    $('#horae-setting-vector-debug-log').prop('checked', !!settings.vectorDebugLog);
     $('#horae-setting-vector-rerank-enabled').prop('checked', !!settings.vectorRerankEnabled);
     $('#horae-vector-rerank-options').toggle(!!settings.vectorRerankEnabled);
     $('#horae-setting-vector-rerank-fulltext').prop('checked', !!settings.vectorRerankFullText);
@@ -11977,10 +14250,10 @@ function syncSettingsToUI() {
     }
     $('#horae-setting-vector-rerank-url').val(settings.vectorRerankUrl || '');
     $('#horae-setting-vector-rerank-key').val(settings.vectorRerankKey || '');
-    $('#horae-setting-vector-topk').val(settings.vectorTopK || 5);
-    $('#horae-setting-vector-threshold').val(settings.vectorThreshold || 0.72);
-    $('#horae-setting-vector-fulltext-count').val(settings.vectorFullTextCount ?? 3);
-    $('#horae-setting-vector-fulltext-threshold').val(settings.vectorFullTextThreshold ?? 0.9);
+    $('#horae-setting-vector-rerank-candidates').val(settings.vectorRerankCandidates ?? 25);
+    $('#horae-setting-vector-rerank-recall-threshold').val(settings.vectorRerankRecallThreshold ?? 0.3);
+    _renderVectorRecallPresetSelect();
+    _syncVectorRecallPresetInputs();
     $('#horae-setting-vector-strip-tags').val(settings.vectorStripTags || '');
     _syncVectorSourceUI();
     _updateVectorStatus();
@@ -12004,7 +14277,7 @@ function _updateVectorStatus() {
     if (vectorManager.isLoading) {
         statusEl.textContent = t('common.loading');
     } else if (vectorManager.isReady) {
-        const dimText = vectorManager.dimensions ? t('ui.vectorDimensions', {dim: vectorManager.dimensions}) : '';
+        const dimText = vectorManager.dimensions ? t('ui.vectorDimensions', { dim: vectorManager.dimensions }) : '';
         const nameText = vectorManager.isApiMode
             ? `API: ${vectorManager.modelName}`
             : vectorManager.modelName.split('/').pop();
@@ -12014,8 +14287,114 @@ function _updateVectorStatus() {
     }
     if (countEl) {
         countEl.textContent = vectorManager.vectors.size > 0
-            ? t('ui.vectorIndexCount', {n: vectorManager.vectors.size})
+            ? t('ui.vectorIndexCount', { n: vectorManager.vectors.size })
             : '';
+    }
+}
+
+/** 计算当前聊天中缺失/过期的向量索引数量（仅统计可索引消息） */
+function _countVectorIndexGap(chat) {
+    if (!Array.isArray(chat) || chat.length === 0) return { missing: 0, indexable: 0 };
+
+    let missing = 0;
+    let indexable = 0;
+
+    for (let i = 0; i < chat.length; i++) {
+        const msg = chat[i];
+        if (!msg || msg.is_user) continue;
+
+        const meta = msg.horae_meta;
+        if (!meta || meta._skipHorae) continue;
+
+        const doc = vectorManager.buildVectorDocument(meta);
+        if (!doc) continue;
+
+        indexable++;
+        const existing = vectorManager.vectors.get(i);
+        if (!existing) {
+            missing++;
+            continue;
+        }
+
+        try {
+            const hash = vectorManager._hashString(doc);
+            if (existing.hash !== hash) missing++;
+        } catch (_) {
+            missing++;
+        }
+    }
+
+    return { missing, indexable };
+}
+
+/** 清理向量索引中的不可追踪楼层（user/无meta/番外/无可索引文档） */
+async function _pruneVectorUntrackableEntries(chat) {
+    if (!Array.isArray(chat) || vectorManager.vectors.size === 0) return 0;
+
+    const staleIndices = [];
+    for (const [idx] of vectorManager.vectors) {
+        const msg = chat[idx];
+        const meta = msg?.horae_meta;
+        const doc = (!msg || msg.is_user || !meta || meta._skipHorae) ? '' : vectorManager.buildVectorDocument(meta);
+        if (!doc) staleIndices.push(idx);
+    }
+
+    if (staleIndices.length === 0) return 0;
+
+    for (const idx of staleIndices) {
+        await vectorManager.removeMessage(idx);
+    }
+    console.log(`[Horae Vector] 已清理不可追踪索引: ${staleIndices.length} 条`);
+    return staleIndices.length;
+}
+
+async function _ensureVectorIndexBeforeRecall() {
+    if (!settings.vectorEnabled || !vectorManager.isReady) return;
+
+    const chat = horaeManager.getChat();
+    if (!chat || chat.length === 0) return;
+
+    const ctx = getContext();
+    const chatId = _deriveChatId(ctx);
+    if (!chatId || chatId === 'unknown') return;
+
+    if (_vectorEnsureIndexPromise) {
+        await _vectorEnsureIndexPromise.catch(() => { });
+    }
+
+    if (vectorManager.chatId !== chatId) {
+        await vectorManager.loadChat(chatId, chat);
+        _updateVectorStatus();
+    }
+
+    await _pruneVectorUntrackableEntries(chat);
+
+    const { missing, indexable } = _countVectorIndexGap(chat);
+    if (missing <= 0) return;
+
+    showToast(`检测到 ${missing}/${indexable} 条向量索引缺失，正在补建索引。请勿切换或退出聊天。`, 'warning');
+
+    const runChatId = chatId;
+    _vectorEnsureIndexChatId = runChatId;
+    _vectorEnsureIndexPromise = vectorManager.batchIndex(chat);
+
+    try {
+        const result = await _vectorEnsureIndexPromise;
+        const currentChatId = _deriveChatId(getContext());
+        if (currentChatId === runChatId) {
+            showToast(`向量索引补建完成：新增 ${result.indexed} 条，跳过 ${result.skipped} 条。`, 'success');
+        } else {
+            console.warn(`[Horae] 向量索引补建完成，但聊天已切换: ${runChatId} -> ${currentChatId}`);
+        }
+    } catch (err) {
+        console.error('[Horae] 向量索引自动补建失败:', err);
+        showToast(`向量索引补建失败：${err?.message || err}`, 'error');
+    } finally {
+        if (_vectorEnsureIndexChatId === runChatId) {
+            _vectorEnsureIndexPromise = null;
+            _vectorEnsureIndexChatId = null;
+        }
+        _updateVectorStatus();
     }
 }
 
@@ -12098,7 +14477,7 @@ async function _initVectorModel() {
                     if (info.status === 'progress' && fillEl && textEl) {
                         const pct = info.progress?.toFixed(0) || 0;
                         fillEl.style.width = `${pct}%`;
-                        textEl.textContent = t('toast.vectorDownloading', {pct});
+                        textEl.textContent = t('toast.vectorDownloading', { pct });
                     } else if (info.status === 'done' && textEl) {
                         textEl.textContent = t('common.loading');
                     }
@@ -12114,10 +14493,11 @@ async function _initVectorModel() {
         const displayName = settings.vectorSource === 'api'
             ? `API: ${settings.vectorApiModel}`
             : vectorManager.modelName.split('/').pop();
-        showToast(t('toast.vectorModelLoaded', {name: displayName}), 'success');
+        showToast(t('toast.vectorModelLoaded', { name: displayName }), 'success');
     } catch (err) {
         console.error('[Horae] vector model load failed:', err);
-        showToast(t('toast.vectorModelFailed', {error: err.message}), 'error');
+        const friendly = settings.vectorSource === 'api' ? _vectorErrorHint(err) : (err?.message || String(err));
+        showToast(t('toast.vectorModelFailed', { error: friendly }), 'error');
     } finally {
         if (progressEl) progressEl.style.display = 'none';
         _updateVectorStatus();
@@ -12146,13 +14526,13 @@ async function _buildVectorIndex() {
         const result = await vectorManager.batchIndex(chat, ({ current, total }) => {
             const pct = Math.round((current / total) * 100);
             if (fillEl) fillEl.style.width = `${pct}%`;
-            if (textEl) textEl.textContent = t('toast.vectorBuildProgress', {current, total});
+            if (textEl) textEl.textContent = t('toast.vectorBuildProgress', { current, total });
         });
 
-        showToast(t('toast.vectorBuildDone', {indexed: result.indexed, skipped: result.skipped}), 'success');
+        showToast(t('toast.vectorBuildDone', { indexed: result.indexed, skipped: result.skipped }), 'success');
     } catch (err) {
         console.error('[Horae] vector index build failed:', err);
-        showToast(t('toast.vectorBuildFailed', {error: err.message}), 'error');
+        showToast(t('toast.vectorBuildFailed', { error: err.message }), 'error');
     } finally {
         if (progressEl) progressEl.style.display = 'none';
         _updateVectorStatus();
@@ -12186,460 +14566,50 @@ async function scanHistoryWithProgress() {
         </div>
     `;
     document.body.appendChild(overlay);
-    
+
     const fillEl = overlay.querySelector('.horae-progress-fill');
     const textEl = overlay.querySelector('.horae-progress-text');
-    
+
     try {
         const result = await horaeManager.scanAndInjectHistory(
             (percent, current, total) => {
                 fillEl.style.width = `${percent}%`;
-                textEl.textContent = t('toast.vectorProcessing', {current, total});
+                textEl.textContent = t('toast.vectorProcessing', { current, total });
             },
             null // 不使用AI分析，只解析已有标签
         );
-        
+
         horaeManager.rebuildTableData();
         horaeManager.rebuildRelationships();
         horaeManager.rebuildLocationMemory();
         horaeManager.rebuildRpgData();
-        
+
         await getContext().saveChat();
-        
-        showToast(t('toast.vectorScanDone', {processed: result.processed, skipped: result.skipped}), 'success');
+
+        showToast(t('toast.vectorScanDone', { processed: result.processed, skipped: result.skipped }), 'success');
         refreshAllDisplays();
         renderCustomTablesList();
     } catch (error) {
         console.error('[Horae] 扫描失败:', error);
-        showToast(t('toast.scanFailed', {error: error.message}), 'error');
+        showToast(t('toast.scanFailed', { error: error.message }), 'error');
     } finally {
         overlay.remove();
     }
 }
 
+function _getPromptDefaultFromResource(key) {
+    const lang = detectEffectiveAiLang(settings);
+    return getPromptDefaultSync(lang, key) || '';
+}
+
 /** 默认的批量摘要提示词模板 */
 function getDefaultBatchPrompt() {
-    const lang = detectEffectiveAiLang(settings);
-    if (lang === 'ja') return _getDefaultBatchPromptJa();
-    if (lang === 'ko') return _getDefaultBatchPromptKo();
-    if (lang === 'ru') return _getDefaultBatchPromptRu();
-    if (lang === 'vi') return _getDefaultBatchPromptVi();
-    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultBatchPromptEn();
-    return `你是剧情分析助手。请逐条分析以下对话记录，为每条消息提取【时间】【剧情事件】和【物品变化】。
-
-核心原则：
-- 只提取文本中明确出现的信息，禁止编造
-- 每条消息独立分析，用 ===消息#编号=== 分隔
-
-{{messages}}
-
-【输出格式】每条消息按以下格式输出：
-
-===消息#编号===
-<horae>
-time:日期 时间（从文本中提取，如 2026/2/4 15:00 或 霜降月第三日 黄昏）
-item:emoji物品名(数量)|描述=持有者@位置（新获得的物品，普通物品可省描述）
-item!:emoji物品名(数量)|描述=持有者@位置（重要物品，描述必填）
-item-:物品名（消耗/丢失/用完的物品）
-</horae>
-<horaeevent>
-event:重要程度|事件简述（30-50字，重要程度：一般/重要/关键）
-</horaeevent>
-
-【规则】
-· time：从文本中提取当前场景的日期时间，必填（没有明确时间则根据上下文推断）
-· event：本条消息中发生的关键剧情，每条消息至少一个 event
-· 物品仅在获得、消耗、状态改变时记录，无变化则不写 item 行
-· item格式：emoji前缀如🔑🍞，单件不写(1)，位置需精确（❌地上 ✅酒馆大厅桌上）
-· 重要程度判断：日常对话=一般，推动剧情=重要，关键转折=关键
-· {{user}} 是主角名`;
+    return _getPromptDefaultFromResource('customBatchPrompt') || '';
 }
 
-function _getDefaultBatchPromptEn() {
-    return `You are a plot analysis assistant. Analyze the following conversation log message by message, extracting [Time], [Plot Events], and [Item Changes] for each.
-
-Core principles:
-- Only extract information explicitly present in the text. Do NOT fabricate.
-- Analyze each message independently, separated by ===Message#number===
-
-{{messages}}
-
-[Output Format] Output each message in the following format:
-
-===Message#number===
-<horae>
-time:date time (extract from text, e.g. 2026/2/4 15:00 or Frost Moon Day 3, dusk)
-item:emoji item name(qty)|description=owner@location (newly obtained items; description optional for common items)
-item!:emoji item name(qty)|description=owner@location (important items; description required)
-item-:item name (consumed/lost/used up items)
-</horae>
-<horaeevent>
-event:importance|brief summary (50-80 chars; importance: normal/important/critical)
-</horaeevent>
-
-[Rules]
-· time: Extract the current scene's date and time from text. Required. (If no explicit time, infer from context)
-· event: Key plot events in this message. At least one event per message.
-· Items: Only record when obtained, consumed, or status changed. No change = no item line.
-· item format: emoji prefix like 🔑🍞. Don't write (1) for single items. Location must be precise (❌on the ground ✅on the tavern hall table)
-· Importance: daily conversation=normal, plot-advancing=important, key turning point=critical
-· {{user}} is the protagonist's name`;
-}
-
-function _getDefaultBatchPromptJa() {
-    return `あなたはストーリー分析アシスタントです。以下の会話ログをメッセージごとに分析し、各メッセージから【時間】【ストーリーイベント】【アイテム変化】を抽出してください。
-
-基本原則：
-- テキストに明示されている情報のみを抽出すること。捏造禁止。
-- 各メッセージを独立に分析し、===Message#番号=== で区切る
-
-{{messages}}
-
-【出力形式】各メッセージを以下の形式で出力：
-
-===Message#番号===
-<horae>
-time:日付 時刻（テキストから抽出、例：2026/2/4 15:00 または霜降月三日 夕暮れ）
-item:emoji アイテム名(数量)|説明=所有者@場所（新規取得アイテム、一般的なアイテムは説明省略可）
-item!:emoji アイテム名(数量)|説明=所有者@場所（重要アイテム、説明必須）
-item-:アイテム名（消費/紛失/使い切ったアイテム）
-</horae>
-<horaeevent>
-event:重要度|イベント概要（40〜70文字、重要度：normal/important/critical）
-</horaeevent>
-
-【ルール】
-· time：テキストから現在のシーンの日時を抽出。必須。（明示的な時間がなければ文脈から推測）
-· event：このメッセージの主要なストーリーイベント。各メッセージに最低1つ
-· アイテム：取得・消費・状態変化があった場合のみ記録。変化なし＝item行なし
-· item形式：emoji接頭辞（例：🔑🍞）、単品は(1)を書かない。場所は正確に（❌地面の上 ✅酒場ホールのテーブルの上）
-· 重要度：日常会話=normal、ストーリー展開=important、重要な転換点=critical
-· {{user}} は主人公の名前`;
-}
-
-function _getDefaultBatchPromptKo() {
-    return `당신은 스토리 분석 어시스턴트입니다. 아래 대화 기록을 메시지별로 분석하여 각 메시지에서 【시간】【스토리 이벤트】【아이템 변화】를 추출하세요.
-
-핵심 원칙:
-- 텍스트에 명시적으로 나타난 정보만 추출할 것. 창작 금지.
-- 각 메시지를 독립적으로 분석하며 ===Message#번호=== 로 구분
-
-{{messages}}
-
-【출력 형식】각 메시지를 아래 형식으로 출력:
-
-===Message#번호===
-<horae>
-time:날짜 시간 (텍스트에서 추출, 예: 2026/2/4 15:00 또는 상강월 셋째 날 황혼)
-item:emoji 아이템명(수량)|설명=소유자@위치 (새로 획득한 아이템, 일반 아이템은 설명 생략 가능)
-item!:emoji 아이템명(수량)|설명=소유자@위치 (중요 아이템, 설명 필수)
-item-:아이템명 (소모/분실/소진된 아이템)
-</horae>
-<horaeevent>
-event:중요도|이벤트 요약 (40~70자, 중요도: normal/important/critical)
-</horaeevent>
-
-【규칙】
-· time: 텍스트에서 현재 장면의 날짜와 시간을 추출. 필수. (명시적 시간이 없으면 맥락에서 추론)
-· event: 이 메시지의 주요 스토리 이벤트. 메시지당 최소 1개
-· 아이템: 획득, 소모, 상태 변경 시에만 기록. 변화 없음 = item 행 없음
-· item 형식: emoji 접두사 예: 🔑🍞, 단일 아이템은 (1) 생략. 위치는 정확하게 (❌바닥 위 ✅주점 홀 탁자 위)
-· 중요도: 일상 대화=normal, 스토리 전개=important, 핵심 전환점=critical
-· {{user}} 는 주인공의 이름`;
-}
-
-function _getDefaultBatchPromptVi() {
-    return `Bạn là một trợ lý phân tích cốt truyện. Hãy phân tích nhật ký trò chuyện sau đây theo từng tin nhắn, trích xuất [Thời gian], [Sự kiện cốt truyện] và [Thay đổi vật phẩm] cho mỗi tin nhắn.
-
-Nguyên tắc cốt lõi:
-- Chỉ trích xuất thông tin xuất hiện rõ ràng trong văn bản. KHÔNG bịa đặt.
-- Phân tích độc lập từng tin nhắn, phân tách bằng ===Message#Số===
-
-{{messages}}
-
-[Định dạng đầu ra] Xuất mỗi tin nhắn theo định dạng sau:
-
-===Message#Số===
-<horae>
-time:ngày giờ (trích xuất từ văn bản, VD: 2026/2/4 15:00 hoặc Ngày 3 Tháng Sương Giá Lúc chạng vạng)
-item:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí (vật phẩm mới nhận; mô tả có thể bỏ qua với vật phẩm thường)
-item!:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí (vật phẩm quan trọng, bắt buộc có mô tả)
-item-:tên vật phẩm (vật phẩm đã tiêu hao/bị mất/đã dùng)
-</horae>
-<horaeevent>
-event:độ quan trọng|tóm tắt ngắn gọn (50-100 từ; độ quan trọng: normal/important/critical)
-</horaeevent>
-
-[Quy tắc]
-· time: Trích xuất ngày giờ của cảnh hiện tại từ văn bản. Bắt buộc. (Nếu không có thời gian rõ ràng, suy luận từ ngữ cảnh)
-· event: Các sự kiện cốt truyện chính trong tin nhắn này. Ít nhất một sự kiện cho mỗi tin nhắn.
-· Vật phẩm: Chỉ ghi lại khi nhận được, tiêu hao hoặc thay đổi trạng thái. Không có thay đổi = không ghi gì cả.
-· Định dạng item: tiền tố emoji VD 🔑🍞. Không viết (1) cho vật phẩm đơn lẻ. Vị trí phải chính xác (❌trên mặt đất ✅trên bàn trong quán rượu)
-· Độ quan trọng: trò chuyện bình thường=normal, tiến triển cốt truyện=important, bước ngoặt quan trọng=critical
-· {{user}} là tên nhân vật chính`;
-}
-
-function _getDefaultBatchPromptRu() {
-    return `Вы — ассистент по анализу сюжета. Проанализируйте следующий лог диалога сообщение за сообщением, извлекая из каждого [Время], [Сюжетные события] и [Изменения предметов].
-
-Основные принципы:
-- Извлекайте только информацию, явно присутствующую в тексте. НЕ выдумывайте.
-- Анализируйте каждое сообщение независимо, разделяя их ===Message#номер===
-
-{{messages}}
-
-[Формат вывода] Выведите каждое сообщение в следующем формате:
-
-===Message#номер===
-<horae>
-time:дата время (извлечь из текста, напр. 2026/2/4 15:00 или Луна Инея День 3, сумерки)
-item:emoji название предмета(кол-во)|описание=владелец@местоположение (новые предметы; описание для обычных необязательно)
-item!:emoji название предмета(кол-во)|описание=владелец@местоположение (важные предметы; описание обязательно)
-item-:название предмета (израсходованные/потерянные/использованные предметы)
-</horae>
-<horaeevent>
-event:важность|краткое описание (50–100 символов; важность: normal/important/critical)
-</horaeevent>
-
-[Правила]
-· time: Извлеките дату и время текущей сцены из текста. Обязательно. (Если точное время не указано, определите по контексту)
-· event: Ключевые сюжетные события в этом сообщении. Минимум одно событие на сообщение.
-· Предметы: Записывайте только при получении, расходовании или изменении состояния. Нет изменений = нет строки item.
-· Формат item: префикс-эмодзи 🔑🍞. Для единичных предметов не писать (1). Местоположение должно быть точным (❌на земле ✅на столе в зале таверны)
-· Важность: повседневный разговор=normal, продвижение сюжета=important, ключевой поворот=critical
-· {{user}} — имя главного героя`;
-}
-
-/** 默认的AI分析提示词模板 */
 function getDefaultAnalysisPrompt() {
-    const lang = detectEffectiveAiLang(settings);
-    if (lang === 'ja') return _getDefaultAnalysisPromptJa();
-    if (lang === 'ko') return _getDefaultAnalysisPromptKo();
-    if (lang === 'ru') return _getDefaultAnalysisPromptRu();
-    if (lang === 'vi') return _getDefaultAnalysisPromptVi();
-    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultAnalysisPromptEn();
-    return `请分析以下文本，提取关键信息并以指定格式输出。核心原则：只提取文本中明确提到的信息，没有的字段不写，禁止编造。
-
-【文本内容】
-{{content}}
-
-【输出格式】
-<horae>
-time:日期 时间（必填，如 2026/2/4 15:00 或 霜降月第一日 19:50）
-location:当前地点（必填）
-atmosphere:氛围
-characters:在场角色,逗号分隔（必填）
-costume:角色名=完整服装描述（必填，每人一行，禁止分号合并）
-item:emoji物品名(数量)|描述=持有者@精确位置（仅新获得或有变化的物品）
-item!:emoji物品名(数量)|描述=持有者@精确位置（重要物品，描述必填）
-item!!:emoji物品名(数量)|描述=持有者@精确位置（关键道具，描述必须详细）
-item-:物品名（消耗/丢失的物品）
-affection:角色名=好感度数值（仅NPC对{{user}}的好感，禁止记录{{user}}自己，禁止数值后加注解）
-npc:角色名|外貌=性格@与{{user}}的关系~性别:男或女~年龄:数字~种族:种族名~职业:职业名
-agenda:订立日期|待办内容（仅在出现新约定/计划/伏笔时写入，相对时间须括号标注绝对日期）
-agenda-:内容关键词（待办已完成/失效/取消时写入，系统自动移除匹配的待办）
-</horae>
-<horaeevent>
-event:重要程度|事件简述（30-50字，一般/重要/关键）
-</horaeevent>
-
-【触发条件】只在满足条件时才输出对应字段：
-· 物品：仅新获得、数量/归属/位置改变、消耗丢失时写。无变化不写。单件不写(1)。emoji前缀如🔑🍞。
-· NPC：首次出场必须完整（含~性别/年龄/种族/职业）。之后仅变化的字段写，无变化不写。
-  分隔符：| 分名字，= 分外貌和性格，@ 分关系，~ 分扩展字段
-· 好感度：首次按关系判定（陌生0-20/熟人30-50/朋友50-70），之后仅变化时写。
-· 待办：仅出现新约定/计划/伏笔时写。已完成/失效的待办用 agenda-: 移除。
-  新增：agenda:2026/02/10|艾伦邀请{{user}}情人节晚上约会(2026/02/14 18:00)
-  完成：agenda-:艾伦邀请{{user}}情人节晚上约会
-· event：放在<horaeevent>内，不放在<horae>内。`;
+    return _getPromptDefaultFromResource('customAnalysisPrompt') || '';
 }
-
-function _getDefaultAnalysisPromptEn() {
-    return `Analyze the following text, extract key information, and output in the specified format. Core principle: Only extract information explicitly mentioned in the text. Leave unmentioned fields blank. Do NOT fabricate.
-
-[Text Content]
-{{content}}
-
-[Output Format]
-<horae>
-time:date time (required, e.g. 2026/2/4 15:00 or Frost Moon Day 1 19:50)
-location:current location (required)
-atmosphere:atmosphere
-characters:present characters, comma-separated (required)
-costume:character name=full outfit description (required, one per line, no semicolon merging)
-item:emoji item name(qty)|description=owner@precise location (only newly obtained or changed items)
-item!:emoji item name(qty)|description=owner@precise location (important items, description required)
-item!!:emoji item name(qty)|description=owner@precise location (critical props, description must be detailed)
-item-:item name (consumed/lost items)
-affection:character name=affection value (NPC's affection toward {{user}} only; do NOT record {{user}} themselves; no annotations after value)
-npc:character name|appearance=personality@relationship with {{user}}~gender:male or female~age:number~race:race name~class:class name
-agenda:date established|agenda content (only when new agreements/plans/foreshadowing appear; relative times must include absolute date in parentheses)
-agenda-:content keyword (when agenda is completed/expired/cancelled; system auto-removes matching agenda)
-</horae>
-<horaeevent>
-event:importance|brief summary (50-80 chars; normal/important/critical)
-</horaeevent>
-
-[Trigger Conditions] Only output a field when its condition is met:
-· Items: Only when newly obtained, quantity/ownership/location changed, or consumed/lost. No change = don't write. Don't write (1) for single items. Emoji prefix like 🔑🍞.
-· NPC: First appearance must be complete (including ~gender/age/race/class). Afterwards, only write changed fields.
-  Separators: | for name, = for appearance and personality, @ for relationship, ~ for extended fields
-· Affection: First time based on relationship (stranger 0-20 / acquaintance 30-50 / friend 50-70). Afterwards only when changed.
-· Agenda: Only when new agreements/plans/foreshadowing appear. Use agenda-: to remove completed/expired ones.
-  Add: agenda:2026/02/10|Allen invites {{user}} for Valentine's dinner (2026/02/14 18:00)
-  Complete: agenda-:Allen invites {{user}} for Valentine's dinner
-· event: Place inside <horaeevent>, NOT inside <horae>.`;
-}
-
-function _getDefaultAnalysisPromptJa() {
-    return `以下のテキストを分析し、キー情報を抽出して指定形式で出力してください。基本原則：テキストに明示されている情報のみ抽出。記載のないフィールドは空欄のまま。捏造禁止。
-
-【テキスト内容】
-{{content}}
-
-【出力形式】
-<horae>
-time:日付 時刻（必須、例：2026/2/4 15:00 または霜降月一日 19:50）
-location:現在地（必須）
-atmosphere:雰囲気
-characters:その場にいるキャラクター、カンマ区切り（必須）
-costume:キャラクター名=服装の完全な説明（必須、1人1行、セミコロンで結合しない）
-item:emoji アイテム名(数量)|説明=所有者@正確な場所（新規取得または変化のあるアイテムのみ）
-item!:emoji アイテム名(数量)|説明=所有者@正確な場所（重要アイテム、説明必須）
-item!!:emoji アイテム名(数量)|説明=所有者@正確な場所（キーアイテム、詳細な説明必須）
-item-:アイテム名（消費/紛失したアイテム）
-affection:キャラクター名=好感度数値（NPCの{{user}}に対する好感度のみ。{{user}}自身は記録禁止。数値の後に注釈を付けない）
-npc:キャラクター名|外見=性格@{{user}}との関係~gender:male または female~age:数値~race:種族名~class:職業名
-agenda:設定日|予定内容（新しい約束/計画/伏線が出現した場合のみ。相対的な日時には絶対日付を括弧で付記）
-agenda-:内容キーワード（予定が完了/失効/キャンセルされた場合。システムが一致する予定を自動削除）
-</horae>
-<horaeevent>
-event:重要度|イベント概要（40〜70文字、normal/important/critical）
-</horaeevent>
-
-【トリガー条件】条件を満たした場合のみ対応フィールドを出力：
-· アイテム：新規取得、数量/所有/場所の変化、消費/紛失の場合のみ。変化なし＝記載不要。単品は(1)を書かない。emoji接頭辞例：🔑🍞
-· NPC：初登場時は完全情報必須（~gender/age/race/class 含む）。以降は変化のあるフィールドのみ。
-  区切り：| 名前、= 外見と性格、@ 関係、~ 拡張フィールド
-· 好感度：初回は関係性で判定（他人0-20/知人30-50/友人50-70）。以降は変化時のみ。
-· 予定：新しい約束/計画/伏線が出現した場合のみ。完了/失効した予定は agenda-: で削除。
-  追加：agenda:2026/02/10|アレンが{{user}}をバレンタインディナーに招待(2026/02/14 18:00)
-  完了：agenda-:アレンが{{user}}をバレンタインディナーに招待
-· event：<horaeevent> 内に配置、<horae> 内には置かない。`;
-}
-
-function _getDefaultAnalysisPromptKo() {
-    return `다음 텍스트를 분석하여 핵심 정보를 추출하고 지정된 형식으로 출력하세요. 핵심 원칙: 텍스트에 명시적으로 언급된 정보만 추출. 언급되지 않은 필드는 비워둘 것. 창작 금지.
-
-【텍스트 내용】
-{{content}}
-
-【출력 형식】
-<horae>
-time:날짜 시간 (필수, 예: 2026/2/4 15:00 또는 상강월 첫째 날 19:50)
-location:현재 위치 (필수)
-atmosphere:분위기
-characters:현장 캐릭터, 쉼표 구분 (필수)
-costume:캐릭터명=전체 복장 설명 (필수, 1인당 1줄, 세미콜론 병합 금지)
-item:emoji 아이템명(수량)|설명=소유자@정확한 위치 (새로 획득하거나 변화한 아이템만)
-item!:emoji 아이템명(수량)|설명=소유자@정확한 위치 (중요 아이템, 설명 필수)
-item!!:emoji 아이템명(수량)|설명=소유자@정확한 위치 (핵심 도구, 상세 설명 필수)
-item-:아이템명 (소모/분실된 아이템)
-affection:캐릭터명=호감도 수치 (NPC의 {{user}}에 대한 호감도만. {{user}} 자신은 기록 금지. 수치 뒤에 주석 금지)
-npc:캐릭터명|외모=성격@{{user}}와의 관계~gender:male 또는 female~age:숫자~race:종족명~class:직업명
-agenda:설정 날짜|할일 내용 (새로운 약속/계획/복선이 등장할 때만. 상대적 시간은 괄호 안에 절대 날짜 표기)
-agenda-:내용 키워드 (할일이 완료/만료/취소 시. 시스템이 일치하는 할일을 자동 제거)
-</horae>
-<horaeevent>
-event:중요도|이벤트 요약 (40~70자, normal/important/critical)
-</horaeevent>
-
-【트리거 조건】조건 충족 시에만 해당 필드 출력:
-· 아이템: 새로 획득, 수량/소유/위치 변경, 소모/분실 시에만. 변화 없음 = 기록하지 않음. 단일 아이템은 (1) 생략. emoji 접두사 예: 🔑🍞
-· NPC: 첫 등장 시 완전한 정보 필수 (~gender/age/race/class 포함). 이후 변경된 필드만 기록.
-  구분자: | 이름, = 외모와 성격, @ 관계, ~ 확장 필드
-· 호감도: 첫 판정은 관계 기반 (낯선 사람 0-20 / 지인 30-50 / 친구 50-70). 이후 변화 시에만.
-· 할일: 새로운 약속/계획/복선이 등장할 때만. 완료/만료된 할일은 agenda-: 로 제거.
-  추가: agenda:2026/02/10|앨런이 {{user}}를 발렌타인 저녁에 초대(2026/02/14 18:00)
-  완료: agenda-:앨런이 {{user}}를 발렌타인 저녁에 초대
-· event: <horaeevent> 안에 배치, <horae> 안에는 넣지 않음.`;
-}
-
-function _getDefaultAnalysisPromptVi() {
-    return `Phân tích văn bản sau, trích xuất các thông tin then chốt và xuất ra theo định dạng được chỉ định. Nguyên tắc cốt lõi: Chỉ trích xuất thông tin được đề cập rõ ràng trong văn bản. Bỏ trống các trường không được đề cập. KHÔNG bịa đặt.
-
-[Nội dung văn bản]
-{{content}}
-
-[Định dạng đầu ra]
-<horae>
-time:ngày giờ (bắt buộc, VD: 2026/2/4 15:00 hoặc Ngày 1 Tháng Sương Giá 19:50)
-location:vị trí hiện tại (bắt buộc)
-atmosphere:bầu không khí
-characters:các nhân vật có mặt, phân tách bằng dấu phẩy (bắt buộc)
-costume:tên nhân vật=mô tả đầy đủ trang phục (bắt buộc, mỗi người một dòng, không gộp bằng dấu chấm phẩy)
-item:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí chính xác (chỉ vật phẩm mới nhận hoặc bị thay đổi trạng thái)
-item!:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí chính xác (vật phẩm quan trọng, bắt buộc mô tả chi tiết)
-item!!:emoji tên vật phẩm(số lượng)|mô tả=người sở hữu@vị trí chính xác (đạo cụ đặc biệt quan trọng, mô tả phải cực kỳ chi tiết)
-item-:tên vật phẩm (vật phẩm đã tiêu hao/bị mất)
-affection:tên nhân vật=chỉ số hảo cảm (chỉ tính hảo cảm của NPC đối với {{user}}; KHÔNG ghi {{user}}; không tự thêm ghi chú phía sau giá trị)
-npc:tên nhân vật|ngoại hình=tính cách@mối quan hệ với {{user}}~gender:male hoặc female~age:chữ số~race:tên chủng tộc~class:tên chức nghiệp
-agenda:ngày thiết lập|nội dung công việc (chỉ khi có thỏa thuận/kế hoạch/ẩn ý mới xuất hiện; thời gian tương đối phải chứa ngày tuyệt đối trong ngoặc đơn)
-agenda-:từ khóa nội dung (khi công việc đã hoàn thành/hết hạn/hủy bỏ; hệ thống tự xóa mục công việc phù hợp)
-</horae>
-<horaeevent>
-event:độ quan trọng|tóm tắt ngắn gọn (50-100 ký tự; normal/important/critical)
-</horaeevent>
-
-[Điều kiện kích hoạt] Chỉ xuất trường thông tin khi đáp ứng đúng điều kiện:
-· Vật phẩm: Chỉ ghi khi mới nhận, thay đổi số lượng/quyền sở hữu/vị trí hoặc bị mất/tiêu hao. Không đổi = không xuất ra. Không ghi (1) cho vật phẩm đơn nguyên. Tiền tố emoji VD 🔑🍞.
-· NPC: Lần xuất hiện đầu tiên phải ghi đầy đủ (bao gồm ~gender/age/race/class). Sau đó, chỉ ghi các trường có sự thay đổi.
-  Dấu phân cách: | cho tên, = cho ngoại hình/tính cách, @ cho mối quan hệ, ~ cho các trường mở rộng
-· Hảo cảm: Lần đầu tiên dựa trên mức độ quan hệ (người lạ 0-20 / người quen 30-50 / bạn bè 50-70). Các lần sau chỉ ghi khi thay đổi.
-· Sự việc dự kiến: Chỉ xuất khi xuất hiện thỏa thuận/kế hoạch/ẩn ý mới. Dùng agenda-: đối với các việc đã hoàn thành.
-  Thêm mới: agenda:2026/02/10|Allen mời {{user}} đi ăn tối Valentine (2026/02/14 18:00)
-  Hoàn tất: agenda-:Allen mời {{user}} đi ăn tối Valentine
-· event: Đặt bên trong thẻ <horaeevent>, KHÔNG nằm trong thẻ <horae>.`;
-}
-
-function _getDefaultAnalysisPromptRu() {
-    return `Проанализируйте следующий текст, извлеките ключевую информацию и выведите в указанном формате. Основной принцип: извлекайте только информацию, явно упомянутую в тексте. Неупомянутые поля оставляйте пустыми. НЕ выдумывайте.
-
-[Содержание текста]
-{{content}}
-
-[Формат вывода]
-<horae>
-time:дата время (обязательно, напр. 2026/2/4 15:00 или Луна Инея День 1 19:50)
-location:текущее местоположение (обязательно)
-atmosphere:атмосфера
-characters:присутствующие персонажи, через запятую (обязательно)
-costume:имя персонажа=полное описание наряда (обязательно, по одному на строку, не объединять точкой с запятой)
-item:emoji название предмета(кол-во)|описание=владелец@точное местоположение (только новые или изменённые предметы)
-item!:emoji название предмета(кол-во)|описание=владелец@точное местоположение (важные предметы, описание обязательно)
-item!!:emoji название предмета(кол-во)|описание=владелец@точное местоположение (ключевой реквизит, описание должно быть подробным)
-item-:название предмета (израсходованные/потерянные предметы)
-affection:имя персонажа=значение привязанности (только привязанность NPC к {{user}}; НЕ записывать самого {{user}}; без аннотаций после значения)
-npc:имя персонажа|внешность=характер@отношения с {{user}}~gender:male или female~age:число~race:название расы~class:название класса
-agenda:дата создания|содержание задачи (только при появлении новых договорённостей/планов/предзнаменований; относительное время должно содержать абсолютную дату в скобках)
-agenda-:ключевое слово содержания (когда задача выполнена/истекла/отменена; система автоматически удаляет соответствующую задачу)
-</horae>
-<horaeevent>
-event:важность|краткое описание (50–100 символов; normal/important/critical)
-</horaeevent>
-
-[Условия активации] Выводите поле только при выполнении его условия:
-· Предметы: Только при получении, изменении количества/владельца/местоположения, расходовании/потере. Нет изменений = не записывать. Для единичных предметов не писать (1). Префикс-эмодзи: 🔑🍞
-· NPC: При первом появлении обязательна полная информация (включая ~gender/age/race/class). Далее только изменённые поля.
-  Разделители: | для имени, = для внешности и характера, @ для отношений, ~ для расширенных полей
-· Привязанность: Первый раз по отношениям (незнакомец 0-20 / знакомый 30-50 / друг 50-70). Далее только при изменении.
-· Задачи: Только при появлении новых договорённостей/планов/предзнаменований. Для выполненных/истёкших используйте agenda-:.
-  Добавить: agenda:2026/02/10|Аллен приглашает {{user}} на ужин в День святого Валентина (2026/02/14 18:00)
-  Выполнено: agenda-:Аллен приглашает {{user}} на ужин в День святого Валентина
-· event: Размещать внутри <horaeevent>, НЕ внутри <horae>.`;
-}
-
-let _autoSummaryRanThisTurn = false;
 
 /**
  * 自动摘要生成入口
@@ -12647,56 +14617,734 @@ let _autoSummaryRanThisTurn = false;
  * useProfile=false 时直接调用 generateRaw（并行安全）
  */
 async function generateForSummary(prompt) {
-    // 从 DOM 补读一次副API设置，防止浏览器自动填充未触发 input 事件导致设置为空
+    const context = getContext();
+    const shouldMarkNoRecall = !!(
+        context?.mainApi === 'openai' &&
+        settings.injectContext &&
+        settings.vectorEnabled
+    );
+    const shouldSkipContextInject = !!(
+        context?.mainApi === 'openai' &&
+        settings.injectContext
+    );
+    return await _generateForAuxTask(prompt, {
+        kind: 'summary',
+        noVectorRecallMarker: shouldMarkNoRecall,
+        noContextInjectionMarker: shouldSkipContextInject,
+    });
+}
+
+function _getSummaryEntryRange(entry) {
+    if (!entry) return null;
+    if (Array.isArray(entry.range) && entry.range.length >= 2) {
+        const start = Number(entry.range[0]);
+        const end = Number(entry.range[1]);
+        if (Number.isInteger(start) && Number.isInteger(end)) {
+            return [Math.min(start, end), Math.max(start, end)];
+        }
+    }
+    const indices = getSummaryMsgIndices(entry).filter(Number.isInteger);
+    if (!indices.length) return null;
+    let min = Infinity, max = -Infinity;
+    for (const idx of indices) {
+        if (idx < min) min = idx;
+        if (idx > max) max = idx;
+    }
+    return Number.isFinite(min) && Number.isFinite(max) ? [min, max] : null;
+}
+
+function _buildAutoSummaryPrompt(userName, eventText, sourceText, count) {
+    const autoSumTemplate = settings.customAutoSummaryPrompt || getDefaultAutoSummaryPrompt();
+    return autoSumTemplate
+        .replace(/\{\{events\}\}/gi, eventText || '')
+        .replace(/\{\{fulltext\}\}/gi, sourceText || '')
+        .replace(/\{\{count\}\}/gi, String(count || 0))
+        .replace(/\{\{user\}\}/gi, userName || t('ui.protagonist'));
+}
+
+function _buildAutoResummaryPrompt(userName, eventText, count) {
+    const autoResumTemplate = settings.customAutoResummaryPrompt || getDefaultAutoResummaryPrompt();
+    return autoResumTemplate
+        .replace(/\{\{events\}\}/gi, eventText || '')
+        .replace(/\{\{fulltext\}\}/gi, '')
+        .replace(/\{\{count\}\}/gi, String(count || 0))
+        .replace(/\{\{user\}\}/gi, userName || t('ui.protagonist'));
+}
+
+function _cleanSummaryText(raw) {
+    if (!raw || !String(raw).trim()) return '';
+    return String(raw).trim()
+        .replace(/<think(?:ing)?[\s>][\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/<horae>[\s\S]*?<\/horae>/gi, '')
+        .replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, '')
+        .replace(/<!--horae[\s\S]*?-->/gi, '')
+        .trim();
+}
+
+let _auxApiQueue = Promise.resolve();
+
+function _enqueueAuxApi(fn) {
+    const run = _auxApiQueue.then(fn, fn);
+    _auxApiQueue = run.catch(() => {});
+    return run;
+}
+
+function _shouldUseAuxApi(kind) {
+    if (!settings.auxApiEnabled) return false;
+    if (kind === 'analysis') return settings.auxApiUseForAnalysis !== false;
+    if (kind === 'summary' || kind === 'aiEnrich') return settings.auxApiUseForSummary !== false;
+    if (kind === 'manualCompress') return !!settings.auxApiUseForManualCompress;
+    return false;
+}
+
+function _getAuxApiProfile() {
+    return {
+        apiUrl: String(settings.auxApiUrl || '').trim(),
+        apiKey: String(settings.auxApiKey || '').trim(),
+        model: String(settings.auxApiModel || '').trim(),
+    };
+}
+
+async function _generateForAuxTask(prompt, opts = {}) {
+    const { kind = 'summary', ...rawOpts } = opts;
     _syncSubApiSettingsFromDom();
-    const useCustom = settings.autoSummaryUseCustomApi;
-    const hasUrl = !!(settings.autoSummaryApiUrl && settings.autoSummaryApiUrl.trim());
-    const hasKey = !!(settings.autoSummaryApiKey && settings.autoSummaryApiKey.trim());
-    const hasModel = !!(settings.autoSummaryModel && settings.autoSummaryModel.trim());
-    console.log(`[Horae] generateForSummary: useCustom=${useCustom}, hasUrl=${hasUrl}, hasKey=${hasKey}, hasModel=${hasModel}`);
-    if (useCustom && hasUrl && hasKey && hasModel) {
-        return await generateWithDirectApi(prompt);
+    if (_shouldUseAuxApi(kind)) {
+        const profile = _getAuxApiProfile();
+        const missing = [
+            !profile.apiUrl && t('settings.auxApiUrl'),
+            !profile.apiKey && t('settings.auxApiKey'),
+            !profile.model && t('settings.auxApiModel'),
+        ].filter(Boolean).join('、');
+        if (!missing) {
+            try {
+                return await _enqueueAuxApi(() => generateWithDirectApi(prompt, profile, { kind }));
+            } catch (err) {
+                if (!settings.auxApiFallbackToMain) throw err;
+                console.warn('[Horae] 辅助API失败，回退主API:', err);
+                showToast(t('toast.auxApiFallback', { error: err?.message || err }), 'warning');
+            }
+        } else {
+            console.warn(`[Horae] 辅助API缺少: ${missing}`);
+            if (!settings.auxApiFallbackToMain) {
+                throw new Error(t('toast.auxApiMissing', { missing }));
+            }
+            showToast(t('toast.subApiMissing', { missing }), 'warning');
+        }
     }
-    if (useCustom && (!hasUrl || !hasKey || !hasModel)) {
-        const missing = [!hasUrl && 'API地址', !hasKey && 'API密钥', !hasModel && '模型名称'].filter(Boolean).join('、');
-        console.warn(`[Horae] 副API已勾选但缺少: ${missing}，回退主API`);
-        showToast(t('toast.subApiMissing', {missing}), 'warning');
-    } else if (!useCustom) {
-        console.log('[Horae] 副API未启用，使用主API (generateRaw)');
+    return await _generateForAiTasks(prompt, rawOpts);
+}
+
+function _extractHoraeSummaryText(raw) {
+    const cleaned = _cleanSummaryText(raw);
+    if (!cleaned) return { ok: false, reason: 'empty', text: '' };
+
+    const hasOpenSummaryTag = /<horaesummary>/i.test(cleaned);
+    const hasCloseSummaryTag = /<\/horaesummary>/i.test(cleaned);
+    if (hasOpenSummaryTag && !hasCloseSummaryTag) {
+        return { ok: false, reason: 'truncated', text: '' };
     }
-    return await getContext().generateRaw(prompt, null, false, false);
+    if (!hasOpenSummaryTag && !hasCloseSummaryTag) {
+        return { ok: false, reason: 'format_missing', text: '' };
+    }
+    if (!hasOpenSummaryTag || !hasCloseSummaryTag) {
+        return { ok: false, reason: 'format_unclosed', text: '' };
+    }
+
+    const summaryMatch = cleaned.match(/<horaesummary>([\s\S]*?)<\/horaesummary>/i);
+    const text = (summaryMatch?.[1] || '').trim();
+    if (!text) return { ok: false, reason: 'empty', text: '' };
+    return { ok: true, reason: 'ok', text };
+}
+
+function _showHoraeSummaryFormatWarning(_stageLabel, reason) {
+    if (reason === 'truncated') {
+        showToast('总结失败：AI回复截断', 'warning');
+        return;
+    }
+    showToast('总结失败：AI回复掉格式', 'warning');
+}
+
+function _splitMsgIndicesByLimits(chat, indices, maxMsgs, maxTokens) {
+    const sorted = [...new Set(indices || [])]
+        .filter(i => Number.isInteger(i) && i >= 0 && chat?.[i])
+        .sort((a, b) => a - b);
+    if (!sorted.length) return [];
+    const chunks = [];
+    let current = [];
+    let tokenCount = 0;
+    for (const idx of sorted) {
+        const tok = estimateTokens(chat[idx]?.mes || '');
+        if (current.length > 0 && (current.length >= maxMsgs || tokenCount + tok > maxTokens)) {
+            chunks.push(current);
+            current = [];
+            tokenCount = 0;
+        }
+        current.push(idx);
+        tokenCount += tok;
+    }
+    if (current.length > 0) chunks.push(current);
+    return chunks;
+}
+
+function _splitTextsByLimits(texts, maxMsgs, maxTokens) {
+    const list = (texts || []).filter(text => typeof text === 'string' && text.trim());
+    if (!list.length) return [];
+    const groups = [];
+    let current = [];
+    let tokenCount = 0;
+    for (const text of list) {
+        const tok = estimateTokens(text);
+        if (current.length > 0 && (current.length >= maxMsgs || tokenCount + tok > maxTokens)) {
+            groups.push(current);
+            current = [];
+            tokenCount = 0;
+        }
+        current.push(text);
+        tokenCount += tok;
+    }
+    if (current.length > 0) groups.push(current);
+    return groups;
+}
+
+function _splitResummaryEventsByLimits(eventRecords, maxEvents, maxTokens) {
+    const records = (eventRecords || [])
+        .filter(e => e && typeof e.summary === 'string' && e.summary.trim())
+        .slice()
+        .sort((a, b) => (a.msgIdx ?? 0) - (b.msgIdx ?? 0));
+    if (!records.length) return [];
+
+    const chunks = [];
+    let current = [];
+    let tokenCount = 0;
+    for (const e of records) {
+        const line = `[${e.level || '一般'}] ${e.date || '?'}${e.time ? ' ' + e.time : ''}: ${e.summary}`;
+        const tok = estimateTokens(line);
+        if (current.length > 0 && (current.length >= maxEvents || tokenCount + tok > maxTokens)) {
+            chunks.push(current);
+            current = [];
+            tokenCount = 0;
+        }
+        current.push(e);
+        tokenCount += tok;
+    }
+    if (current.length > 0) chunks.push(current);
+    return chunks;
+}
+
+function _pickAutoResummaryPlan(chat, cutoff, threshold) {
+    const summaries = chat?.[0]?.horae_meta?.autoSummaries;
+    if (!Array.isArray(summaries) || summaries.length === 0) return null;
+
+    const normalized = [];
+    for (const s of summaries) {
+        if (!s?.id || s.active === false) continue;
+        const depth = _normalizeSummaryDepth(s.depth);
+        const range = _getSummaryEntryRange(s);
+        if (!range) continue;
+        const [start, end] = range;
+        if (!Number.isInteger(start) || !Number.isInteger(end)) continue;
+        normalized.push({ id: s.id, depth, start, end, entry: s });
+    }
+
+    const eligible = [];
+    for (const s of normalized) {
+        const { depth, start, end } = s;
+        // 允许 #0 起始的摘要参与二次总结（例如首段自动总结覆盖 #0-#N）
+        if (start < 0 || end >= cutoff) continue;
+        const overlappedByHigher = normalized.some(h =>
+            h.depth > depth && !(h.end < start || h.start > end)
+        );
+        if (overlappedByHigher) continue;
+        eligible.push(s);
+    }
+    if (!eligible.length) return null;
+
+    const byDepth = new Map();
+    for (const item of eligible) {
+        if (!byDepth.has(item.depth)) byDepth.set(item.depth, []);
+        byDepth.get(item.depth).push(item);
+    }
+
+    const depths = [...byDepth.keys()].sort((a, b) => a - b);
+    for (const depth of depths) {
+        const sameDepth = byDepth.get(depth)
+            .slice()
+            .sort((a, b) => a.start - b.start || a.end - b.end);
+        if (sameDepth.length < threshold) continue;
+
+        const anchors = sameDepth.slice(0, threshold);
+        let windowStart = Math.min(...anchors.map(a => a.start));
+        let windowEnd = Math.max(...anchors.map(a => a.end));
+
+        const mergedMap = new Map();
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const s of eligible) {
+                if (s.depth > depth) continue;
+                if (s.end < windowStart || s.start > windowEnd) continue;
+                if (!mergedMap.has(s.id)) {
+                    mergedMap.set(s.id, s);
+                    changed = true;
+                }
+                if (s.start < windowStart) {
+                    windowStart = s.start;
+                    changed = true;
+                }
+                if (s.end > windowEnd) {
+                    windowEnd = s.end;
+                    changed = true;
+                }
+            }
+        }
+
+        const mergedEntries = [...mergedMap.values()]
+            .sort((a, b) => a.start - b.start || a.end - b.end);
+        const sameDepthCount = mergedEntries.filter(s => s.depth === depth).length;
+        if (sameDepthCount < threshold) continue;
+
+        return {
+            depth,
+            nextDepth: depth + 1,
+            windowStart,
+            windowEnd,
+            mergedEntries,
+        };
+    }
+    return null;
+}
+
+function _collectAutoResummaryPayload(chat, plan, cutoff) {
+    if (!plan?.mergedEntries?.length) return null;
+    const allSummaries = chat?.[0]?.horae_meta?.autoSummaries || [];
+    const mergedSummaryIds = new Set(plan.mergedEntries.map(s => s.id));
+
+    const blockedByHigherDepth = new Set();
+    for (const s of allSummaries) {
+        if (!s?.id || s.active === false || mergedSummaryIds.has(s.id)) continue;
+        const depth = _normalizeSummaryDepth(s.depth);
+        if (depth <= plan.depth) continue;
+        const indices = getSummaryMsgIndices(s);
+        for (const idx of indices) {
+            if (Number.isInteger(idx) && idx >= plan.windowStart && idx <= plan.windowEnd && idx < cutoff) {
+                blockedByHigherDepth.add(idx);
+            }
+        }
+    }
+
+    const coveredSet = new Set();
+    for (let i = plan.windowStart; i <= plan.windowEnd; i++) {
+        if (i < 0 || i >= cutoff || !chat?.[i]) continue;
+        if (blockedByHigherDepth.has(i)) continue;
+        if (chat[i]?.horae_meta?._skipHorae) continue;
+        coveredSet.add(i);
+    }
+    for (const s of plan.mergedEntries) {
+        const indices = getSummaryMsgIndices(s.entry);
+        for (const idx of indices) {
+            if (!Number.isInteger(idx) || idx < 0 || idx >= cutoff || !chat?.[idx]) continue;
+            if (blockedByHigherDepth.has(idx)) continue;
+            coveredSet.add(idx);
+        }
+    }
+    const coveredIndices = [...coveredSet].sort((a, b) => a - b);
+    if (!coveredIndices.length) return null;
+
+    const activeSummaryIds = new Set(
+        allSummaries
+            .filter(s => s?.id && s.active !== false)
+            .map(s => s.id)
+    );
+    const summarizedByMergedIndices = new Set();
+    for (const s of plan.mergedEntries) {
+        const indices = getSummaryMsgIndices(s.entry);
+        for (const idx of indices) {
+            if (Number.isInteger(idx)) summarizedByMergedIndices.add(idx);
+        }
+    }
+
+    const eventRecords = [];
+    const eventSeen = new Set();
+    const sortedMergedEntries = [...plan.mergedEntries]
+        .sort((a, b) => a.start - b.start || a.end - b.end);
+    for (const s of sortedMergedEntries) {
+        const cardText = (typeof s.entry?.summaryText === 'string' && s.entry.summaryText.trim())
+            ? s.entry.summaryText.trim()
+            : (s.entry?.summary || s.entry?.title || '');
+        if (!cardText) continue;
+        const anchorIdx = coveredIndices.find(i => i >= s.start && i <= s.end) ?? s.start ?? coveredIndices[0];
+        const date = chat[anchorIdx]?.horae_meta?.timestamp?.story_date || '?';
+        const time = chat[anchorIdx]?.horae_meta?.timestamp?.story_time || '';
+        const key = `summary|${s.id}|${cardText}`;
+        if (eventSeen.has(key)) continue;
+        eventSeen.add(key);
+        eventRecords.push({
+            msgIdx: anchorIdx,
+            date,
+            time,
+            level: `摘要L${s.depth}`,
+            summary: cardText,
+        });
+    }
+
+    // 仅补充窗口内“未被任何活跃摘要覆盖”的原始事件
+    for (const msgIdx of coveredIndices) {
+        if (summarizedByMergedIndices.has(msgIdx)) continue;
+        const meta = chat[msgIdx]?.horae_meta;
+        if (!meta) continue;
+        if (meta.event && !meta.events) {
+            meta.events = [meta.event];
+            delete meta.event;
+        }
+        if (!Array.isArray(meta.events)) continue;
+
+        const date = meta.timestamp?.story_date || '?';
+        const time = meta.timestamp?.story_time || '';
+        for (let evtIdx = 0; evtIdx < meta.events.length; evtIdx++) {
+            const evt = meta.events[evtIdx];
+            if (!evt?.summary || evt._carryoverSeed) continue;
+            if (evt.isSummary || evt._summaryId) continue;
+            if (evt._compressedBy && activeSummaryIds.has(evt._compressedBy)) continue;
+
+            const key = `${msgIdx}|${evtIdx}|${date}|${time}|${evt.level || '一般'}|${evt.summary}`;
+            if (eventSeen.has(key)) continue;
+            eventSeen.add(key);
+            eventRecords.push({
+                msgIdx,
+                date,
+                time,
+                level: evt.level || '一般',
+                summary: evt.summary,
+            });
+        }
+    }
+
+    eventRecords.sort((a, b) => a.msgIdx - b.msgIdx);
+
+    const originalMap = new Map();
+    const pushOriginal = (item) => {
+        if (!item || typeof item !== 'object') return;
+        const msgIdx = Number.isInteger(item.msgIdx) ? item.msgIdx : -1;
+        const evtIdx = Number.isInteger(item.evtIdx) ? item.evtIdx : -1;
+        const sum = item?.event?.summary || '';
+        const key = `${msgIdx}|${evtIdx}|${sum}`;
+        if (originalMap.has(key)) return;
+        originalMap.set(key, {
+            msgIdx,
+            evtIdx,
+            event: item.event ? { ...item.event } : item.event,
+            timestamp: item.timestamp || null,
+        });
+    };
+
+    for (const s of plan.mergedEntries) {
+        const inherited = s.entry?.originalEvents;
+        if (Array.isArray(inherited)) {
+            for (const item of inherited) pushOriginal(item);
+        }
+    }
+    for (const msgIdx of coveredIndices) {
+        const meta = chat[msgIdx]?.horae_meta;
+        if (!meta) continue;
+        if (meta.event && !meta.events) {
+            meta.events = [meta.event];
+            delete meta.event;
+        }
+        if (!Array.isArray(meta.events)) continue;
+        for (let evtIdx = 0; evtIdx < meta.events.length; evtIdx++) {
+            const evt = meta.events[evtIdx];
+            if (!evt || evt.isSummary || evt._summaryId || evt._carryoverSeed) continue;
+            pushOriginal({
+                msgIdx,
+                evtIdx,
+                event: { ...evt },
+                timestamp: meta.timestamp || null,
+            });
+        }
+    }
+    const originalEvents = [...originalMap.values()];
+
+    return {
+        depth: plan.depth,
+        nextDepth: plan.nextDepth,
+        mergedEntries: plan.mergedEntries,
+        mergedSummaryIds,
+        coveredIndices,
+        range: [coveredIndices[0], coveredIndices[coveredIndices.length - 1]],
+        eventRecords,
+        originalEvents,
+    };
+}
+
+async function _generateSummaryFromResummaryPayload(chat, payload, userName) {
+    const maxMsgs = Math.max(5, parseInt(settings.autoSummaryBatchMaxMsgs, 10) || 50);
+    const maxTokens = Math.max(10000, parseInt(settings.autoSummaryBatchMaxTokens, 10) || 80000);
+    const chunks = _splitResummaryEventsByLimits(payload.eventRecords, maxMsgs, maxTokens);
+    if (!chunks.length) return '';
+
+    const chunkSummaries = [];
+    for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
+        const chunk = chunks[chunkIdx];
+        const remainChunks = chunks.length - chunkIdx - 1;
+        const remainHint = ` (L${payload.depth}->L${payload.nextDepth}${remainChunks > 0 ? `, ${remainChunks} remaining` : ''})`;
+        showToast(t('toast.autoSummaryProgress', {
+            batch: chunkIdx + 1,
+            total: chunks.length,
+            remaining: remainHint
+        }), 'info');
+
+        const eventText = chunk.map(e => `[${e.level}] ${e.date}${e.time ? ' ' + e.time : ''}: ${e.summary}`).join('\n');
+
+        const prompt = _buildAutoResummaryPrompt(userName, eventText, chunk.length);
+        const response = await generateForSummary(prompt);
+        const extracted = _extractHoraeSummaryText(response);
+        if (!extracted.ok) {
+            _showHoraeSummaryFormatWarning('二次总结', extracted.reason);
+            return '';
+        }
+        chunkSummaries.push(extracted.text);
+    }
+    if (chunkSummaries.length === 1) return chunkSummaries[0];
+
+    let current = chunkSummaries.slice();
+    let guard = 0;
+    while (current.length > 1 && guard < 8) {
+        guard++;
+        let groups = _splitTextsByLimits(current, maxMsgs, maxTokens);
+        if (groups.length === current.length && current.length > 1) {
+            groups = [];
+            for (let i = 0; i < current.length; i += 2) {
+                groups.push(current.slice(i, i + 2));
+            }
+        }
+
+        const next = [];
+        for (const group of groups) {
+            const eventText = group.map((text, i) => `[段${i + 1}] ${text}`).join('\n');
+            const prompt = _buildAutoResummaryPrompt(userName, eventText, group.length);
+            const response = await generateForSummary(prompt);
+            const extracted = _extractHoraeSummaryText(response);
+            if (!extracted.ok) {
+                _showHoraeSummaryFormatWarning('二次总结', extracted.reason);
+                return '';
+            }
+            next.push(extracted.text);
+        }
+        current = next;
+    }
+    return current[0] || '';
+}
+
+async function _applyAutoResummary(chat, payload, summaryText) {
+    if (!payload?.coveredIndices?.length || !summaryText) return null;
+    const firstMsg = chat?.[0];
+    if (!firstMsg) return null;
+    if (!firstMsg.horae_meta) firstMsg.horae_meta = createEmptyMeta();
+    if (!Array.isArray(firstMsg.horae_meta.autoSummaries)) firstMsg.horae_meta.autoSummaries = [];
+
+    const summaryId = `as_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const mergedSummaryIds = payload.mergedSummaryIds;
+    const mergedSummaries = [];
+    const retainedSummaries = [];
+    for (const s of firstMsg.horae_meta.autoSummaries) {
+        if (s?.id && mergedSummaryIds.has(s.id)) mergedSummaries.push(s);
+        else retainedSummaries.push(s);
+    }
+    firstMsg.horae_meta.autoSummaries = retainedSummaries;
+
+    const summaryEntry = {
+        id: summaryId,
+        range: [...payload.range],
+        coveredIndices: [...payload.coveredIndices],
+        summaryText,
+        originalEvents: payload.originalEvents || [],
+        depth: payload.nextDepth,
+        active: true,
+        createdAt: new Date().toISOString(),
+        auto: true
+    };
+    if (mergedSummaries.length > 0) summaryEntry.mergedSummaries = mergedSummaries;
+    firstMsg.horae_meta.autoSummaries.push(summaryEntry);
+
+    for (const msgIdx of payload.coveredIndices) {
+        const meta = chat[msgIdx]?.horae_meta;
+        if (!meta) continue;
+        if (meta.event && !meta.events) {
+            meta.events = [meta.event];
+            delete meta.event;
+        }
+        if (!Array.isArray(meta.events)) continue;
+
+        meta.events = meta.events.filter(evt => !(evt?._summaryId && mergedSummaryIds.has(evt._summaryId)));
+        for (const evt of meta.events) {
+            if (!evt || evt.isSummary || evt._summaryId || evt._carryoverSeed) continue;
+            if (!evt._compressedBy || mergedSummaryIds.has(evt._compressedBy)) {
+                evt._compressedBy = summaryId;
+            }
+        }
+    }
+
+    const targetIdx = payload.range[0];
+    if (Number.isInteger(targetIdx) && chat[targetIdx]) {
+        if (!chat[targetIdx].horae_meta) chat[targetIdx].horae_meta = createEmptyMeta();
+        if (!Array.isArray(chat[targetIdx].horae_meta.events)) chat[targetIdx].horae_meta.events = [];
+        chat[targetIdx].horae_meta.events.push({
+            is_important: true,
+            level: '摘要',
+            summary: summaryText,
+            isSummary: true,
+            _summaryId: summaryId
+        });
+    }
+
+    await setMessagesHidden(chat, [...payload.coveredIndices], true);
+    return summaryId;
+}
+
+async function _runAutoResummaryIfNeeded(chat, cutoff) {
+    const rawThreshold = parseInt(settings.autoSummaryResummaryThreshold, 10);
+    const threshold = Number.isFinite(rawThreshold) ? rawThreshold : 10;
+    if (threshold <= 0) return 0;
+    const effectiveThreshold = Math.max(2, threshold);
+
+    const maxRounds = 4;
+    let rounds = 0;
+    while (rounds < maxRounds) {
+        const plan = _pickAutoResummaryPlan(chat, cutoff, effectiveThreshold);
+        if (!plan) break;
+
+        const payload = _collectAutoResummaryPayload(chat, plan, cutoff);
+        if (!payload?.coveredIndices?.length) break;
+
+        showToast(t('toast.autoSummaryProgress', {
+            batch: payload.coveredIndices.length,
+            total: payload.coveredIndices.length,
+            remaining: ` (L${payload.depth}->L${payload.nextDepth})`
+        }), 'info');
+
+        const context = getContext();
+        const userName = context?.name1 || t('ui.protagonist');
+        const summaryText = await _generateSummaryFromResummaryPayload(chat, payload, userName);
+        if (!summaryText) break;
+
+        const summaryId = await _applyAutoResummary(chat, payload, summaryText);
+        if (!summaryId) break;
+
+        rounds++;
+        await context.saveChat();
+        updateTimelineDisplay();
+        showToast(t('toast.autoSummaryDone', { from: payload.range[0], to: payload.range[1] }), 'success');
+    }
+    return rounds;
 }
 
 function _syncSubApiSettingsFromDom() {
     try {
-        const urlEl = document.getElementById('horae-setting-auto-summary-api-url');
-        const keyEl = document.getElementById('horae-setting-auto-summary-api-key');
-        const modelEl = document.getElementById('horae-setting-auto-summary-model');
-        const checkEl = document.getElementById('horae-setting-auto-summary-custom-api');
+        const urlEl = document.getElementById('horae-setting-aux-api-url');
+        const keyEl = document.getElementById('horae-setting-aux-api-key');
+        const modelEl = document.getElementById('horae-setting-aux-api-model');
+        const checkEl = document.getElementById('horae-setting-aux-api-enabled');
         let changed = false;
-        if (checkEl && checkEl.checked !== settings.autoSummaryUseCustomApi) {
-            settings.autoSummaryUseCustomApi = checkEl.checked;
+        if (checkEl && checkEl.checked !== settings.auxApiEnabled) {
+            settings.auxApiEnabled = checkEl.checked;
             changed = true;
         }
-        if (urlEl && urlEl.value && urlEl.value !== settings.autoSummaryApiUrl) {
-            settings.autoSummaryApiUrl = urlEl.value;
+        if (urlEl && urlEl.value !== settings.auxApiUrl) {
+            settings.auxApiUrl = urlEl.value;
             changed = true;
         }
-        if (keyEl && keyEl.value && keyEl.value !== settings.autoSummaryApiKey) {
-            settings.autoSummaryApiKey = keyEl.value;
+        if (keyEl && keyEl.value !== settings.auxApiKey) {
+            settings.auxApiKey = keyEl.value;
             changed = true;
         }
-        if (modelEl && modelEl.value && modelEl.value !== settings.autoSummaryModel) {
-            settings.autoSummaryModel = modelEl.value;
+        if (modelEl && modelEl.value !== settings.auxApiModel) {
+            settings.auxApiModel = modelEl.value;
             changed = true;
         }
         if (changed) saveSettings();
-    } catch (_) {}
+    } catch (_) { }
 }
 
-/** 通用：从 OpenAI 兼容端点拉取模型列表 */
+function _isGeminiEmbeddingEndpoint(rawUrl, model = '') {
+    return /gemini|googleapis|generativelanguage|v1beta/i.test(`${rawUrl || ''} ${model || ''}`);
+}
+
+function _isGoogleGenerativeLanguageUrl(rawUrl) {
+    return /googleapis\.com|generativelanguage/i.test(rawUrl || '');
+}
+
+function _geminiEmbeddingBase(rawUrl) {
+    return String(rawUrl || '')
+        .trim()
+        .replace(/\/+$/, '')
+        .replace(/\/chat\/completions$/i, '')
+        .replace(/\/embeddings$/i, '')
+        .replace(/\/v\d+(beta\d*|alpha\d*)?(?:\/.*)?$/i, '');
+}
+
+function _buildEmbeddingRequest(rawUrl, apiKey, model, texts) {
+    const isGemini = _isGeminiEmbeddingEndpoint(rawUrl, model);
+    if (!isGemini) {
+        const base = String(rawUrl || '').trim().replace(/\/+$/, '').replace(/\/embeddings$/i, '');
+        return {
+            endpoint: `${base}/embeddings`,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({ model, input: texts }),
+            parseVector: json => json?.data?.[0]?.embedding,
+        };
+    }
+
+    const base = _geminiEmbeddingBase(rawUrl);
+    const modelName = String(model || '').startsWith('models/') ? String(model) : `models/${model}`;
+    const isGoogle = _isGoogleGenerativeLanguageUrl(base);
+    const endpoint = `${base}/v1beta/${modelName}:batchEmbedContents${isGoogle ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (!isGoogle) headers.Authorization = `Bearer ${apiKey}`;
+    return {
+        endpoint,
+        headers,
+        body: JSON.stringify({
+            requests: texts.map(text => ({
+                model: modelName,
+                content: { parts: [{ text }] },
+            })),
+        }),
+        parseVector: json => json?.embeddings?.[0]?.values,
+    };
+}
+
+/** 通用：从端点拉取模型列表 */
 async function _fetchModelList(rawUrl, apiKey) {
     if (!rawUrl || !apiKey) throw new Error('请先填写 API 地址和密钥');
+    const isGemini = _isGeminiEmbeddingEndpoint(rawUrl);
+    if (isGemini) {
+        const base = _geminiEmbeddingBase(rawUrl);
+        const isGoogle = _isGoogleGenerativeLanguageUrl(base);
+        const testUrl = `${base}/v1beta/models${isGoogle ? `?key=${encodeURIComponent(apiKey.trim())}` : ''}`;
+        const headers = { 'Content-Type': 'application/json' };
+        if (!isGoogle) headers.Authorization = `Bearer ${apiKey.trim()}`;
+        const resp = await fetch(testUrl, {
+            method: 'GET',
+            headers,
+            signal: AbortSignal.timeout(15000)
+        });
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            throw new Error(`${resp.status}: ${errText.slice(0, 150)}`);
+        }
+        const data = await resp.json();
+        return (data.models || [])
+            .filter(m => {
+                const methods = m.supportedGenerationMethods || [];
+                return methods.length === 0 || methods.some(x => /embedContent|batchEmbedContents/i.test(x));
+            })
+            .map(m => (m.name || '').replace(/^models\//, '') || m.displayName)
+            .filter(Boolean);
+    }
+
     let base = rawUrl.trim().replace(/\/+$/, '').replace(/\/chat\/completions$/i, '').replace(/\/embeddings$/i, '');
     if (!base.endsWith('/v1')) base = base.replace(/\/+$/, '') + '/v1';
     const testUrl = `${base}/models`;
@@ -12733,14 +15381,74 @@ async function fetchEmbeddingModels() {
         }
         if (prev && !models.includes(prev)) {
             const opt = document.createElement('option');
-            opt.value = prev; opt.textContent = t('toast.modelManual', {name: prev});
+            opt.value = prev; opt.textContent = t('toast.modelManual', { name: prev });
             opt.selected = true; sel.prepend(opt);
         }
-        showToast(t('toast.fetchedModels', {n: models.length}), 'success');
+        showToast(t('toast.fetchedModels', { n: models.length }), 'success');
     } catch (err) {
-        showToast(t('toast.fetchModelsFailed', {error: err.message || err}), 'error');
+        showToast(t('toast.fetchModelsFailed', { error: err.message || err }), 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i>'; }
+    }
+}
+
+/** 测试向量 API 连线：发一条 embed 'ping' 验证 URL/Key/Model 三件套并报告维度 */
+async function testVectorApiConnection() {
+    const btn = document.getElementById('horae-btn-test-vector-api');
+    const origHtml = btn?.innerHTML;
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ...'; }
+    try {
+        const url = ($('#horae-setting-vector-api-url').val() || settings.vectorApiUrl || '').trim();
+        const key = ($('#horae-setting-vector-api-key').val() || settings.vectorApiKey || '').trim();
+        const model = ($('#horae-setting-vector-api-model').val() || settings.vectorApiModel || '').trim();
+        if (!url || !key || !model) {
+            showToast(t('toast.vectorApiRequired'), 'warning');
+            return;
+        }
+        const req = _buildEmbeddingRequest(url, key, model, ['ping']);
+        let resp;
+        try {
+            resp = await fetch(req.endpoint, {
+                method: 'POST',
+                headers: req.headers,
+                body: req.body,
+            });
+        } catch (err) {
+            const wrapped = new Error(err?.message || 'Network error');
+            wrapped.code = (err instanceof TypeError) ? 'NETWORK'
+                : /timeout|timed out/i.test(err?.message || '') ? 'TIMEOUT'
+                    : /socket hang up|ECONNRESET|ECONNREFUSED/i.test(err?.message || '') ? 'NETWORK'
+                        : 'UNKNOWN';
+            throw wrapped;
+        }
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            const wrapped = new Error(`HTTP ${resp.status}`);
+            wrapped.status = resp.status;
+            wrapped.body = errText.slice(0, 500);
+            throw wrapped;
+        }
+        let json;
+        try {
+            json = await resp.json();
+        } catch (_) {
+            const wrapped = new Error('Invalid JSON');
+            wrapped.code = 'FORMAT';
+            throw wrapped;
+        }
+        const vec = req.parseVector(json);
+        if (!Array.isArray(vec) || vec.length === 0) {
+            const wrapped = new Error('Missing embedding data');
+            wrapped.code = 'FORMAT';
+            throw wrapped;
+        }
+        showToast(t('toast.vectorTestSuccess', { dim: vec.length }), 'success');
+    } catch (err) {
+        const friendly = _vectorErrorHint(err);
+        showToast(t('toast.vectorTestFailed', { error: friendly }), 'error');
+        console.error('[Horae] vector API test failed:', err);
+    } finally {
+        if (btn) { btn.disabled = false; btn.innerHTML = origHtml || '<i class="fa-solid fa-plug-circle-check"></i>'; }
     }
 }
 
@@ -12768,12 +15476,12 @@ async function fetchRerankModels() {
         }
         if (prev && !models.includes(prev)) {
             const opt = document.createElement('option');
-            opt.value = prev; opt.textContent = t('toast.modelManual', {name: prev});
+            opt.value = prev; opt.textContent = t('toast.modelManual', { name: prev });
             opt.selected = true; sel.prepend(opt);
         }
-        showToast(t('toast.fetchedModels', {n: models.length}), 'success');
+        showToast(t('toast.fetchedModels', { n: models.length }), 'success');
     } catch (err) {
-        showToast(t('toast.fetchModelsFailed', {error: err.message || err}), 'error');
+        showToast(t('toast.fetchModelsFailed', { error: err.message || err }), 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i>'; }
     }
@@ -12782,8 +15490,8 @@ async function fetchRerankModels() {
 /** 从副API拉取模型列表并填充下拉选单 */
 async function _fetchSubApiModels() {
     _syncSubApiSettingsFromDom();
-    const rawUrl = (settings.autoSummaryApiUrl || '').trim();
-    const apiKey = (settings.autoSummaryApiKey || '').trim();
+    const rawUrl = (settings.auxApiUrl || '').trim();
+    const apiKey = (settings.auxApiKey || '').trim();
     if (!rawUrl || !apiKey) {
         showToast(t('toast.vectorApiRequired'), 'warning');
         return [];
@@ -12816,12 +15524,12 @@ async function _fetchSubApiModels() {
 /** 拉取模型列表并填充 <select> */
 async function fetchAndPopulateModels() {
     const btn = document.getElementById('horae-btn-fetch-models');
-    const sel = document.getElementById('horae-setting-auto-summary-model');
+    const sel = document.getElementById('horae-setting-aux-api-model');
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>'; }
     try {
         const models = await _fetchSubApiModels();
         if (!models.length) { showToast(t('toast.noModelsFetchedCheck'), 'warning'); return; }
-        const prev = settings.autoSummaryModel || '';
+        const prev = settings.auxApiModel || '';
         sel.innerHTML = '';
         for (const m of models.sort()) {
             const opt = document.createElement('option');
@@ -12833,18 +15541,18 @@ async function fetchAndPopulateModels() {
         if (prev && !models.includes(prev)) {
             const opt = document.createElement('option');
             opt.value = prev;
-            opt.textContent = t('toast.modelManual', {name: prev});
+            opt.textContent = t('toast.modelManual', { name: prev });
             opt.selected = true;
             sel.prepend(opt);
         }
         if (!prev && models.length) {
             sel.value = models[0];
-            settings.autoSummaryModel = models[0];
+            settings.auxApiModel = models[0];
             saveSettings();
         }
-        showToast(t('toast.fetchedModels', {n: models.length}), 'success');
+        showToast(t('toast.fetchedModels', { n: models.length }), 'success');
     } catch (err) {
-        showToast(t('toast.fetchModelsFailed', {error: err.message || err}), 'error');
+        showToast(t('toast.fetchModelsFailed', { error: err.message || err }), 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i>'; }
     }
@@ -12856,25 +15564,48 @@ async function testSubApiConnection() {
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ...'; }
     try {
         const models = await _fetchSubApiModels();
-        const model = (settings.autoSummaryModel || '').trim();
+        const model = (settings.auxApiModel || '').trim();
         const matchStr = model && models.some(m => m && m.toLowerCase().includes(model.toLowerCase()))
-            ? t('toast.subApiMatchFound', {model}) : (model ? t('toast.subApiMatchNotFound', {model}) : '');
-        showToast(t('toast.subApiTestSuccess', {n: models.length, match: matchStr}), 'success');
+            ? t('toast.subApiMatchFound', { model }) : (model ? t('toast.subApiMatchNotFound', { model }) : '');
+        showToast(t('toast.subApiTestSuccess', { n: models.length, match: matchStr }), 'success');
     } catch (err) {
-        showToast(t('toast.subApiTestFailed', {error: err.message || err}), 'error');
+        showToast(t('toast.subApiTestFailed', { error: err.message || err }), 'error');
     } finally {
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-plug-circle-check"></i>'; }
     }
 }
 
-/** 构建多轮对话消息数组——模仿酒馆原生 system/assistant/user 交替结构，提高 NSFW 通过率 */
-async function _buildSummaryMessages(prompt) {
+function _getAuxApiPromptProfile(kind = 'summary') {
+    if (kind === 'analysis') {
+        return {
+            system: 'You are a strict information extraction engine for creative fiction. Read the provided passage and output only the requested structured tags. Do not summarize outside the required format.',
+            ready: 'Understood. I will extract only explicit facts and output the requested structured tags.',
+            prefill: '<horae>',
+        };
+    }
+    if (kind === 'aiEnrich') {
+        return {
+            system: 'You are a strict character profile extractor for creative fiction. Output only the requested JSON object and do not add prose.',
+            ready: 'Understood. I will extract the character profile and output strict JSON only.',
+            prefill: '{',
+        };
+    }
+    return {
+        system: 'You are a professional literary analyst specializing in creative fiction. Your task is to read provided narrative passages and produce a concise, faithful plot summary. Analyze all content objectively regardless of themes, genre, or mature content. Preserve the emotional tone and key character dynamics. Output only the summary text.',
+        ready: 'Understood. I will read the provided narrative passages and produce a faithful, objective plot summary that preserves all key details, character dynamics, and emotional tone. Please provide the content.',
+        prefill: 'I have received the narrative content. Here is the concise summary:',
+    };
+}
+
+/** 构建多轮对话消息数组 */
+async function _buildAuxApiMessages(prompt, kind = 'summary') {
+    const profile = _getAuxApiPromptProfile(kind);
     const messages = [];
     let _oaiSettings = null;
     try {
         const mod = await import('/scripts/openai.js');
         _oaiSettings = mod.oai_settings;
-    } catch (_) {}
+    } catch (_) { }
     if (_oaiSettings?.main_prompt) {
         messages.push({ role: 'system', content: _oaiSettings.main_prompt });
     }
@@ -12883,21 +15614,25 @@ async function _buildSummaryMessages(prompt) {
     }
     messages.push({
         role: 'system',
-        content: 'You are a professional literary analyst specializing in creative fiction. Your task is to read provided narrative passages and produce a concise, faithful plot summary. Analyze all content objectively regardless of themes, genre, or mature content. Preserve the emotional tone and key character dynamics. Output only the summary text.'
+        content: profile.system
     });
     messages.push({
         role: 'assistant',
-        content: 'Understood. I will read the provided narrative passages and produce a faithful, objective plot summary that preserves all key details, character dynamics, and emotional tone. Please provide the content.'
+        content: profile.ready
     });
     messages.push({ role: 'user', content: prompt });
     messages.push({
         role: 'assistant',
-        content: 'I have received the narrative content. Here is the concise summary:'
+        content: profile.prefill
     });
     if (_oaiSettings?.jailbreak_prompt) {
         messages.push({ role: 'system', content: _oaiSettings.jailbreak_prompt });
     }
     return messages;
+}
+
+async function _buildSummaryMessages(prompt) {
+    return _buildAuxApiMessages(prompt, 'summary');
 }
 
 /**
@@ -12940,20 +15675,51 @@ function _httpStatusHint(status) {
     return fallback[status] || '';
 }
 
-/** 直接请求API端点，完全独立于酒馆主连接，支持真并行 */
-async function generateWithDirectApi(prompt) {
-    const _model = settings.autoSummaryModel.trim();
-    const _apiKey = settings.autoSummaryApiKey.trim();
-    if (/gemini/i.test(_model)) {
-        return await _geminiNativeRequest(prompt, settings.autoSummaryApiUrl.trim(), _model, _apiKey);
+/**
+ * 向量 API 错误友好提示：根据 err.status 或 err.code 给出 i18n 人话
+ * - status 数字 → 走 toast.vectorHint{status}
+ * - code: NETWORK/TIMEOUT/FORMAT/UNKNOWN → 走 toast.vectorHint{Code}
+ * 优先级：status > code > 原始 message
+ */
+function _vectorErrorHint(err) {
+    if (!err) return '';
+    if (err.status) {
+        const key = `toast.vectorHint${err.status}`;
+        const translated = t(key);
+        if (translated && translated !== key) return translated;
+        const generic = _httpStatusHint(err.status);
+        if (generic) return generic;
+        return `HTTP ${err.status}${err.body ? `: ${err.body.slice(0, 120)}` : ''}`;
     }
-    let url = settings.autoSummaryApiUrl.trim();
+    if (err.code) {
+        const codeKey = `toast.vectorHint${err.code.charAt(0).toUpperCase()}${err.code.slice(1).toLowerCase()}`;
+        const translated = t(codeKey);
+        if (translated && translated !== codeKey) return translated;
+    }
+    return err.message || String(err);
+}
+
+/** 直接请求API端点，完全独立于酒馆主连接 */
+async function generateWithDirectApi(prompt, profile = null, opts = {}) {
+    const kind = opts.kind || 'summary';
+    const cfg = profile || {
+        apiUrl: settings.auxApiUrl,
+        apiKey: settings.auxApiKey,
+        model: settings.auxApiModel,
+    };
+    const _model = String(cfg.model || '').trim();
+    const _apiKey = String(cfg.apiKey || '').trim();
+    const _apiUrl = String(cfg.apiUrl || '').trim();
+    if (/gemini/i.test(_model)) {
+        return await _geminiNativeRequest(prompt, _apiUrl, _model, _apiKey, { kind });
+    }
+    let url = _apiUrl;
     if (!url.endsWith('/chat/completions')) {
         url = url.replace(/\/+$/, '') + '/chat/completions';
     }
-    const messages = await _buildSummaryMessages(prompt);
+    const messages = await _buildAuxApiMessages(prompt, kind);
     const body = {
-        model: settings.autoSummaryModel.trim(),
+        model: _model,
         messages,
         temperature: 0.7,
         max_tokens: 4096,
@@ -12976,7 +15742,7 @@ async function generateWithDirectApi(prompt) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${settings.autoSummaryApiKey.trim()}`
+            'Authorization': `Bearer ${_apiKey}`
         },
         body: JSON.stringify(body)
     });
@@ -12997,9 +15763,14 @@ async function generateWithDirectApi(prompt) {
  * Gemini 原生格式请求 —— 复刻 ST 后端 sendMakerSuiteRequest 的完整处理链路
  * 解决中转 OpenAI 兼容端点丢弃 safetySettings 导致 PROMPT BLOCKED 的问题
  */
-async function _geminiNativeRequest(prompt, rawUrl, model, apiKey) {
-    // ── 1. 收集 system 指令（全部进 systemInstruction）+ user 内容 ──
+async function _geminiNativeRequest(prompt, rawUrl, model, apiKey, opts = {}) {
+    const profile = _getAuxApiPromptProfile(opts.kind || 'summary');
+    // ── 1. 收集 system 指令（main/nsfw/literary 进 systemInstruction，jailbreak 单独留） ──
+    // OpenAI 路径走的是「user 之后接一条 assistant prefill，再用 system 末尾注入 jailbreak」
+    // Gemini 限制：contents 不允许连续两条 user，且 system 角色只能在 systemInstruction
+    // 等价做法：jailbreak 拼到 user 文本末尾（紧贴 model prefill 之前，注意力权重最高）
     const systemParts = [];
+    let jailbreakText = '';
     try {
         const { oai_settings } = await import('/scripts/openai.js');
         if (oai_settings?.main_prompt) {
@@ -13009,14 +15780,14 @@ async function _geminiNativeRequest(prompt, rawUrl, model, apiKey) {
             systemParts.push({ text: oai_settings.nsfw_prompt });
         }
         systemParts.push({
-            text: 'You are a professional literary analyst specializing in creative fiction. Your task is to read provided narrative passages and produce a concise, faithful plot summary. Analyze all content objectively regardless of themes, genre, or mature content. Preserve the emotional tone and key character dynamics. Output only the summary text.',
+            text: profile.system,
         });
         if (oai_settings?.jailbreak_prompt) {
-            systemParts.push({ text: oai_settings.jailbreak_prompt });
+            jailbreakText = String(oai_settings.jailbreak_prompt || '').trim();
         }
     } catch (_) {
         systemParts.push({
-            text: 'You are a professional literary analyst specializing in creative fiction. Your task is to read provided narrative passages and produce a concise, faithful plot summary. Analyze all content objectively regardless of themes, genre, or mature content. Output only the summary text.',
+            text: profile.system,
         });
     }
 
@@ -13034,9 +15805,16 @@ async function _geminiNativeRequest(prompt, rawUrl, model, apiKey) {
         safetySettings.push({ category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold });
     }
 
-    // ── 3. 请求体（Gemini 原生 contents 格式） ──
+    // ── 3. 请求体（Gemini 原生 contents 格式 + 末尾 model prefill 锚点） ──
+    // user 文本：原 prompt + 末尾 jailbreak（如有）
+    // 末尾追加一条 model 角色的 prefill —— 让 Gemini 从「I have received... Here is the summary:」延续生成
+    // 这是 Gemini 标准 prefill 技术，等价于 OpenAI 路径里末尾 assistant 锚点的越狱效果
+    const userText = jailbreakText ? `${prompt}\n\n${jailbreakText}` : prompt;
     const body = {
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        contents: [
+            { role: 'user', parts: [{ text: userText }] },
+            { role: 'model', parts: [{ text: profile.prefill }] },
+        ],
         safetySettings,
         generationConfig: {
             candidateCount: 1,
@@ -13105,102 +15883,341 @@ async function _geminiNativeRequest(prompt, rawUrl, model, apiKey) {
     return text;
 }
 
+function _collectTailContinuousAutoSummaryEvents(chat, cutoff, summarizedIndices, manualSummaryMsgIndices) {
+    if (!Array.isArray(chat) || cutoff <= 0) return [];
+
+    const stream = [];
+    for (let i = 0; i < cutoff; i++) {
+        const msg = chat[i];
+        if (!msg) continue;
+        const meta = msg.horae_meta;
+        if (!meta || meta._skipHorae) continue;
+        if (meta.event && !meta.events) {
+            meta.events = [meta.event];
+            delete meta.event;
+        }
+        if (!Array.isArray(meta.events)) continue;
+        for (let evtIdx = 0; evtIdx < meta.events.length; evtIdx++) {
+            const evt = meta.events[evtIdx];
+            if (!evt?.summary) continue;
+            stream.push({ msgIdx: i, evtIdx, event: evt, meta, msg });
+        }
+    }
+    if (!stream.length) return [];
+
+    const pickedReverse = [];
+    let started = false;
+    for (let p = stream.length - 1; p >= 0; p--) {
+        const item = stream[p];
+        const evt = item.event;
+        const msgIdx = item.msgIdx;
+
+        const msgBlocked = summarizedIndices.has(msgIdx)
+            || manualSummaryMsgIndices.has(msgIdx)
+            || !!item.meta?._skipHorae;
+        const evtBlocked = !!evt?._carryoverSeed
+            || !!evt?.isSummary
+            || !!evt?._summaryId
+            || !!evt?._compressedBy;
+        const isUncompressedTimeline = !!evt?.summary && !msgBlocked && !evtBlocked;
+
+        if (!started) {
+            if (!isUncompressedTimeline) break;
+            started = true;
+            pickedReverse.push(item);
+            continue;
+        }
+
+        if (!isUncompressedTimeline) break;
+        pickedReverse.push(item);
+    }
+
+    if (!pickedReverse.length) return [];
+    return pickedReverse.reverse().map(item => ({
+        msgIdx: item.msgIdx,
+        evtIdx: item.evtIdx,
+        date: item.meta?.timestamp?.story_date || '?',
+        time: item.meta?.timestamp?.story_time || '',
+        level: item.event?.level || '一般',
+        summary: item.event?.summary || ''
+    }));
+}
+
+function _isTrackableAiMessage(msg) {
+    if (!msg || msg.is_user) return false;
+    if (msg.horae_meta?._skipHorae) return false;
+    return true;
+}
+
+function _resolveAutoSummaryKeepWindow(chat, keepRecent) {
+    if (!Array.isArray(chat) || chat.length <= 1) {
+        return { keepStart: 0, totalAi: 0, keepAiIndices: [], allAiIndices: [] };
+    }
+
+    const allAiIndices = [];
+    for (let i = 0; i < chat.length; i++) {
+        if (_isTrackableAiMessage(chat[i])) allAiIndices.push(i);
+    }
+
+    const keepCount = Math.max(0, parseInt(keepRecent, 10) || 0);
+    if (allAiIndices.length === 0) {
+        return { keepStart: 0, totalAi: 0, keepAiIndices: [], allAiIndices: [] };
+    }
+    if (keepCount <= 0) {
+        return {
+            keepStart: chat.length,
+            totalAi: allAiIndices.length,
+            keepAiIndices: [],
+            allAiIndices
+        };
+    }
+    if (allAiIndices.length <= keepCount) {
+        return {
+            keepStart: 0,
+            totalAi: allAiIndices.length,
+            keepAiIndices: [...allAiIndices],
+            allAiIndices
+        };
+    }
+
+    const keepAiIndices = allAiIndices.slice(-keepCount);
+    return {
+        keepStart: keepAiIndices[0],
+        totalAi: allAiIndices.length,
+        keepAiIndices,
+        allAiIndices
+    };
+}
+
+function _collectActiveSummaryCoveredIndices(chat) {
+    const covered = new Set();
+    const sums = chat?.[0]?.horae_meta?.autoSummaries || [];
+    for (const s of sums) {
+        if (!s?.id || s.active === false) continue;
+        for (const idx of getSummaryMsgIndices(s)) {
+            if (Number.isInteger(idx) && idx >= 0) covered.add(idx);
+        }
+    }
+    return covered;
+}
+
+function _buildAutoSummaryBufferHideIndices(chat, keepStart, tailAiIndices, activeSummaryCoveredIndices) {
+    if (!Array.isArray(chat) || chat.length <= 1) return [];
+    if (!Array.isArray(tailAiIndices) || tailAiIndices.length === 0) return [];
+
+    const start = Math.max(0, Math.min(...tailAiIndices));
+    const end = Math.min(Math.max(0, keepStart) - 1, chat.length - 1);
+    if (end < start) return [];
+
+    const result = [];
+    for (let i = start; i <= end; i++) {
+        const msg = chat[i];
+        if (!msg) continue;
+        if (msg.horae_meta?._skipHorae) continue;
+        if (activeSummaryCoveredIndices?.has(i)) continue;
+        result.push(i);
+    }
+    return result;
+}
+
+async function _syncAutoSummaryBufferHidden(chat, targetHideIndices, activeSummaryCoveredIndices) {
+    if (!Array.isArray(chat) || chat.length <= 1) return;
+
+    const targetSet = new Set(
+        (targetHideIndices || []).filter(i => Number.isInteger(i) && i >= 0 && i < chat.length && !!chat[i])
+    );
+
+    const markedSet = new Set();
+    for (let i = 0; i < chat.length; i++) {
+        if (chat[i]?.horae_meta?._autoBufferHidden) markedSet.add(i);
+    }
+
+    const toHide = [];
+    for (const idx of targetSet) {
+        if (!chat[idx].horae_meta) chat[idx].horae_meta = createEmptyMeta();
+        chat[idx].horae_meta._autoBufferHidden = true;
+        if (!chat[idx].is_hidden && !activeSummaryCoveredIndices?.has(idx)) {
+            toHide.push(idx);
+        }
+    }
+
+    const toUnhide = [];
+    for (const idx of markedSet) {
+        if (targetSet.has(idx)) continue;
+        const msg = chat[idx];
+        if (!msg?.horae_meta) continue;
+        delete msg.horae_meta._autoBufferHidden;
+        if (!activeSummaryCoveredIndices?.has(idx)) {
+            toUnhide.push(idx);
+        }
+    }
+
+    if (toUnhide.length > 0) await setMessagesHidden(chat, toUnhide, false);
+    if (toHide.length > 0) await setMessagesHidden(chat, toHide, true);
+}
+
+async function _reconcileAutoBufferVisibilityByKeepRecent(chat = horaeManager.getChat()) {
+    if (!Array.isArray(chat) || chat.length <= 1) return;
+    const keepRecent = Math.max(0, parseInt(settings.autoSummaryKeepRecent, 10) || 10);
+    const keepWindow = _resolveAutoSummaryKeepWindow(chat, keepRecent);
+    const summarizedIndices = _collectActiveSummaryCoveredIndices(chat);
+    const tailAiIndices = [];
+
+    for (let i = 0; i < keepWindow.keepStart; i++) {
+        if (_isTrackableAiMessage(chat[i]) && !summarizedIndices.has(i)) {
+            tailAiIndices.push(i);
+        }
+    }
+
+    const targetHideIndices = _buildAutoSummaryBufferHideIndices(
+        chat,
+        keepWindow.keepStart,
+        tailAiIndices,
+        summarizedIndices
+    );
+    await _syncAutoSummaryBufferHidden(chat, targetHideIndices, summarizedIndices);
+}
+
+function _pickAutoSummaryBatchEvents(chat, eventCandidates, maxEvents, maxTokens) {
+    const selected = [];
+    const msgSet = new Set();
+    let tokenCount = 0;
+
+    for (const e of eventCandidates || []) {
+        if (!Number.isInteger(e?.msgIdx) || !chat?.[e.msgIdx]) continue;
+        const addTok = msgSet.has(e.msgIdx) ? 0 : estimateTokens(chat[e.msgIdx]?.mes || '');
+        if (selected.length > 0 && (selected.length >= maxEvents || tokenCount + addTok > maxTokens)) break;
+        selected.push(e);
+        if (!msgSet.has(e.msgIdx)) {
+            msgSet.add(e.msgIdx);
+            tokenCount += addTok;
+        }
+    }
+
+    return {
+        events: selected,
+        msgIndices: [...msgSet].sort((a, b) => a - b),
+        tokenCount,
+        remainingEvents: Math.max(0, (eventCandidates?.length || 0) - selected.length),
+    };
+}
+
 /** 自动摘要：检查是否需要触发 */
 async function checkAutoSummary() {
-    if (!settings.autoSummaryEnabled || !settings.sendTimeline) return;
+    if (!settings.enabled || !settings.autoSummaryEnabled || !settings.sendTimeline) return;
     if (_summaryInProgress) return;
     _summaryInProgress = true;
-    
+
     try {
         const chat = horaeManager.getChat();
         if (!chat?.length) return;
-        
-        const keepRecent = settings.autoSummaryKeepRecent || 10;
-        const bufferLimit = settings.autoSummaryBufferLimit || 20;
+
+        const keepRecent = Math.max(0, parseInt(settings.autoSummaryKeepRecent, 10) || 10);
         const bufferMode = settings.autoSummaryBufferMode || 'messages';
-        
-        const totalMsgs = chat.length;
-        const cutoff = Math.max(1, totalMsgs - keepRecent);
-        
-        // 收集已被活跃摘要覆盖的消息索引（无论 is_hidden 是否生效都排除）
+        const bufferLimit = _getAutoSummaryActiveBufferLimit();
+
+        const keepWindow = _resolveAutoSummaryKeepWindow(chat, keepRecent);
+        const cutoff = Math.max(0, Math.min(keepWindow.keepStart, chat.length));
+
+        // 独立检查：当同层摘要达到阈值时，自动进行更高层级再总结（可级联）
+        await _runAutoResummaryIfNeeded(chat, cutoff);
+
+        // 收集已被摘要覆盖的消息索引（含展开状态，避免重复摘要）
+        // 优先用 coveredIndices（实际压缩集合），旧 entry 才回退到 range 全展开
         const summarizedIndices = new Set();
         const existingSums = chat[0]?.horae_meta?.autoSummaries || [];
         for (const s of existingSums) {
-            if (!s.active || !s.range) continue;
-            for (let r = s.range[0]; r <= s.range[1]; r++) {
-                summarizedIndices.add(r);
+            if (Array.isArray(s.coveredIndices) && s.coveredIndices.length) {
+                for (const r of s.coveredIndices) summarizedIndices.add(r);
+            } else if (s.range) {
+                for (let r = s.range[0]; r <= s.range[1]; r++) summarizedIndices.add(r);
             }
         }
-        
+
         // 兜底：扫描所有消息，找出含有手动插入摘要(isSummary)事件的消息索引
         const manualSummaryMsgIndices = new Set();
         for (let i = 0; i < cutoff; i++) {
-            const evts = chat[i]?.horae_meta?.events;
+            const meta = chat[i]?.horae_meta;
+            const evts = meta?.events || (meta?.event ? [meta.event] : null);
             if (!evts?.length) continue;
+            if (evts.some(e => e?._carryoverSeed)) {
+                manualSummaryMsgIndices.add(i);
+                continue;
+            }
             if (evts.some(e => e.isSummary && !e._compressedBy)) {
                 manualSummaryMsgIndices.add(i);
             }
         }
 
-        const bufferMsgIndices = [];
+        // 首次摘要仅针对「尾部连续未压缩时间线段」：从末尾向前，遇到已摘要边界即停止
+        const tailEventCandidates = _collectTailContinuousAutoSummaryEvents(
+            chat,
+            cutoff,
+            summarizedIndices,
+            manualSummaryMsgIndices
+        );
+        const tailMsgIndices = [...new Set(tailEventCandidates.map(e => e.msgIdx))].sort((a, b) => a - b);
+        const tailAiIndices = tailMsgIndices.filter(i => _isTrackableAiMessage(chat[i]));
+        const tailAiCount = tailAiIndices.length;
+        const activeSummaryCoveredIndices = _collectActiveSummaryCoveredIndices(chat);
+        const targetHideIndices = _buildAutoSummaryBufferHideIndices(
+            chat,
+            keepWindow.keepStart,
+            tailAiIndices,
+            activeSummaryCoveredIndices
+        );
+        await _syncAutoSummaryBufferHidden(chat, targetHideIndices, activeSummaryCoveredIndices);
+
         let bufferTokens = 0;
-        for (let i = 0; i < cutoff; i++) {
-            if (chat[i]?.is_hidden || summarizedIndices.has(i)) continue;
-            if (chat[i]?.horae_meta?._skipHorae) continue;
-            if (manualSummaryMsgIndices.has(i)) continue;
-            if (!chat[i]?.is_user && isEmptyOrCodeLayer(chat[i]?.mes)) continue;
-            bufferMsgIndices.push(i);
-            if (bufferMode === 'tokens') {
+        if (bufferMode === 'tokens') {
+            for (const i of targetHideIndices) {
                 bufferTokens += estimateTokens(chat[i]?.mes || '');
             }
         }
-        
+
         let shouldTrigger = false;
         if (bufferMode === 'tokens') {
             shouldTrigger = bufferTokens > bufferLimit;
         } else {
-            shouldTrigger = bufferMsgIndices.length > bufferLimit;
+            shouldTrigger = tailAiCount >= bufferLimit;
         }
-        
-        console.log(`[Horae] 自动摘要检查：${bufferMsgIndices.length}条缓冲消息(${bufferMode === 'tokens' ? bufferTokens + 'tok' : bufferMsgIndices.length + '条'})，阈值${bufferLimit}，${shouldTrigger ? '触发' : '未达阈值'}`);
-        
-        if (!shouldTrigger || bufferMsgIndices.length === 0) return;
-        
+
+        const tailFloorList = [...tailMsgIndices];
+        const tailFloorHint = tailFloorList.length ? tailFloorList.map(i => `#${i}`).join(', ') : 'none';
+        const aiFloorHint = (keepWindow.allAiIndices || []).length
+            ? keepWindow.allAiIndices.map(i => `#${i}`).join(', ')
+            : 'none';
+        console.log(`[Horae] 自动摘要检查：keepAI=${keepRecent}, totalAI=${keepWindow.totalAi}, keepStart=#${keepWindow.keepStart}, cutoff=${cutoff}, AI楼层=[${aiFloorHint}], 尾部连续未压缩AI=${tailAiCount}, 事件=${tailEventCandidates.length}(${bufferMode === 'tokens' ? bufferTokens + 'tok' : tailAiCount + '条AI'})，楼层=[${tailFloorHint}]，阈值${bufferLimit}，${shouldTrigger ? '触发' : '未达阈值'}`);
+
+        if (!shouldTrigger || tailEventCandidates.length === 0 || tailAiCount === 0) return;
+
         // 单次摘要批量上限：防止旧档案首次启用时 token 爆炸
-        const MAX_BATCH_MSGS = settings.autoSummaryBatchMaxMsgs || 50;
+        const MAX_BATCH_EVENTS = bufferMode === 'messages'
+            ? Math.max(bufferLimit, settings.autoSummaryBatchMaxMsgs || 50)
+            : (settings.autoSummaryBatchMaxMsgs || 50);
         const MAX_BATCH_TOKENS = settings.autoSummaryBatchMaxTokens || 80000;
-        let batchIndices = [];
-        let batchTokenCount = 0;
-        for (const i of bufferMsgIndices) {
-            const tok = estimateTokens(chat[i]?.mes || '');
-            if (batchIndices.length > 0 && (batchIndices.length >= MAX_BATCH_MSGS || batchTokenCount + tok > MAX_BATCH_TOKENS)) break;
-            batchIndices.push(i);
-            batchTokenCount += tok;
-        }
-        const remaining = bufferMsgIndices.length - batchIndices.length;
-        
-        const bufferEvents = [];
-        for (const i of batchIndices) {
-            const meta = chat[i]?.horae_meta;
-            if (!meta) continue;
-            if (meta.event && !meta.events) {
-                meta.events = [meta.event];
-                delete meta.event;
+        const {
+            events: bufferEvents,
+            msgIndices: batchEventIndices
+        } = _pickAutoSummaryBatchEvents(chat, tailEventCandidates, MAX_BATCH_EVENTS, MAX_BATCH_TOKENS);
+        if (!bufferEvents.length || !batchEventIndices.length) return;
+
+        const batchEventMsgIndices = [...batchEventIndices].sort((a, b) => a - b);
+        let batchIndices = [...batchEventMsgIndices];
+        if (batchEventMsgIndices.length > 0) {
+            const batchStart = batchEventMsgIndices[0];
+            const batchEnd = batchEventMsgIndices[batchEventMsgIndices.length - 1];
+            const expanded = [];
+            for (let i = batchStart; i <= batchEnd; i++) {
+                if (i < 0 || i >= cutoff || !chat[i]) continue;
+                if (chat[i]?.horae_meta?._skipHorae) continue;
+                if (activeSummaryCoveredIndices.has(i)) continue;
+                expanded.push(i);
             }
-            if (!meta.events) continue;
-            for (let j = 0; j < meta.events.length; j++) {
-                const evt = meta.events[j];
-                if (!evt?.summary || evt._compressedBy || evt.isSummary) continue;
-                bufferEvents.push({
-                    msgIdx: i, evtIdx: j,
-                    date: meta.timestamp?.story_date || '?',
-                    time: meta.timestamp?.story_time || '',
-                    level: evt.level || '一般',
-                    summary: evt.summary
-                });
-            }
+            if (expanded.length > 0) batchIndices = expanded;
         }
-        
+        if (!batchIndices.length) return;
+
         // 检测缓冲区消息的时间线/时间戳缺失情况
         const _missingTimestamp = [];
         const _missingEvents = [];
@@ -13208,7 +16225,7 @@ async function checkAutoSummary() {
             if (chat[i]?.is_user) continue;
             const meta = chat[i]?.horae_meta;
             if (!meta?.timestamp?.story_date) _missingTimestamp.push(i);
-            const hasEvt = meta?.events?.some(e => e?.summary && !e._compressedBy && !e.isSummary);
+            const hasEvt = bufferEvents.some(e => e.msgIdx === i);
             if (!hasEvt && !meta?.event?.summary) _missingEvents.push(i);
         }
         if (bufferEvents.length === 0 && _missingTimestamp.length === batchIndices.length) {
@@ -13220,28 +16237,30 @@ async function checkAutoSummary() {
             if (_missingTimestamp.length > 0) {
                 const floors = _missingTimestamp.length <= 8
                     ? _missingTimestamp.map(i => `#${i}`).join(', ')
-                    : _missingTimestamp.slice(0, 6).map(i => `#${i}`).join(', ') + t('ui.floorsSuffix', {n: _missingTimestamp.length});
-                parts.push(t('ui.missingTimestamp', {floors}));
+                    : _missingTimestamp.slice(0, 6).map(i => `#${i}`).join(', ') + t('ui.floorsSuffix', { n: _missingTimestamp.length });
+                parts.push(t('ui.missingTimestamp', { floors }));
             }
             if (_missingEvents.length > 0) {
                 const floors = _missingEvents.length <= 8
                     ? _missingEvents.map(i => `#${i}`).join(', ')
-                    : _missingEvents.slice(0, 6).map(i => `#${i}`).join(', ') + t('ui.floorsSuffix', {n: _missingEvents.length});
-                parts.push(t('ui.missingTimeline', {floors}));
+                    : _missingEvents.slice(0, 6).map(i => `#${i}`).join(', ') + t('ui.floorsSuffix', { n: _missingEvents.length });
+                parts.push(t('ui.missingTimeline', { floors }));
             }
             console.warn(`[Horae] 自动摘要数据缺失: ${parts.join(' | ')}`);
             if (_missingTimestamp.length > batchIndices.length * 0.5) {
-                showToast(t('toast.autoSummaryWarning', {parts: parts.join('; ')}), 'warning');
+                showToast(t('toast.autoSummaryWarning', { parts: parts.join('; ') }), 'warning');
             }
         }
-        
-        const remainingHint = remaining > 0 ? ` (${remaining} remaining)` : '';
-        const batchMsg = t('toast.autoSummaryProgress', {batch: batchIndices.length, total: bufferMsgIndices.length, remaining: remainingHint});
+
+        const selectedAiCount = [...new Set(bufferEvents.map(e => e.msgIdx).filter(i => _isTrackableAiMessage(chat[i])))].length;
+        const remainingAi = Math.max(0, tailAiCount - selectedAiCount);
+        const remainingHint = remainingAi > 0 ? ` (${remainingAi} remaining)` : '';
+        const batchMsg = t('toast.autoSummaryProgress', { batch: selectedAiCount, total: tailAiCount, remaining: remainingHint });
         showToast(batchMsg, 'info');
-        
+
         const context = getContext();
         const userName = context?.name1 || t('ui.protagonist');
-        
+
         const msgIndices = [...batchIndices].sort((a, b) => a - b);
         const fullTexts = msgIndices.map(idx => {
             const msg = chat[idx];
@@ -13250,28 +16269,36 @@ async function checkAutoSummary() {
             return `【#${idx}${d ? ' ' + d : ''}${tm ? ' ' + tm : ''}】\n${_stripConfiguredTags(msg?.mes || '')}`;
         });
         const sourceText = fullTexts.join('\n\n');
-        
+
         const eventText = bufferEvents.map(e => `[${e.level}] ${e.date}${e.time ? ' ' + e.time : ''}: ${e.summary}`).join('\n');
         const autoSumTemplate = settings.customAutoSummaryPrompt || getDefaultAutoSummaryPrompt();
-        const prompt = autoSumTemplate
+        const includeFullText = _getAutoSummarySourceMode() === 'fulltext';
+        const hasFullTextPlaceholder = /\{\{fulltext\}\}/i.test(autoSumTemplate);
+        let prompt = autoSumTemplate
             .replace(/\{\{events\}\}/gi, eventText)
-            .replace(/\{\{fulltext\}\}/gi, sourceText)
+            .replace(/\{\{fulltext\}\}/gi, includeFullText ? sourceText : '')
             .replace(/\{\{count\}\}/gi, String(bufferEvents.length))
             .replace(/\{\{user\}\}/gi, userName);
-        
+        if (includeFullText && sourceText && !hasFullTextPlaceholder) {
+            prompt += `\n\n【全文对话记录】：\n${sourceText}`;
+        }
+
         const response = await generateForSummary(prompt);
         if (!response?.trim()) {
             showToast(t('toast.autoSummaryEmpty'), 'warning');
             return;
         }
-        
-        // 清洗 AI 回复中的 think/horae 标签，只保留纯文本摘要
-        let summaryText = response.trim()
-            .replace(/<think(?:ing)?[\s>][\s\S]*?<\/think(?:ing)?>/gi, '')
-            .replace(/<horae>[\s\S]*?<\/horae>/gi, '')
-            .replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, '')
-            .replace(/<!--horae[\s\S]*?-->/gi, '')
-            .trim();
+
+        const extracted = _extractHoraeSummaryText(response);
+        if (!extracted.ok) {
+            if (extracted.reason === 'empty') {
+                showToast(t('toast.autoSummaryCleanedEmpty'), 'warning');
+            } else {
+                _showHoraeSummaryFormatWarning('自动总结', extracted.reason);
+            }
+            return;
+        }
+        let summaryText = extracted.text;
         if (!summaryText) {
             showToast(t('toast.autoSummaryCleanedEmpty'), 'warning');
             return;
@@ -13280,14 +16307,14 @@ async function checkAutoSummary() {
         const firstMsg = chat[0];
         if (!firstMsg.horae_meta) firstMsg.horae_meta = createEmptyMeta();
         if (!firstMsg.horae_meta.autoSummaries) firstMsg.horae_meta.autoSummaries = [];
-        
+
         const originalEvents = bufferEvents.map(e => ({
             msgIdx: e.msgIdx, evtIdx: e.evtIdx,
             event: { ...chat[e.msgIdx]?.horae_meta?.events?.[e.evtIdx] },
             timestamp: chat[e.msgIdx]?.horae_meta?.timestamp
         }));
-        
-        // 完整隐藏范围（包含中间所有 USER 消息）
+
+        // range 显示用，coveredIndices 才是判定"已摘要"的权威集合
         const hideMin = msgIndices[0];
         const hideMax = msgIndices[msgIndices.length - 1];
 
@@ -13295,13 +16322,15 @@ async function checkAutoSummary() {
         firstMsg.horae_meta.autoSummaries.push({
             id: summaryId,
             range: [hideMin, hideMax],
+            coveredIndices: [...msgIndices],
             summaryText,
             originalEvents,
+            depth: 1,
             active: true,
             createdAt: new Date().toISOString(),
             auto: true
         });
-        
+
         // 标记原始事件为已压缩（active 时隐藏原始事件显示摘要）
         for (const e of bufferEvents) {
             const meta = chat[e.msgIdx]?.horae_meta;
@@ -13309,9 +16338,9 @@ async function checkAutoSummary() {
                 meta.events[e.evtIdx]._compressedBy = summaryId;
             }
         }
-        
-        // 插入摘要事件卡片：优先放在有事件的消息上，否则放在范围首条
-        const targetIdx = bufferEvents.length > 0 ? bufferEvents[0].msgIdx : msgIndices[0];
+
+        // 卡片始终放到 range 起点，避免视觉上"跳一层"
+        const targetIdx = msgIndices[0];
         if (!chat[targetIdx].horae_meta) chat[targetIdx].horae_meta = createEmptyMeta();
         const targetMeta = chat[targetIdx].horae_meta;
         if (!targetMeta.events) targetMeta.events = [];
@@ -13322,313 +16351,46 @@ async function checkAutoSummary() {
             isSummary: true,
             _summaryId: summaryId
         });
-        
-        // /hide 整个范围内的消息楼层
-        const fullRangeIndices = [];
-        for (let i = hideMin; i <= hideMax; i++) fullRangeIndices.push(i);
-        await setMessagesHidden(chat, fullRangeIndices, true);
-        
+
+        for (const idx of msgIndices) {
+            if (chat[idx]?.horae_meta?._autoBufferHidden) {
+                delete chat[idx].horae_meta._autoBufferHidden;
+            }
+        }
+
+        // 只 hide 实际进入 batch 的消息，避免误盖到其它 entry 范围内的消息
+        await setMessagesHidden(chat, [...msgIndices], true);
+
         await context.saveChat();
         updateTimelineDisplay();
-        showToast(t('toast.autoSummaryDone', {from: msgIndices[0], to: msgIndices[msgIndices.length - 1]}), 'success');
+        showToast(t('toast.autoSummaryDone', { from: msgIndices[0], to: msgIndices[msgIndices.length - 1] }), 'success');
     } catch (err) {
         console.error('[Horae] auto summary failed:', err);
-        showToast(t('toast.autoSummaryFailed', {error: err.message || err}), 'error');
+        showToast(t('toast.autoSummaryFailed', { error: err.message || err }), 'error');
     } finally {
         _summaryInProgress = false;
         // 权威存盘：补偿 onMessageReceived 因竞态保护而跳过的 save
         try {
             await enforceHiddenState();
             await getContext().saveChat();
-        } catch (_) {}
+        } catch (_) { }
     }
 }
 
 /** 默认的剧情压缩提示词（含事件压缩和全文摘要两段，以分隔线区分） */
 function getDefaultCompressPrompt() {
-    const lang = detectEffectiveAiLang(settings);
-    if (lang === 'ja') return _getDefaultCompressPromptJa();
-    if (lang === 'ko') return _getDefaultCompressPromptKo();
-    if (lang === 'ru') return _getDefaultCompressPromptRu();
-    if (lang === 'vi') return _getDefaultCompressPromptVi();
-    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultCompressPromptEn();
-    return `=====【事件压缩】=====
-你是剧情压缩助手。请将以下{{count}}条剧情事件压缩为一段简洁的摘要（100-200字），保留关键信息和因果关系。
-
-{{events}}
-
-要求：
-- 按时间顺序叙述，保留重要转折点
-- 人名、地名必须保留原文
-- 输出纯文本摘要，不要添加任何标记或格式
-- 不要遗漏「关键」和「重要」级别的事件
-- {{user}} 是主角名
-- 语言风格：简洁客观的叙事体
-
-=====【全文摘要】=====
-你是剧情压缩助手。请阅读以下对话记录，将其压缩为一段精炼的剧情摘要（150-300字），保留关键信息和因果关系。
-
-{{fulltext}}
-
-要求：
-- 按时间顺序叙述，保留重要转折点和关键细节
-- 人名、地名必须保留原文
-- 输出纯文本摘要，不要添加任何标记或格式
-- 保留人物的关键对话和情绪变化
-- {{user}} 是主角名
-- 语言风格：简洁客观的叙事体`;
+    return _getPromptDefaultFromResource('customCompressPrompt') || '';
 }
 
-function _getDefaultCompressPromptEn() {
-    return `=====[Event Compression]=====
-You are a plot compression assistant. Compress the following {{count}} plot events into a concise summary (200-400 chars), preserving key information and causal relationships.
-
-{{events}}
-
-Requirements:
-- Narrate in chronological order, preserving important turning points
-- Character names and place names must be kept as-is
-- Output plain text summary only, no tags or formatting
-- Do not omit "critical" and "important" level events
-- {{user}} is the protagonist's name
-- Style: concise, objective narrative
-
-=====[Full-text Summary]=====
-You are a plot compression assistant. Read the following conversation log and compress it into a refined plot summary (300-600 chars), preserving key information and causal relationships.
-
-{{fulltext}}
-
-Requirements:
-- Narrate in chronological order, preserving important turning points and key details
-- Character names and place names must be kept as-is
-- Output plain text summary only, no tags or formatting
-- Preserve characters' key dialogues and emotional changes
-- {{user}} is the protagonist's name
-- Style: concise, objective narrative`;
-}
-
-function _getDefaultCompressPromptJa() {
-    return `=====[イベント圧縮]=====
-あなたはストーリー圧縮アシスタントです。以下の{{count}}件のストーリーイベントを簡潔な要約（150〜300文字）に圧縮し、キー情報と因果関係を保持してください。
-
-{{events}}
-
-要件：
-- 時系列順に記述し、重要な転換点を保持
-- 人名・地名は原文のまま保持
-- プレーンテキストの要約のみ出力、タグやフォーマットは不要
--「critical」および「important」レベルのイベントを省略しない
-- {{user}} は主人公の名前
-- 文体：簡潔で客観的なナラティブ
-
-=====[全文要約]=====
-あなたはストーリー圧縮アシスタントです。以下の会話ログを読み、精錬されたストーリー要約（200〜500文字）に圧縮し、キー情報と因果関係を保持してください。
-
-{{fulltext}}
-
-要件：
-- 時系列順に記述し、重要な転換点とキーとなる詳細を保持
-- 人名・地名は原文のまま保持
-- プレーンテキストの要約のみ出力、タグやフォーマットは不要
-- キャラクターの重要な台詞と感情の変化を保持
-- {{user}} は主人公の名前
-- 文体：簡潔で客観的なナラティブ`;
-}
-
-function _getDefaultCompressPromptKo() {
-    return `=====[이벤트 압축]=====
-당신은 스토리 압축 어시스턴트입니다. 아래 {{count}}건의 스토리 이벤트를 간결한 요약(150~300자)으로 압축하고, 핵심 정보와 인과 관계를 유지하세요.
-
-{{events}}
-
-요구사항:
-- 시간순으로 서술하며, 중요한 전환점 유지
-- 인명·지명은 원문 그대로 유지
-- 순수 텍스트 요약만 출력, 태그나 서식 없음
-- "critical" 및 "important" 등급 이벤트 누락 금지
-- {{user}} 는 주인공의 이름
-- 문체: 간결하고 객관적인 서술체
-
-=====[전문 요약]=====
-당신은 스토리 압축 어시스턴트입니다. 아래 대화 기록을 읽고 정제된 스토리 요약(200~500자)으로 압축하여, 핵심 정보와 인과 관계를 유지하세요.
-
-{{fulltext}}
-
-요구사항:
-- 시간순으로 서술하며, 중요한 전환점과 핵심 세부사항 유지
-- 인명·지명은 원문 그대로 유지
-- 순수 텍스트 요약만 출력, 태그나 서식 없음
-- 캐릭터의 핵심 대사와 감정 변화 유지
-- {{user}} 는 주인공의 이름
-- 문체: 간결하고 객관적인 서술체`;
-}
-
-function _getDefaultCompressPromptVi() {
-    return `=====[Ép sự kiện]=====
-Bạn là một trợ lý tóm tắt cốt truyện. Hãy nén {{count}} sự kiện cốt truyện sau đây thành một bản tóm tắt ngắn gọn (200-500 ký tự), giữ lại các thông tin then chốt và mối quan hệ nhân quả.
-
-{{events}}
-
-Yêu cầu:
-- Kể lại theo trình tự thời gian, giữ nguyên các bước ngoặt quan trọng
-- Tên nhân vật và địa danh phải được giữ nguyên
-- Chỉ xuất ra văn bản tóm tắt thuần túy, không dùng thẻ hay định dạng
-- Không được bỏ sót các sự kiện ở mức độ "critical" và "important"
-- {{user}} là tên nhân vật chính
-- Văn phong: ngắn gọn, tường thuật khách quan
-
-=====[Tóm tắt toàn văn]=====
-Bạn là một trợ lý tóm tắt cốt truyện. Hãy đọc nhật ký trò chuyện sau đây và nén lại thành một bản tóm tắt cốt truyện tinh luyện (300-700 ký tự), giữ lại thông tin then chốt và mối quan hệ nhân quả.
-
-{{fulltext}}
-
-Yêu cầu:
-- Kể lại theo trình tự thời gian, bảo toàn các diễn biến quan trọng và chi tiết cụ thể
-- Tên nhân vật và địa danh phải được giữ nguyên
-- Chỉ xuất văn bản thuần túy, không có thẻ định dạng hay các định dạng phân cách
-- Giữ vững các câu thoại quan trọng và sự thay đổi cảm xúc của nhân vật
-- {{user}} là tên nhân vật chính
-- Văn phong: ngắn gọn, tường thuật khách quan`;
-}
-
-function _getDefaultCompressPromptRu() {
-    return `=====[Сжатие событий]=====
-Вы — ассистент по сжатию сюжета. Сожмите следующие {{count}} сюжетных событий в краткое резюме (200–500 символов), сохраняя ключевую информацию и причинно-следственные связи.
-
-{{events}}
-
-Требования:
-- Излагайте в хронологическом порядке, сохраняя важные поворотные моменты
-- Имена персонажей и названия мест сохранять как есть
-- Выводите только текстовое резюме, без тегов и форматирования
-- Не пропускайте события уровня «critical» и «important»
-- {{user}} — имя главного героя
-- Стиль: лаконичное, объективное повествование
-
-=====[Полное резюме]=====
-Вы — ассистент по сжатию сюжета. Прочитайте следующий лог диалога и сожмите его в отточенное сюжетное резюме (300–700 символов), сохраняя ключевую информацию и причинно-следственные связи.
-
-{{fulltext}}
-
-Требования:
-- Излагайте в хронологическом порядке, сохраняя важные поворотные моменты и ключевые детали
-- Имена персонажей и названия мест сохранять как есть
-- Выводите только текстовое резюме, без тегов и форматирования
-- Сохраняйте ключевые диалоги персонажей и эмоциональные изменения
-- {{user}} — имя главного героя
-- Стиль: лаконичное, объективное повествование`;
-}
-
-/** 默认的自动摘要提示词（独立于手动压缩，由副API使用） */
 function getDefaultAutoSummaryPrompt() {
-    const lang = detectEffectiveAiLang(settings);
-    if (lang === 'ja') return _getDefaultAutoSummaryPromptJa();
-    if (lang === 'ko') return _getDefaultAutoSummaryPromptKo();
-    if (lang === 'ru') return _getDefaultAutoSummaryPromptRu();
-    if (lang === 'vi') return _getDefaultAutoSummaryPromptVi();
-    if (lang !== 'zh-CN' && lang !== 'zh-TW') return _getDefaultAutoSummaryPromptEn();
-    return `你是剧情压缩助手。请阅读以下对话记录，将其压缩为一段精炼的剧情摘要（150-300字），保留关键信息和因果关系。
-
-{{fulltext}}
-
-已有事件概要（辅助参考，不要仅依赖此列表）：
-{{events}}
-
-要求：
-- 按时间顺序叙述，保留重要转折点和关键细节
-- 人名、地名必须保留原文
-- 输出纯文本摘要，不要添加任何标记或格式（禁止<horae>等XML标签）
-- 保留人物的关键对话和情绪变化
-- {{user}} 是主角名
-- 语言风格：简洁客观的叙事体`;
+    return _getPromptDefaultFromResource('customAutoSummaryPrompt') || '';
 }
 
-function _getDefaultAutoSummaryPromptEn() {
-    return `You are a plot compression assistant. Read the following conversation log and compress it into a refined plot summary (300-600 chars), preserving key information and causal relationships.
-
-{{fulltext}}
-
-Existing event outline (for reference only, do not rely solely on this list):
-{{events}}
-
-Requirements:
-- Narrate in chronological order, preserving important turning points and key details
-- Character names and place names must be kept as-is
-- Output plain text summary only, no tags or formatting (no <horae> or other XML tags)
-- Preserve characters' key dialogues and emotional changes
-- {{user}} is the protagonist's name
-- Style: concise, objective narrative`;
+/** 默认的二次总结提示词（仅基于时间线/已有摘要） */
+function getDefaultAutoResummaryPrompt() {
+    return _getPromptDefaultFromResource('customAutoResummaryPrompt') || '';
 }
 
-function _getDefaultAutoSummaryPromptJa() {
-    return `あなたはストーリー圧縮アシスタントです。以下の会話ログを読み、精錬されたストーリー要約（200〜500文字）に圧縮し、キー情報と因果関係を保持してください。
-
-{{fulltext}}
-
-既存のイベント概要（参考用のみ、このリストだけに頼らないこと）：
-{{events}}
-
-要件：
-- 時系列順に記述し、重要な転換点とキーとなる詳細を保持
-- 人名・地名は原文のまま保持
-- プレーンテキストの要約のみ出力、タグやフォーマットは不要（<horae>等のXMLタグ禁止）
-- キャラクターの重要な台詞と感情の変化を保持
-- {{user}} は主人公の名前
-- 文体：簡潔で客観的なナラティブ`;
-}
-
-function _getDefaultAutoSummaryPromptKo() {
-    return `당신은 스토리 압축 어시스턴트입니다. 아래 대화 기록을 읽고 정제된 스토리 요약(200~500자)으로 압축하여, 핵심 정보와 인과 관계를 유지하세요.
-
-{{fulltext}}
-
-기존 이벤트 개요 (참고용, 이 목록에만 의존하지 마세요):
-{{events}}
-
-요구사항:
-- 시간순으로 서술하며, 중요한 전환점과 핵심 세부사항 유지
-- 인명·지명은 원문 그대로 유지
-- 순수 텍스트 요약만 출력, 태그나 서식 없음 (<horae> 등의 XML 태그 금지)
-- 캐릭터의 핵심 대사와 감정 변화 유지
-- {{user}} 는 주인공의 이름
-- 문체: 간결하고 객관적인 서술체`;
-}
-
-function _getDefaultAutoSummaryPromptVi() {
-    return `Bạn là trợ lý nén cốt truyện. Hãy đọc nhật ký trò chuyện sau đây, nén nó thành một đoạn tóm tắt cốt truyện ngắn gọn (300-700 ký tự), lưu giữ lại các thông tin cực kỳ quan trọng và nguyên lý nhân quả.
-
-{{fulltext}}
-
-Tóm lược sự kiện đã có (chỉ để tham khảo hỗ trợ, đừng chỉ phụ thuộc riêng vào danh sách này):
-{{events}}
-
-Yêu cầu:
-- Tường thuật theo trình tự thời gian, duy trì các bước tiến triển quan trọng và chi tiết chủ chốt
-- Tên các nhân vật và tên các địa danh giữ nguyễn gốc như văn bản
-- Hệ thống chỉ xuất tóm tắt text văn bản đơn thuần, không thêm định dạng cũng như tags (Cấm các XML tag như <horae>)
-- Đảm bảo giữ các lời thoại chính của cốt truyện và sự chuyển biến tình cảm nhân vật
-- {{user}} là tên của nhân vật chính
-- Văn phong: xúc tích, khách quan thuyết minh`;
-}
-
-function _getDefaultAutoSummaryPromptRu() {
-    return `Вы — ассистент по сжатию сюжета. Прочитайте следующий лог диалога и сожмите его в отточенное сюжетное резюме (300–700 символов), сохраняя ключевую информацию и причинно-следственные связи.
-
-{{fulltext}}
-
-Существующий обзор событий (только для справки, не полагайтесь исключительно на этот список):
-{{events}}
-
-Требования:
-- Излагайте в хронологическом порядке, сохраняя важные поворотные моменты и ключевые детали
-- Имена персонажей и названия мест сохранять как есть
-- Выводите только текстовое резюме, без тегов и форматирования (запрещены XML-теги вроде <horae>)
-- Сохраняйте ключевые диалоги персонажей и эмоциональные изменения
-- {{user}} — имя главного героя
-- Стиль: лаконичное, объективное повествование`;
-}
-
-/** 从压缩提示词模板中按模式提取对应的 prompt 段 */
 function parseCompressPrompt(template, mode) {
     const eventRe = /=+(?:【事件压缩】|\[Event Compression\]|\[イベント圧縮\]|\[이벤트 압축\]|\[Сжатие событий\])=+/;
     const fulltextRe = /=+(?:【全文摘要】|\[Full-text Summary\]|\[全文要約\]|\[전문 요약\]|\[Полное резюме\])=+/;
@@ -13648,6 +16410,38 @@ function parseCompressPrompt(template, mode) {
         }
     }
     return template;
+}
+
+function _getAutoSummarySourceMode() {
+    return settings.autoSummarySourceMode === 'events' ? 'events' : 'fulltext';
+}
+
+function _getAutoSummaryActiveBufferLimit() {
+    const mode = settings.autoSummaryBufferMode === 'tokens' ? 'tokens' : 'messages';
+    if (mode === 'tokens') {
+        return Math.max(1000, parseInt(settings.autoSummaryBufferTokenLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferTokenLimit);
+    }
+    return Math.max(5, parseInt(settings.autoSummaryBufferMsgLimit, 10) || DEFAULT_SETTINGS.autoSummaryBufferMsgLimit);
+}
+
+function _syncAutoSummaryLegacyBufferLimit() {
+    settings.autoSummaryBufferLimit = _getAutoSummaryActiveBufferLimit();
+}
+
+function _syncAutoSummaryTriggerLimitInput() {
+    const input = document.getElementById('horae-setting-auto-summary-limit');
+    if (!input) return;
+    const mode = settings.autoSummaryBufferMode === 'tokens' ? 'tokens' : 'messages';
+    input.value = _getAutoSummaryActiveBufferLimit();
+    if (mode === 'tokens') {
+        input.min = '1000';
+        input.max = '1000000';
+        input.step = '1000';
+    } else {
+        input.min = '5';
+        input.max = '99999';
+        input.step = '1';
+    }
 }
 
 /** 根据缓冲模式动态更新缓冲上限的说明文案 */
@@ -13684,6 +16478,17 @@ function _stripConfiguredTags(text) {
         text = text.replace(new RegExp(`<${escaped}(?:\\s[^>]*)?>[\\s\\S]*?</${escaped}>`, 'gi'), '');
     }
     return text.trim();
+}
+
+function _stripHoraeAnalysisInput(text) {
+    return _stripConfiguredTags(text || '')
+        .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+        .replace(/<horae>[\s\S]*?<\/horae>/gi, '')
+        .replace(/<!--horae[\s\S]*?-->/gi, '')
+        .replace(/<horaeevent>[\s\S]*?<\/horaeevent>/gi, '')
+        .replace(/<horaerpg>[\s\S]*?<\/horaerpg>/gi, '')
+        .replace(/<horaetable[:：][\s\S]*?<\/horaetable(?:[:：][^>]*)?>/gi, '')
+        .trim();
 }
 
 /** 判断消息是否为空层（同层系统等代码渲染的无实际叙事内容楼层） */
@@ -13730,8 +16535,8 @@ async function batchAIScan() {
     }
 
     if (targets.length === 0) {
-        const hint = skippedEmpty > 0 ? t('toast.skippedEmpty', {n: skippedEmpty}) : '';
-        showToast(t('toast.allMessagesHaveTimeline', {hint}), 'info');
+        const hint = skippedEmpty > 0 ? t('toast.skippedEmpty', { n: skippedEmpty }) : '';
+        showToast(t('toast.allMessagesHaveTimeline', { hint }), 'info');
         return;
     }
 
@@ -13753,8 +16558,8 @@ async function batchAIScan() {
     }
     if (currentBatch.length > 0) batches.push(currentBatch);
 
-    const skippedHint = skippedEmpty > 0 ? '\n· ' + t('toast.skippedEmpty', {n: skippedEmpty}) : '';
-    if (!confirm(t('confirm.aiScanConfirm', {batches: batches.length, skippedHint}))) return;
+    const skippedHint = skippedEmpty > 0 ? '\n· ' + t('toast.skippedEmpty', { n: skippedEmpty }) : '';
+    if (!confirm(t('confirm.aiScanConfirm', { batches: batches.length, skippedHint }))) return;
 
     const scanResults = await executeBatchScan(batches, { includeNpc, includeAffection, includeScene, includeRelationship });
     if (scanResults.length === 0) {
@@ -13774,7 +16579,7 @@ async function executeBatchScan(batches, options = {}) {
     // 用于真正中止HTTP请求的AbortController（fetch层面）
     const fetchAbort = new AbortController();
     const _origFetch = window.fetch;
-    window.fetch = function(input, init = {}) {
+    window.fetch = function (input, init = {}) {
         if (!cancelled) {
             const ourSignal = fetchAbort.signal;
             if (init.signal && typeof AbortSignal.any === 'function') {
@@ -13809,15 +16614,15 @@ async function executeBatchScan(batches, options = {}) {
         if (cancelled) return;
         const hasPartial = scanResults.length > 0;
         const hint = hasPartial
-            ? t('confirm.aiScanStopConfirm', {n: scanResults.length})
+            ? t('confirm.aiScanStopConfirm', { n: scanResults.length })
             : t('confirm.compressCancel');
         if (!confirm(hint)) return;
         cancelled = true;
         fetchAbort.abort();
-        try { context.stopGeneration(); } catch (_) {}
+        try { context.stopGeneration(); } catch (_) { }
         cancelResolve();
         overlay.remove();
-        showToast(hasPartial ? t('toast.scanStopped', {n: scanResults.length}) : t('toast.scanCancelled'), 'info');
+        showToast(hasPartial ? t('toast.scanStopped', { n: scanResults.length }) : t('toast.scanCancelled'), 'info');
     });
     const scanResults = [];
 
@@ -13837,7 +16642,7 @@ async function executeBatchScan(batches, options = {}) {
     for (let b = 0; b < batches.length; b++) {
         if (cancelled) break;
         const batch = batches[b];
-        textEl.textContent = t('toast.aiBatchDone', {n: `${b + 1}/${batches.length}`});
+        textEl.textContent = t('toast.aiBatchDone', { n: `${b + 1}/${batches.length}` });
         fillEl.style.width = `${Math.round((b / batches.length) * 100)}%`;
 
         const messagesBlock = batch.map(msg => `【消息#${msg.index}】\n${msg.text}`).join('\n\n');
@@ -13887,7 +16692,7 @@ item!:emoji物品名(数量)|描述=持有者@位置（重要物品，描述必�
 item-:物品名（消耗/丢失/用完的物品）${extraFormat}
 </horae>
 <horaeevent>
-event:重要程度|事件简述（30-50字，重要程度：一般/重要/关键）
+event:重要程度|事件描述
 </horaeevent>
 
 【规则】
@@ -13897,25 +16702,38 @@ event:重要程度|事件简述（30-50字，重要程度：一般/重要/关键
 · item格式：emoji前缀如🔑🍞，单件不写(1)，位置需精确（❌地上 ✅酒馆大厅桌上）
 · 重要程度判断：日常对话=一般，推动剧情=重要，关键转折=关键
 · ${userName} 是主角名${extraRules}
-· 再次强调：只允许 ${allowedTags}，${forbiddenNote}`;
+· 再次强调：只允许 ${allowedTags}，${forbiddenNote}
+
+═══ 【事件摘要(event)】撰写规则 ═══
+★ 核心目标：为未来的AI提供无损的“前情提要”，必须具体且信息量密集，字数控制在80-150字。
+★ 必须包含以下关键要素（5W1H）：
+  ① 核心互动：谁对谁做了什么/说了什么关键的话？（写出具体的动作或核心台词大意）
+  ② 状态/情绪转变：角色的心理、态度或关系发生了什么微妙变化？（如：从防备转为信任、心生暗恋等）
+  ③ 新情报/结果：本回合推进了什么剧情？（获得了什么线索、达成了什么共识、发生了什么变故）
+  ④ 伏笔/悬念（若有）：留下了什么未解决的问题？
+★ 严禁泛泛而谈：
+  ❌ 错误示范："U和艾伦在酒馆聊天，两人聊得很开心，最后约定下次再见。"（毫无细节）
+  ✅ 正确示范："U在酒馆向艾伦打听黑市商人的下落，艾伦起初警惕，但在U递出10枚金币后，透露商人明晚会在废弃码头出现。艾伦对U的态度由戒备转为贪婪。两人约定明晚一起行动。"
+★ 严禁无中生有：禁止写出原文未明确指出的情绪（禁止使用“这引出了...的珍视”、“体现了...的心态”等阅读理解句式）。
+★ 严禁氛围总结：禁止出现“显得...带有生活气息”、“气氛变得...”等主观感悟。`;
         }
 
         try {
             const response = await Promise.race([
-                context.generateRaw(batchPrompt, null, false, false),
+                _generateForAuxTask(batchPrompt, { kind: 'summary' }),
                 cancelPromise.then(() => null)
             ]);
             if (cancelled) break;
             if (!response) {
                 console.warn(`[Horae] 第 ${b + 1} 批：AI 未返回内容`);
-                showToast(t('toast.aiBatchNoContent', {n: b + 1}), 'warning');
+                showToast(t('toast.aiBatchNoContent', { n: b + 1 }), 'warning');
                 continue;
             }
             const cleanedResponse = response.replace(/<think(?:ing)?[\s>][\s\S]*?<\/think(?:ing)?>/gi, '');
             const segments = cleanedResponse.split(/={2,}\s*(?:消息|[Mm]essage)\s*#\s*(\d+)\s*={2,}/);
             if (segments.length <= 1) {
                 console.warn(`[Horae] 第 ${b + 1} 批：AI 回复格式不匹配（未找到 ===消息#N=== 分隔符）`, response.substring(0, 300));
-                showToast(t('toast.aiBatchFormatError', {n: b + 1}), 'warning');
+                showToast(t('toast.aiBatchFormatError', { n: b + 1 }), 'warning');
                 continue;
             }
             const batchWritten = [];
@@ -13971,16 +16789,16 @@ event:重要程度|事件简述（30-50字，重要程度：一般/重要/关键
                     chatRef[0].horae_meta._pendingScanReview.msgIndices.push(...batchWritten);
                 }
                 horaeManager.rebuildTableData();
-                try { await context.saveChat(); } catch (_) {}
+                try { await context.saveChat(); } catch (_) { }
             }
         } catch (err) {
             if (cancelled || err?.name === 'AbortError') break;
             console.error(`[Horae] 第 ${b + 1} 批摘要失败:`, err);
-            showToast(t('toast.aiBatchFailed', {n: b + 1}), 'error');
+            showToast(t('toast.aiBatchFailed', { n: b + 1 }), 'error');
         }
 
         if (b < batches.length - 1 && !cancelled) {
-            textEl.textContent = t('toast.aiBatchDone', {n: b + 1});
+            textEl.textContent = t('toast.aiBatchDone', { n: b + 1 });
             await Promise.race([
                 new Promise(r => setTimeout(r, 2000)),
                 cancelPromise
@@ -14151,7 +16969,7 @@ function showScanReviewModal(scanResults, scanOptions) {
         <div class="horae-modal-content">
             <div class="horae-modal-header">
                 <span>${t('ui.summaryReview')}</span>
-                <span style="font-size:12px;color:var(--horae-text-muted);">${t('ui.totalCount', {n: totalCount})}</span>
+                <span style="font-size:12px;color:var(--horae-text-muted);">${t('ui.totalCount', { n: totalCount })}</span>
             </div>
             <div class="horae-review-tabs">${tabsHtml}</div>
             <div class="horae-review-body">${panelsHtml}</div>
@@ -14234,7 +17052,7 @@ function showScanReviewModal(scanResults, scanOptions) {
         await getContext().saveChat();
         modal.remove();
         const saved = scanResults.filter(r => !r._deleted).length;
-        showToast(t('toast.summariesSaved', {n: saved}), 'success');
+        showToast(t('toast.summariesSaved', { n: saved }), 'success');
         refreshAllDisplays();
         renderCustomTablesList();
     });
@@ -14263,9 +17081,9 @@ function showScanReviewModal(scanResults, scanOptions) {
             delete chat[0].horae_meta._pendingScanReview;
         }
         horaeManager.rebuildTableData();
-        try { await getContext().saveChat(); } catch (_) {}
+        try { await getContext().saveChat(); } catch (_) { }
         modal.remove();
-        showToast(t('toast.aiSummaryUndone', {n: rollbackSet.size}), 'info');
+        showToast(t('toast.aiSummaryUndone', { n: rollbackSet.size }), 'info');
         refreshAllDisplays();
         renderCustomTablesList();
     };
@@ -14280,7 +17098,7 @@ function showScanReviewModal(scanResults, scanOptions) {
             if (!isNaN(ri) && scanResults[ri]) deletedMsgIndices.add(scanResults[ri].msgIndex);
         }
         if (deletedMsgIndices.size === 0) return;
-        if (!confirm(t('confirm.clearAiSummary', {n: deletedMsgIndices.size}))) return;
+        if (!confirm(t('confirm.clearAiSummary', { n: deletedMsgIndices.size }))) return;
 
         applyDeletedToResults(scanResults, deletedSet, categories);
 
@@ -14377,7 +17195,7 @@ function _showPendingScanRecoveryModal(chat, pending, count) {
                 ${t('ui.pendingScanTitle')}
             </div>
             <div style="padding:16px;line-height:1.6;">
-                ${t('ui.pendingScanDesc', {n: count})}
+                ${t('ui.pendingScanDesc', { n: count })}
             </div>
             <div class="horae-modal-footer" style="gap:8px;flex-wrap:wrap;justify-content:center;">
                 <button class="horae-btn primary" id="horae-recover-review">
@@ -14411,7 +17229,7 @@ function _showPendingScanRecoveryModal(chat, pending, count) {
         modal.remove();
         delete chat[0].horae_meta._pendingScanReview;
         await getContext().saveChat();
-        showToast(t('toast.summariesSaved', {n: count}), 'success');
+        showToast(t('toast.summariesSaved', { n: count }), 'success');
         refreshAllDisplays();
     });
 
@@ -14433,7 +17251,7 @@ function _showPendingScanRecoveryModal(chat, pending, count) {
         delete chat[0].horae_meta._pendingScanReview;
         horaeManager.rebuildTableData();
         await getContext().saveChat();
-        showToast(t('toast.aiSummaryUndone', {n: count}), 'info');
+        showToast(t('toast.aiSummaryUndone', { n: count }), 'info');
         refreshAllDisplays();
         renderCustomTablesList();
     });
@@ -14449,7 +17267,7 @@ function showAIScanConfigDialog(targetCount) {
         modal.innerHTML = `
             <div class="horae-modal-content" style="max-width: 420px;">
                 <div class="horae-modal-header">
-                    <span>AI 智能摘要</span>
+                    <span>${t('settings.aiSmartSummary')}</span>
                 </div>
                 <div class="horae-modal-body" style="padding: 16px;">
                     <p style="margin: 0 0 12px; color: var(--horae-text-muted); font-size: 13px;">
@@ -14550,7 +17368,7 @@ async function undoAIScan() {
         return;
     }
 
-    if (!confirm(t('confirm.clearAiSummary', {n: count}))) return;
+    if (!confirm(t('confirm.clearAiSummary', { n: count }))) return;
 
     for (let i = 0; i < chat.length; i++) {
         const meta = chat[i].horae_meta;
@@ -14563,9 +17381,316 @@ async function undoAIScan() {
 
     horaeManager.rebuildTableData();
     await getContext().saveChat();
-    showToast(t('toast.aiSummaryUndone', {n: count}), 'success');
+    showToast(t('toast.aiSummaryUndone', { n: count }), 'success');
     refreshAllDisplays();
     renderCustomTablesList();
+}
+
+function _deepCloneData(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function _normalizeMetaEvents(meta) {
+    if (!meta) return [];
+    if (meta.event && !meta.events) {
+        meta.events = [meta.event];
+        delete meta.event;
+    }
+    if (!Array.isArray(meta.events)) meta.events = [];
+    return meta.events;
+}
+
+function _sanitizeCarryMessage(rawMessage) {
+    const msg = _deepCloneData(rawMessage);
+    if (!msg) return null;
+    msg.is_hidden = false;
+
+    if (!msg.horae_meta) return msg;
+
+    const events = _normalizeMetaEvents(msg.horae_meta);
+    msg.horae_meta.events = events.map(evt => {
+        if (!evt || typeof evt !== 'object') return evt;
+        const cleaned = { ...evt };
+        delete cleaned._compressedBy;
+        delete cleaned._summaryId;
+        return cleaned;
+    });
+    delete msg.horae_meta.autoSummaries;
+    return msg;
+}
+
+function _buildCarryoverCompensationBlocks(events, chunkSize = 8) {
+    if (!Array.isArray(events) || events.length === 0) return [];
+
+    const size = Math.max(1, parseInt(chunkSize, 10) || 8);
+    const blocks = [];
+
+    for (let i = 0; i < events.length; i += size) {
+        const part = events.slice(i, i + size);
+        const lines = part.map((evt, idx) => {
+            const date = evt.date || '?';
+            const time = evt.time ? ` ${evt.time}` : '';
+            const level = evt.level || '一般';
+            return `${idx + 1}. [${date}${time}] [${level}] ${evt.summary}`;
+        });
+        blocks.push(lines.join('\n'));
+    }
+
+    return blocks;
+}
+
+function _collectCarryoverRecapTexts(sourceChat, cutoffIndex) {
+    const recapTexts = [];
+    const seen = new Set();
+    const cutoff = Number.isInteger(cutoffIndex) ? cutoffIndex : sourceChat.length;
+    const coveredMsgIndices = new Set();
+    const coveredSummaryIds = new Set();
+
+    const pushRecap = (rawText) => {
+        const text = typeof rawText === 'string' ? rawText.trim() : '';
+        if (!text) return;
+        const key = text.replace(/\s+/g, ' ').trim();
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        recapTexts.push(text);
+    };
+
+    const firstMeta = sourceChat?.[0]?.horae_meta;
+    const summaries = Array.isArray(firstMeta?.autoSummaries) ? [...firstMeta.autoSummaries] : [];
+    summaries.sort((a, b) => {
+        const aStart = Array.isArray(a?.range) ? (a.range[0] ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+        const bStart = Array.isArray(b?.range) ? (b.range[0] ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+        return aStart - bStart;
+    });
+
+    for (const s of summaries) {
+        if (!s || typeof s !== 'object') continue;
+        let include = true;
+
+        if (Array.isArray(s.range) && s.range.length >= 2) {
+            const rangeStart = Number.isInteger(s.range[0]) ? s.range[0] : Number.MAX_SAFE_INTEGER;
+            const rangeEnd = Number.isInteger(s.range[1]) ? s.range[1] : Number.MAX_SAFE_INTEGER;
+            if (rangeEnd >= cutoff) include = false;
+            if (include) {
+                for (let i = Math.max(1, rangeStart); i <= Math.min(cutoff - 1, rangeEnd); i++) {
+                    coveredMsgIndices.add(i);
+                }
+            }
+        }
+
+        if (!include) continue;
+        if (s.id) coveredSummaryIds.add(s.id);
+        if (Array.isArray(s.coveredIndices)) {
+            for (const idx of s.coveredIndices) {
+                if (Number.isInteger(idx) && idx >= 1 && idx < cutoff) {
+                    coveredMsgIndices.add(idx);
+                }
+            }
+        }
+
+        if (Array.isArray(s.range) && s.range.length >= 2) {
+            const rangeEnd = Number.isInteger(s.range[1]) ? s.range[1] : Number.MAX_SAFE_INTEGER;
+            if (rangeEnd >= cutoff) continue;
+        }
+        pushRecap(s.summaryText || s.summary || s.title || '');
+    }
+
+    const upperBound = Math.max(1, cutoff);
+    const standaloneEvents = [];
+    const standaloneSeen = new Set();
+    for (let i = 1; i < upperBound; i++) {
+        const meta = sourceChat?.[i]?.horae_meta;
+        if (!meta) continue;
+        const events = meta.events || (meta.event ? [meta.event] : []);
+        for (const evt of events) {
+            if (!evt || typeof evt !== 'object') continue;
+            const summary = typeof evt.summary === 'string' ? evt.summary.trim() : '';
+            if (!summary) continue;
+
+            const isSummaryEvent = !!(evt.isSummary || evt.level === '摘要' || evt._summaryId);
+            if (isSummaryEvent) {
+                pushRecap(summary);
+                continue;
+            }
+
+            if (evt._compressedBy && coveredSummaryIds.has(evt._compressedBy)) continue;
+            if (coveredMsgIndices.has(i)) continue;
+
+            const date = meta.timestamp?.story_date || '?';
+            const time = meta.timestamp?.story_time || '';
+            const level = evt.level || '一般';
+            const key = `${i}|${date}|${time}|${level}|${summary}`;
+            if (standaloneSeen.has(key)) continue;
+            standaloneSeen.add(key);
+
+            standaloneEvents.push({
+                date,
+                time,
+                level,
+                summary,
+            });
+        }
+    }
+
+    const compensationBlocks = _buildCarryoverCompensationBlocks(standaloneEvents, 8);
+    for (const block of compensationBlocks) {
+        pushRecap(block);
+    }
+
+    return recapTexts;
+}
+
+function _composeCarryoverRecapText(recapTexts) {
+    if (!Array.isArray(recapTexts) || recapTexts.length === 0) return '';
+    const lines = recapTexts.map((text, idx) => `${idx + 1}. ${text}`);
+    return `【承接旧对话剧情回顾（共${recapTexts.length}条）】\n${lines.join('\n')}`;
+}
+
+function _buildImportObjectFromChat(chat) {
+    return {
+        version: VERSION,
+        exportTime: new Date().toISOString(),
+        data: (chat || [])
+            .map((msg, index) => ({ index, horae_meta: _deepCloneData(msg?.horae_meta || null) }))
+            .filter(item => item.horae_meta),
+    };
+}
+
+function _getCarryVisibleIndices(chat, keepCount) {
+    const result = { indices: [], aiCount: 0 };
+    if (!Array.isArray(chat) || chat.length <= 1) return result;
+    if (keepCount <= 0) return result;
+
+    const selectedAiIndices = [];
+    for (let i = chat.length - 1; i >= 1; i--) {
+        const msg = chat[i];
+        if (!msg || msg.is_hidden) continue;
+        if (msg.is_user) continue;
+        selectedAiIndices.push(i);
+        if (selectedAiIndices.length >= keepCount) break;
+    }
+
+    if (selectedAiIndices.length === 0) return result;
+
+    selectedAiIndices.sort((a, b) => a - b);
+    const carryStart = selectedAiIndices[0];
+
+    for (let i = carryStart; i < chat.length; i++) {
+        const msg = chat[i];
+        if (!msg || msg.is_hidden) continue;
+        result.indices.push(i);
+    }
+
+    result.aiCount = selectedAiIndices.length;
+    return result;
+}
+
+function _createCarryoverAnchorMessage() {
+    const ctx = getContext();
+    return {
+        name: ctx?.name2 || 'Assistant',
+        is_user: false,
+        is_system: true,
+        mes: '',
+        is_hidden: true,
+        horae_meta: createEmptyMeta(),
+    };
+}
+
+function _stripFreshChatPreludeForCarryover(targetChat) {
+    if (!Array.isArray(targetChat) || targetChat.length === 0) return 0;
+    if (targetChat.some(msg => !!msg?.is_user)) return 0;
+
+    const preludeCount = targetChat.length;
+    if (preludeCount <= 0) return 0;
+
+    // 保留第 1 层作为元数据锚点，其余开场白楼层移除
+    const anchor = targetChat[0];
+    anchor.mes = '';
+    anchor.is_hidden = true;
+    if (Array.isArray(anchor.swipes)) anchor.swipes = [];
+    if (typeof anchor.swipe_id === 'number') anchor.swipe_id = 0;
+    targetChat.splice(1);
+    return preludeCount;
+}
+
+async function createNewChatWithCarryover() {
+    const sourceChat = horaeManager.getChat();
+    if (!Array.isArray(sourceChat) || sourceChat.length === 0) {
+        showToast('当前对话没有可携带的数据', 'warning');
+        return;
+    }
+
+    const keepRaw = parseInt(settings.autoSummaryKeepRecent, 10);
+    const keepCount = Number.isFinite(keepRaw) && keepRaw >= 0 ? keepRaw : 10;
+    const carryPlan = _getCarryVisibleIndices(sourceChat, keepCount);
+    const carryIndices = carryPlan.indices;
+    const carryAiCount = carryPlan.aiCount;
+    const carryMessages = carryIndices.map(i => _sanitizeCarryMessage(sourceChat[i])).filter(Boolean);
+    const carryStart = carryIndices.length > 0 ? carryIndices[0] : sourceChat.length;
+    const recapTexts = _collectCarryoverRecapTexts(sourceChat, carryStart);
+    const recapText = _composeCarryoverRecapText(recapTexts);
+    const importObj = _buildImportObjectFromChat(sourceChat);
+
+    if (importObj.data.length === 0 && carryMessages.length === 0 && !recapText) {
+        showToast('当前对话没有可携带的数据', 'warning');
+        return;
+    }
+
+    const confirmText = [
+        `将按“保留AI条数=${keepCount}”携带最近 AI 楼层，并创建新对话。`,
+        '',
+        `将携带AI楼层：${carryAiCount} 条`,
+        `实际携带消息：${carryMessages.length} 条（含夹带User）`,
+        `旧剧情回顾：${recapTexts.length} 条`,
+        '',
+        '继续吗？',
+    ].join('\n');
+    if (!confirm(confirmText)) return;
+
+    try {
+        await getContext().saveChat();
+        await doNewChat({ deleteCurrentChat: false });
+
+        const targetChat = horaeManager.getChat();
+        if (!Array.isArray(targetChat)) throw new Error('新对话创建失败');
+        if (targetChat.length === 0) targetChat.push(_createCarryoverAnchorMessage());
+        const removedPreludeCount = carryMessages.length > 0 ? _stripFreshChatPreludeForCarryover(targetChat) : 0;
+        if (targetChat.length === 0) targetChat.push(_createCarryoverAnchorMessage());
+
+        _importAsInitialState(importObj, targetChat, { includeTimeline: false });
+
+        if (!targetChat[0].horae_meta) targetChat[0].horae_meta = createEmptyMeta();
+        if (!Array.isArray(targetChat[0].horae_meta.events)) targetChat[0].horae_meta.events = [];
+        targetChat[0].horae_meta.events = targetChat[0].horae_meta.events.filter(evt => !evt?._carryoverSeed);
+
+        if (recapText) {
+            targetChat[0].horae_meta.events.unshift({
+                is_important: true,
+                level: '摘要',
+                summary: recapText,
+                isSummary: true,
+                _carryoverSeed: true,
+            });
+        }
+
+        for (const msg of carryMessages) {
+            targetChat.push(msg);
+        }
+
+        await getContext().saveChat();
+        if (typeof getContext().reloadCurrentChat === 'function') {
+            await getContext().reloadCurrentChat();
+        }
+        _rebuildGlobalDataForCurrentChat();
+        refreshAllDisplays();
+        renderCustomTablesList();
+
+        showToast(`已创建新对话：AI ${carryAiCount} 条，实际消息 ${carryMessages.length} 条，旧剧情回顾 ${recapTexts.length} 条${removedPreludeCount > 0 ? `，已清理开场白 ${removedPreludeCount} 条` : ''}`, 'success');
+    } catch (error) {
+        console.error('[Horae] 创建携带记忆新对话失败:', error);
+        showToast(`创建新对话失败: ${error.message || error}`, 'error');
+    }
 }
 
 /**
@@ -14581,7 +17706,7 @@ function exportData() {
             horae_meta: msg.horae_meta || null
         })).filter(item => item.horae_meta)
     };
-    
+
     const blob = new Blob([JSON.stringify(exportObj, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -14589,7 +17714,7 @@ function exportData() {
     a.download = `horae_export_${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    
+
     showToast(t('toast.configExported'), 'success');
 }
 
@@ -14598,24 +17723,24 @@ function exportData() {
  */
 function importData() {
     const mode = confirm(t('confirm.importMode')) ? 'match' : 'initial';
-    
+
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
     input.onchange = async (e) => {
         const file = e.target.files[0];
         if (!file) return;
-        
+
         try {
             const text = await file.text();
             const importObj = JSON.parse(text);
-            
+
             if (!importObj.data || !Array.isArray(importObj.data)) {
                 throw new Error(t('toast.invalidDataFormat'));
             }
-            
+
             const chat = horaeManager.getChat();
-            
+
             if (mode === 'match') {
                 let imported = 0;
                 for (const item of importObj.data) {
@@ -14625,7 +17750,7 @@ function importData() {
                     }
                 }
                 await getContext().saveChat();
-                showToast(t('toast.recordsImported', {n: imported}), 'success');
+                showToast(t('toast.recordsImported', { n: imported }), 'success');
             } else {
                 _importAsInitialState(importObj, chat);
                 await getContext().saveChat();
@@ -14634,7 +17759,7 @@ function importData() {
             refreshAllDisplays();
         } catch (error) {
             console.error('[Horae] 导入失败:', error);
-            showToast(t('toast.importFailed', {error: error.message}), 'error');
+            showToast(t('toast.importFailed', { error: error.message }), 'error');
         }
     };
     input.click();
@@ -14644,16 +17769,17 @@ function importData() {
  * 从导出文件提取最终累积状态，写入当前对话的 chat[0] 作为初始元数据，
  * 适用于新聊天继承旧聊天的世界观数据。
  */
-function _importAsInitialState(importObj, chat) {
+function _importAsInitialState(importObj, chat, options = {}) {
+    const includeTimeline = options.includeTimeline !== false;
     const allMetas = importObj.data
         .sort((a, b) => a.index - b.index)
         .map(d => d.horae_meta)
         .filter(Boolean);
-    
+
     if (!allMetas.length) throw new Error('导出文件中无有效元数据');
     if (!chat[0].horae_meta) chat[0].horae_meta = createEmptyMeta();
     const target = chat[0].horae_meta;
-    
+
     // 累积 NPC
     for (const meta of allMetas) {
         if (meta.npcs) {
@@ -14697,26 +17823,28 @@ function _importAsInitialState(importObj, chat) {
             target.scene.characters_present = [...meta.scene.characters_present];
         }
     }
-    
-    // 导入所有事件（含摘要事件），保留 _compressedBy / _summaryId 引用
+
     const importedEvents = [];
-    for (const meta of allMetas) {
-        if (!meta.events?.length) continue;
-        for (const evt of meta.events) {
-            importedEvents.push({ ...evt });
+    if (includeTimeline) {
+        // 导入所有事件（含摘要事件），保留 _compressedBy / _summaryId 引用
+        for (const meta of allMetas) {
+            if (!meta.events?.length) continue;
+            for (const evt of meta.events) {
+                importedEvents.push({ ...evt });
+            }
+        }
+        if (importedEvents.length > 0) {
+            if (!target.events) target.events = [];
+            target.events.push(...importedEvents);
+        }
+
+        // 导入自动摘要记录（来自源数据的 chat[0]）
+        const srcFirstMeta = allMetas[0];
+        if (srcFirstMeta?.autoSummaries?.length) {
+            target.autoSummaries = srcFirstMeta.autoSummaries.map(s => ({ ...s }));
         }
     }
-    if (importedEvents.length > 0) {
-        if (!target.events) target.events = [];
-        target.events.push(...importedEvents);
-    }
-    
-    // 导入自动摘要记录（来自源数据的 chat[0]）
-    const srcFirstMeta = allMetas[0];
-    if (srcFirstMeta?.autoSummaries?.length) {
-        target.autoSummaries = srcFirstMeta.autoSummaries.map(s => ({ ...s }));
-    }
-    
+
     // 关系网络
     const finalRels = [];
     for (const meta of allMetas) {
@@ -14729,7 +17857,7 @@ function _importAsInitialState(importObj, chat) {
         }
     }
     if (finalRels.length > 0) target.relationships = finalRels;
-    
+
     // RPG 数据
     for (const meta of allMetas) {
         if (meta.rpg) {
@@ -14770,17 +17898,23 @@ function _importAsInitialState(importObj, chat) {
         }
     }
 
-    // 将 rpg 内嵌的 config 也同步到 _rpgConfigs
+    // 将 rpg 内嵌的 config 回填到 _rpgConfigs（仅当 _rpgConfigs 缺失时）
     if (target.rpg) {
         if (!target._rpgConfigs) target._rpgConfigs = {};
-        if (target.rpg.reputationConfig) target._rpgConfigs.reputationConfig = target.rpg.reputationConfig;
-        if (target.rpg.equipmentConfig) target._rpgConfigs.equipmentConfig = target.rpg.equipmentConfig;
-        if (target.rpg.currencyConfig) target._rpgConfigs.currencyConfig = target.rpg.currencyConfig;
-        if (target.rpg._deletedSkills) target._rpgConfigs._deletedSkills = target.rpg._deletedSkills;
-        if (target.rpg.strongholds) target._rpgConfigs.strongholds = target.rpg.strongholds;
-        if (target.rpg._deletedStrongholds) target._rpgConfigs._deletedStrongholds = target.rpg._deletedStrongholds;
+        if (target.rpg.reputationConfig && !target._rpgConfigs.reputationConfig)
+            target._rpgConfigs.reputationConfig = target.rpg.reputationConfig;
+        if (target.rpg.equipmentConfig && !target._rpgConfigs.equipmentConfig)
+            target._rpgConfigs.equipmentConfig = target.rpg.equipmentConfig;
+        if (target.rpg.currencyConfig && !target._rpgConfigs.currencyConfig)
+            target._rpgConfigs.currencyConfig = target.rpg.currencyConfig;
+        if (target.rpg._deletedSkills && !target._rpgConfigs._deletedSkills)
+            target._rpgConfigs._deletedSkills = target.rpg._deletedSkills;
+        if (target.rpg.strongholds && !target._rpgConfigs.strongholds)
+            target._rpgConfigs.strongholds = target.rpg.strongholds;
+        if (target.rpg._deletedStrongholds && !target._rpgConfigs._deletedStrongholds)
+            target._rpgConfigs._deletedStrongholds = target.rpg._deletedStrongholds;
     }
-    
+
     // 自定义表格
     for (const meta of allMetas) {
         if (meta.tableContributions) {
@@ -14788,7 +17922,7 @@ function _importAsInitialState(importObj, chat) {
             Object.assign(target.tableContributions, meta.tableContributions);
         }
     }
-    
+
     // 场景记忆
     for (const meta of allMetas) {
         if (meta.locationMemory) {
@@ -14796,7 +17930,7 @@ function _importAsInitialState(importObj, chat) {
             Object.assign(target.locationMemory, meta.locationMemory);
         }
     }
-    
+
     // 待办事项
     const seenAgenda = new Set();
     for (const meta of allMetas) {
@@ -14810,7 +17944,7 @@ function _importAsInitialState(importObj, chat) {
             }
         }
     }
-    
+
     // 处理已删除物品
     for (const meta of allMetas) {
         if (meta.deletedItems?.length) {
@@ -14819,7 +17953,7 @@ function _importAsInitialState(importObj, chat) {
             }
         }
     }
-    
+
     const npcCount = Object.keys(target.npcs || {}).length;
     const itemCount = Object.keys(target.items || {}).length;
     const eventCount = importedEvents.length;
@@ -14834,36 +17968,99 @@ async function clearAllData() {
     if (!confirm(t('confirm.clearAllMeta'))) {
         return;
     }
-    
+
     const chat = horaeManager.getChat();
     for (const msg of chat) {
         delete msg.horae_meta;
     }
-    
+
     await getContext().saveChat();
     showToast(t('toast.settingsRestored'), 'warning');
     refreshAllDisplays();
 }
 
-/** 使用AI分析消息内容 */
-async function analyzeMessageWithAI(messageContent) {
+/** AI 辅助生成入口。默认走 generateRaw 并显式带入当前 OAI 预设片段。 */
+async function _generateForAiTasks(prompt, opts = {}) {
+    const { noVectorRecallMarker = false, noContextInjectionMarker = false } = opts;
+    const context = getContext();
+    const markerLines = [];
+    if (noVectorRecallMarker) markerLines.push(_createNoVectorRecallMarker());
+    if (noContextInjectionMarker) markerLines.push(_createNoContextInjectionMarker());
+    const markerText = markerLines.join('\n');
+    const finalPrompt = markerText ? `${markerText}\n${prompt}` : prompt;
+
+    if (settings.useMainPresetForAiTasks && typeof context?.generate === 'function') {
+        return await context.generate('quiet', {
+            quiet_prompt: finalPrompt,
+            quietToLoud: false,
+            skipWIAN: false,
+        });
+    }
+
+    const messages = await _buildSummaryMessages(finalPrompt);
+
+    try {
+        return await context.generateRaw({ prompt: messages });
+    } catch (errObjectStyle) {
+        console.warn('[Horae] generateRaw 对象式签名失败，回退旧版字符串签名:',
+            errObjectStyle?.message || errObjectStyle);
+        const flatPrompt = messages
+            .map(m => `[${String(m.role || 'system').toUpperCase()}]\n${m.content || ''}`)
+            .join('\n\n');
+        return await context.generateRaw(flatPrompt, null, false, false);
+    }
+}
+
+/** 使用AI分析消息内容（支持轻量上下文 + 上一条 USER 行动 + 角色身份） */
+async function analyzeMessageWithAI(messageContent, opts = {}) {
+    const { messageIndex, noContextInjectionMarker = false } = opts;
     const context = getContext();
     const userName = context?.name1 || t('ui.protagonist');
+    messageContent = _stripHoraeAnalysisInput(messageContent) || String(messageContent || '').trim();
 
-    let analysisPrompt;
-    if (settings.customAnalysisPrompt) {
-        analysisPrompt = settings.customAnalysisPrompt
-            .replace(/\{\{user\}\}/gi, userName)
-            .replace(/\{\{content\}\}/gi, messageContent);
-    } else {
-        analysisPrompt = getDefaultAnalysisPrompt()
-            .replace(/\{\{user\}\}/gi, userName)
-            .replace(/\{\{content\}\}/gi, messageContent);
+    let contextText = '';
+    let previousUserMessage = '';
+
+    if (typeof messageIndex === 'number' && messageIndex >= 0) {
+        const chat = horaeManager.getChat();
+        if (chat?.length) {
+            const skipLast = Math.max(0, chat.length - messageIndex);
+            const stateBeforeTarget = horaeManager.getLatestState(skipLast);
+            contextText = _buildAnalysisContext(stateBeforeTarget, messageIndex, userName);
+
+            for (let i = messageIndex - 1; i >= Math.max(0, messageIndex - 3); i--) {
+                if (chat[i]?.is_user) {
+                    previousUserMessage = _stripHoraeAnalysisInput(chat[i].mes || '');
+                    if (previousUserMessage.length > 2000) previousUserMessage = previousUserMessage.slice(0, 2000) + '…';
+                    break;
+                }
+            }
+        }
+    }
+
+    const template = settings.customAnalysisPrompt || getDefaultAnalysisPrompt();
+    let analysisPrompt = template
+        .replace(/\{\{user\}\}/gi, userName)
+        .replace(/\{\{context\}\}/gi, contextText)
+        .replace(/\{\{previousUserMessage\}\}/gi, previousUserMessage)
+        .replace(/\{\{content\}\}/gi, messageContent);
+    const fieldLines = horaeManager.getPromptFieldLines?.() || {};
+    for (const [key, value] of Object.entries(fieldLines)) {
+        analysisPrompt = analysisPrompt.replace(new RegExp(`\\$\\{${key}\\}`, 'g'), value);
     }
 
     try {
-        const response = await context.generateRaw(analysisPrompt, null, false, false);
-        
+        const shouldMarkNoRecall = !!(
+            context?.mainApi === 'openai' &&
+            settings.injectContext &&
+            settings.vectorEnabled
+        );
+        const response = await _generateForAuxTask(analysisPrompt, {
+            kind: 'analysis',
+            noVectorRecallMarker: shouldMarkNoRecall,
+            noContextInjectionMarker: !!noContextInjectionMarker,
+        });
+
         if (response) {
             const parsed = horaeManager.parseHoraeTag(response);
             return parsed;
@@ -14872,8 +18069,167 @@ async function analyzeMessageWithAI(messageContent) {
         console.error('[Horae] AI分析调用失败:', error);
         throw error;
     }
-    
+
     return null;
+}
+
+function _buildAnalysisContext(state, targetIndex, userName) {
+    const lines = [];
+    if (userName) lines.push(`- user: ${userName}`);
+    const dateTime = [state?.timestamp?.story_date, state?.timestamp?.story_time].filter(Boolean).join(' ');
+    if (dateTime) lines.push(`- time: ${dateTime}`);
+    if (state?.scene?.location) lines.push(`- location: ${state.scene.location}`);
+    if (state?.scene?.atmosphere) lines.push(`- atmosphere: ${state.scene.atmosphere}`);
+
+    const present = state?.scene?.characters_present || [];
+    if (present.length > 0) {
+        const costumes = state?.costumes || {};
+        const charText = present
+            .slice(0, 12)
+            .map(name => costumes[name] ? `${name}（${costumes[name]}）` : name)
+            .join('、');
+        lines.push(`- characters: ${charText}`);
+    }
+
+    const npcNames = Object.keys(state?.npcs || {});
+    if (npcNames.length > 0) {
+        const npcText = npcNames.slice(0, 15).map(name => {
+            const npc = state.npcs[name];
+            const rel = npc?.relationship || '';
+            return rel ? `${name}(${rel})` : name;
+        }).join('、');
+        lines.push(`- npcs: ${npcText}`);
+    }
+
+    const items = Object.entries(state?.items || {}).slice(0, 20);
+    if (items.length > 0) {
+        const itemText = items.map(([name, info]) => {
+            const holder = info?.holder ? `=${info.holder}` : '';
+            const loc = info?.location ? `@${info.location}` : '';
+            return `${info?.icon || ''}${name}${holder}${loc}`;
+        }).join('；');
+        lines.push(`- items: ${itemText}`);
+    }
+
+    const mood = Object.entries(state?.mood || {}).filter(([name]) => present.includes(name)).slice(0, 12);
+    if (mood.length > 0) {
+        lines.push(`- mood: ${mood.map(([name, val]) => `${name}:${val}`).join('；')}`);
+    }
+
+    return lines.join('\n');
+}
+
+/**
+ * 发送前补齐上一条AI楼层：缺 horae/horaeevent 时触发。
+ * 使用上下文增强的 analyzeMessageWithAI 进行完整分析（含轻量状态 + 上一条 USER 行动 + 角色身份），
+ * 并通过 mergeParsedToMeta 写回所有已提取字段。
+ * 只在「最后一条是USER消息」时触发，避免干扰 regenerate/swipe。
+ */
+async function _autoFillPreviousAiTimelineBeforeInjection(chat) {
+    if (!settings.autoFillPrevTimelineOnSend) return;
+    if (settings.sendTimeline === false) return;
+    if (!Array.isArray(chat) || chat.length < 2) return;
+
+    const lastIndex = chat.length - 1;
+    const lastMsg = chat[lastIndex];
+    if (!lastMsg?.is_user) return;
+
+    let targetIndex = -1;
+    for (let i = lastIndex - 1; i >= 0; i--) {
+        const msg = chat[i];
+        if (!msg || msg.is_user) continue;
+        if (msg.horae_meta?._skipHorae) continue;
+        targetIndex = i;
+        break;
+    }
+
+    if (targetIndex < 0) return;
+
+    const targetMsg = chat[targetIndex];
+    const existingMeta = horaeManager.getMessageMeta(targetIndex) || createEmptyMeta();
+    const existingEvents = Array.isArray(existingMeta.events)
+        ? existingMeta.events
+        : (existingMeta.event ? [existingMeta.event] : []);
+    const hasTimeline = existingEvents.some(evt => evt?.summary && String(evt.summary).trim());
+    if (hasTimeline) return;
+
+    const sourceText = typeof targetMsg?.mes === 'string' ? targetMsg.mes.trim() : '';
+    if (!sourceText) return;
+
+    const cleanedTargetText = _stripHoraeAnalysisInput(sourceText);
+    const targetTextForAnalysis = cleanedTargetText || sourceText;
+
+    console.log(`[Horae] 前置补全：检测到上一条AI楼层 #${targetIndex} 缺少时间线，尝试上下文增强分析`);
+    showToast(t('toast.autoFillPrevTimelineStart', { id: targetIndex }), 'info');
+
+    let parsed = horaeManager.parseHoraeTag(sourceText);
+    if (!parsed) {
+        parsed = horaeManager.parseLooseFormat(sourceText);
+    }
+    const parsedEvents = Array.isArray(parsed?.events)
+        ? parsed.events.filter(evt => evt?.summary && String(evt.summary).trim())
+        : [];
+    if (!parsed || parsedEvents.length === 0) {
+        try {
+            parsed = await analyzeMessageWithAI(targetTextForAnalysis, {
+                messageIndex: targetIndex,
+                noContextInjectionMarker: true,
+            });
+        } catch (err) {
+            console.warn(`[Horae] 前置补全失败 #${targetIndex}:`, err);
+            showToast(t('toast.aiEnrichFailed', { error: err?.message || err || 'unknown' }), 'error');
+            return;
+        }
+    }
+    if (!parsed) return;
+
+    const mergedMeta = horaeManager.mergeParsedToMeta(existingMeta, parsed);
+    const mergedEvents = Array.isArray(mergedMeta?.events)
+        ? mergedMeta.events.filter(evt => evt?.summary && String(evt.summary).trim())
+        : [];
+    if (mergedEvents.length === 0) {
+        console.log(`[Horae] 前置补全跳过：#${targetIndex} 未提取到有效事件摘要`);
+        return;
+    }
+
+    if (mergedMeta._tableUpdates) {
+        horaeManager.applyTableUpdates(mergedMeta._tableUpdates);
+        delete mergedMeta._tableUpdates;
+    }
+    if (parsed.deletedAgenda?.length > 0) {
+        horaeManager.removeCompletedAgenda(parsed.deletedAgenda);
+    }
+    if (parsed.relationships?.length > 0) {
+        horaeManager._mergeRelationships(parsed.relationships);
+    }
+    if (parsed.scene?.scene_desc && parsed.scene?.location) {
+        horaeManager._updateLocationMemory(parsed.scene.location, parsed.scene.scene_desc);
+    }
+
+    horaeManager.setMessageMeta(targetIndex, mergedMeta);
+    injectHoraeTagToMessage(targetIndex, mergedMeta);
+
+    // 仅刷新目标楼层面板，避免全局刷新带来的卡顿
+    try {
+        const messageEl = document.querySelector(`.mes[mesid="${targetIndex}"]`);
+        if (messageEl) {
+            const oldPanel = messageEl.querySelector('.horae-message-panel');
+            if (oldPanel) oldPanel.remove();
+            addMessagePanel(messageEl, targetIndex);
+            messageEl.classList.add('horae-processed');
+        }
+    } catch (err) {
+        console.warn(`[Horae] 前置补全面板刷新失败 #${targetIndex}:`, err);
+    }
+
+    try {
+        await getContext().saveChat();
+    } catch (err) {
+        console.warn('[Horae] 前置补全保存失败:', err);
+    }
+
+    console.log(`[Horae] 前置补全完成：已写回上一条AI楼层 #${targetIndex} 的完整解析结果`);
+    showToast(t('toast.autoFillPrevTimelineDone', { id: targetIndex }), 'success');
 }
 
 // ============================================
@@ -14907,17 +18263,17 @@ async function onMessageReceived(messageId) {
     try {
         const chat = horaeManager.getChat();
         const message = chat[messageId];
-        
+
         if (!message || message.is_user) return;
-        
+
         if (message.horae_meta?._skipHorae) return;
-        
+
         // 数据层清理：将思维链内的 horae 标签转为全角，防止酒馆收束时误吞正文
         const sanitized = _sanitizeThinkBlockHoraeTags(message.mes);
         if (sanitized !== message.mes) {
             message.mes = sanitized;
         }
-        
+
         const hasExistingMeta = !!(message.horae_meta?.timestamp?.absolute);
 
         // 判断是否为历史消息渲染（非新消息、非当前最新消息的重生成）
@@ -14934,9 +18290,9 @@ async function onMessageReceived(messageId) {
             if (messageId === 0) savedGlobal = _saveGlobalMeta(message.horae_meta);
             message.horae_meta = createEmptyMeta();
         }
-        
+
         horaeManager.processAIResponse(messageId, message.mes);
-        
+
         if (isRegenerate) {
             _restoreCompressedFlags(message.horae_meta, savedFlags);
             if (savedGlobal) _restoreGlobalMeta(message.horae_meta, savedGlobal);
@@ -14945,7 +18301,7 @@ async function onMessageReceived(messageId) {
             horaeManager.rebuildLocationMemory();
             horaeManager.rebuildRpgData();
         }
-        
+
         if (!_summaryInProgress) {
             await getContext().saveChat();
         }
@@ -14960,7 +18316,7 @@ async function onMessageReceived(messageId) {
     } catch (err) {
         console.error('[Horae] refreshAllDisplays 失败:', err);
     }
-    
+
     setTimeout(() => {
         try {
             const messageEl = document.querySelector(`.mes[mesid="${messageId}"]`);
@@ -14987,7 +18343,7 @@ async function onMessageReceived(messageId) {
         }
     }
 
-    if (!isRegenerate && settings.autoSummaryEnabled && settings.sendTimeline) {
+    if (!isRegenerate && settings.enabled && settings.autoSummaryEnabled && settings.sendTimeline) {
         setTimeout(() => {
             if (!_autoSummaryRanThisTurn) {
                 checkAutoSummary();
@@ -14999,15 +18355,22 @@ async function onMessageReceived(messageId) {
 /**
  * 消息删除时触发 — 重建表格数据
  */
-function onMessageDeleted() {
+async function onMessageDeleted() {
     if (!settings.enabled) return;
-    
+
     horaeManager.rebuildTableData();
     horaeManager.rebuildRelationships();
     horaeManager.rebuildLocationMemory();
     horaeManager.rebuildRpgData();
-    getContext().saveChat();
-    
+    try {
+        if (settings.autoSummaryEnabled) {
+            await _reconcileAutoBufferVisibilityByKeepRecent();
+        }
+    } catch (err) {
+        console.warn('[Horae] 自动摘要显隐重算失败:', err);
+    }
+    await getContext().saveChat();
+
     refreshAllDisplays();
     renderCustomTablesList();
 }
@@ -15064,16 +18427,320 @@ function onMessageEdited(messageId) {
     }, 200);
 }
 
+/**
+ * 仅归一化用于 chat<->prompt 对位匹配
+ */
+function _normalizePromptMessageText(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/<think[\s\S]*?<\/think>/gi, '')
+        .replace(/<thinking[\s\S]*?<\/thinking>/gi, '')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/[\[\]]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * 判断 chat.mes 与 eventData.chat.content 是否可视为同一条消息
+ */
+function _isLikelySameChatMessage(chatMes, promptContent) {
+    const a = _normalizePromptMessageText(chatMes);
+    const b = _normalizePromptMessageText(promptContent);
+    if (!a || !b) return false;
+    if (a === b) return true;
+
+    const shortText = a.length <= b.length ? a : b;
+    const longText = a.length <= b.length ? b : a;
+
+    // 兼容被裁剪/包装后的内容
+    if (shortText.length >= 48 && longText.includes(shortText)) return true;
+
+    const probeLen = Math.min(80, shortText.length);
+    if (probeLen >= 32) {
+        const head = shortText.slice(0, probeLen);
+        const tail = shortText.slice(-probeLen);
+        if (longText.includes(head) && longText.includes(tail)) return true;
+    }
+
+    return false;
+}
+
+/**
+ * 旧策略：仅按 eventData.chat 中 user/assistant 倒序计数
+ */
+function _resolveInsertIndexByPromptTurns(promptChat, position) {
+    if (position === 0) {
+        for (let i = promptChat.length - 1; i >= 0; i--) {
+            if (promptChat[i].role === 'user' || promptChat[i].role === 'assistant') {
+                return i + 1;
+            }
+        }
+        return promptChat.length;
+    }
+    let count = 0;
+    let insertIdx = promptChat.length;
+    for (let i = promptChat.length - 1; i >= 0; i--) {
+        if (promptChat[i].role === 'user' || promptChat[i].role === 'assistant') {
+            count++;
+            if (count >= position) {
+                insertIdx = i;
+                break;
+            }
+        }
+    }
+    return insertIdx;
+}
+
+/**
+ * 以原始 chat 为基准定位注入点：
+ * 1) 先把 chat 与 eventData.chat 的消息做尾部对位
+ * 2) 再按 chat 的倒序第 position 条消息映射到 eventData.chat
+ * 3) 对位失败时回退到旧策略
+ */
+function _resolveInsertIndexByChatAnchor(chat, promptChat, position) {
+    if (!Array.isArray(promptChat) || promptChat.length === 0) return 0;
+    if (!Array.isArray(chat) || chat.length === 0) return _resolveInsertIndexByPromptTurns(promptChat, position);
+
+    const turnChatIndices = [];
+    for (let i = 0; i < chat.length; i++) {
+        const msg = chat[i];
+        if (!msg) continue;
+        if (typeof msg.is_user !== 'boolean') continue;
+        turnChatIndices.push(i);
+    }
+    if (turnChatIndices.length === 0) return _resolveInsertIndexByPromptTurns(promptChat, position);
+
+    const insertAfterLastTurn = position === 0;
+    const targetListPos = insertAfterLastTurn
+        ? (turnChatIndices.length - 1)
+        : (turnChatIndices.length - position);
+    const targetChatIdx = targetListPos >= 0 ? turnChatIndices[targetListPos] : turnChatIndices[0];
+
+    // 从尾部开始做 role+内容匹配，避免误把前置示例对话当成真实 chat
+    const mapped = new Map(); // chatIndex -> promptIndex
+    let p = promptChat.length - 1;
+    for (let c = chat.length - 1; c >= 0 && p >= 0; c--) {
+        const msg = chat[c];
+        if (!msg || typeof msg.is_user !== 'boolean') continue;
+
+        const expectedRole = msg.is_user ? 'user' : 'assistant';
+        let found = -1;
+        for (let i = p; i >= 0; i--) {
+            const row = promptChat[i];
+            if (!row || (row.role !== 'user' && row.role !== 'assistant')) continue;
+            if (row.role !== expectedRole) continue;
+            if (_isLikelySameChatMessage(msg.mes || '', row.content || '')) {
+                found = i;
+                break;
+            }
+        }
+        if (found !== -1) {
+            mapped.set(c, found);
+            p = found - 1;
+        }
+    }
+
+    if (mapped.size === 0) {
+        return _resolveInsertIndexByPromptTurns(promptChat, position);
+    }
+
+    if (insertAfterLastTurn) {
+        if (mapped.has(targetChatIdx)) return Math.min(mapped.get(targetChatIdx) + 1, promptChat.length);
+        const mappedPairs = Array.from(mapped.entries()).sort((a, b) => a[0] - b[0]);
+        return Math.min(mappedPairs[mappedPairs.length - 1][1] + 1, promptChat.length);
+    }
+
+    // 精确命中
+    if (mapped.has(targetChatIdx)) return mapped.get(targetChatIdx);
+
+    // 近似：找“目标 chat 楼层及其之后”最早一个已映射楼层，在其前面插入
+    const mappedPairs = Array.from(mapped.entries()).sort((a, b) => a[0] - b[0]);
+    for (const [chatIdx, promptIdx] of mappedPairs) {
+        if (chatIdx >= targetChatIdx) return promptIdx;
+    }
+
+    // 兜底：目标比所有已映射都新（极少见），插在最后一个映射楼层前
+    return mappedPairs[mappedPairs.length - 1][1];
+}
+
+/**
+ * 收集“已经在 prompt 中出现”的 chat 楼层索引，用于向量召回去重。
+ * 通过从尾部开始的 role+内容匹配，将 eventData.chat 对位回原始 chat。
+ */
+function _collectPromptCoveredChatIndices(chat, promptChat) {
+    const covered = new Set();
+    if (!Array.isArray(chat) || !Array.isArray(promptChat) || chat.length === 0 || promptChat.length === 0) {
+        return covered;
+    }
+
+    let p = promptChat.length - 1;
+    for (let c = chat.length - 1; c >= 0 && p >= 0; c--) {
+        const msg = chat[c];
+        if (!msg || typeof msg.is_user !== 'boolean') continue;
+
+        const expectedRole = msg.is_user ? 'user' : 'assistant';
+        let found = -1;
+        for (let i = p; i >= 0; i--) {
+            const row = promptChat[i];
+            if (!row || (row.role !== 'user' && row.role !== 'assistant')) continue;
+            if (row.role !== expectedRole) continue;
+            if (_isLikelySameChatMessage(msg.mes || '', row.content || '')) {
+                found = i;
+                break;
+            }
+        }
+        if (found !== -1) {
+            covered.add(c);
+            p = found - 1;
+        }
+    }
+    return covered;
+}
+
 /** 注入上下文（数据+规则合并注入） */
+/**
+ * Split Story Timeline section from compact data prompt for independent injection.
+ */
+function _splitTimelineSection(promptText) {
+    if (!promptText) return { mainPrompt: '', timelinePrompt: '' };
+
+    const lines = String(promptText).split('\n');
+    const sectionHeaderRe = /^\[[^\]\n|]+\](?:\([^\n]*\))?$/;
+    const timelineEntryRe = /^(?:\S+\s+#\d+\s+.+:\s+|\S+\s+\[[^\]]+\]:\s+)/u;
+
+    let timelineStart = -1;
+    let timelineEnd = lines.length;
+    for (let i = 0; i < lines.length; i++) {
+        const header = lines[i].trim();
+        if (!header || !sectionHeaderRe.test(header)) continue;
+
+        let end = lines.length;
+        for (let j = i + 1; j < lines.length; j++) {
+            const lineText = lines[j].trim();
+            if (lineText && sectionHeaderRe.test(lineText)) {
+                end = j;
+                break;
+            }
+        }
+
+        const block = lines.slice(i + 1, end);
+        if (block.some(line => timelineEntryRe.test(line.trim()))) {
+            timelineStart = i;
+            timelineEnd = end;
+            break;
+        }
+    }
+
+    if (timelineStart === -1) {
+        return { mainPrompt: promptText, timelinePrompt: '' };
+    }
+
+    let cutStart = timelineStart;
+    while (cutStart > 0 && lines[cutStart - 1].trim() === '') {
+        cutStart--;
+    }
+
+    const timelinePrompt = lines.slice(timelineStart, timelineEnd).join('\n').trim();
+    const mainLines = [...lines.slice(0, cutStart), ...lines.slice(timelineEnd)];
+    const mainPrompt = mainLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+    return { mainPrompt, timelinePrompt };
+}
+
+/**
+ * 解析剧情轨迹在 "[Start a new Chat]" 周围的注入动作：
+ * - 至少两个标识：替换第二个标识内容（用于兜底定位符场景）
+ * - 仅一个标识：在该标识后插入
+ * - 无标识：返回 null，让调用方回退到旧定位策略
+ */
+function _resolveTimelineInsertIndexByStartMarker(promptChat) {
+    if (!Array.isArray(promptChat) || promptChat.length === 0) return null;
+    const markerIndices = [];
+    for (let i = 0; i < promptChat.length; i++) {
+        const row = promptChat[i];
+        if (!row || row.role !== 'system' || typeof row.content !== 'string') continue;
+        if (row.content.includes('[Start a new Chat]')) {
+            markerIndices.push(i);
+            if (markerIndices.length >= 2) {
+                return { mode: 'replace', index: markerIndices[1] };
+            }
+        }
+    }
+    if (markerIndices.length === 1) {
+        return { mode: 'insert', index: markerIndices[0] + 1 };
+    }
+    return null;
+}
+
+const HORAE_INTERNAL_NO_VECTOR_RECALL_PREFIX = '[HORAE_INTERNAL:NO_VECTOR_RECALL:';
+const HORAE_INTERNAL_NO_VECTOR_RECALL_RE = /\[HORAE_INTERNAL:NO_VECTOR_RECALL:[^\]]+\]/g;
+const HORAE_INTERNAL_NO_CONTEXT_INJECTION_PREFIX = '[HORAE_INTERNAL:NO_CONTEXT_INJECTION:';
+const HORAE_INTERNAL_NO_CONTEXT_INJECTION_RE = /\[HORAE_INTERNAL:NO_CONTEXT_INJECTION:[^\]]+\]/g;
+
+function _createNoVectorRecallMarker() {
+    return `${HORAE_INTERNAL_NO_VECTOR_RECALL_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}]`;
+}
+
+function _createNoContextInjectionMarker() {
+    return `${HORAE_INTERNAL_NO_CONTEXT_INJECTION_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}]`;
+}
+
+function _stripNoVectorRecallMarkers(chatMessages) {
+    if (!Array.isArray(chatMessages) || chatMessages.length === 0) return false;
+    let found = false;
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+        const msg = chatMessages[i];
+        if (!msg || typeof msg.content !== 'string') continue;
+        if (!msg.content.includes(HORAE_INTERNAL_NO_VECTOR_RECALL_PREFIX)) continue;
+        found = true;
+        const cleaned = msg.content.replace(HORAE_INTERNAL_NO_VECTOR_RECALL_RE, '').trim();
+        if (cleaned) {
+            msg.content = cleaned;
+        } else {
+            chatMessages.splice(i, 1);
+        }
+    }
+    return found;
+}
+
+function _stripNoContextInjectionMarkers(chatMessages) {
+    if (!Array.isArray(chatMessages) || chatMessages.length === 0) return false;
+    let found = false;
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+        const msg = chatMessages[i];
+        if (!msg || typeof msg.content !== 'string') continue;
+        if (!msg.content.includes(HORAE_INTERNAL_NO_CONTEXT_INJECTION_PREFIX)) continue;
+        found = true;
+        const cleaned = msg.content.replace(HORAE_INTERNAL_NO_CONTEXT_INJECTION_RE, '').trim();
+        if (cleaned) {
+            msg.content = cleaned;
+        } else {
+            chatMessages.splice(i, 1);
+        }
+    }
+    return found;
+}
+
 async function onPromptReady(eventData) {
+    const skipVectorRecallOnce = _stripNoVectorRecallMarkers(eventData?.chat);
+    const skipContextInjectionOnce = _stripNoContextInjectionMarkers(eventData?.chat);
     if (_isSummaryGeneration) return;
+    if (skipContextInjectionOnce) {
+        console.log('[Horae] Internal no-context marker detected, skip Horae context injection for this request');
+        return;
+    }
     if (!settings.enabled || !settings.injectContext) return;
     if (eventData.dryRun) return;
-    
+
     try {
+        const chat = horaeManager.getChat();
+
+        // 发送前：可选补全上一条AI楼层的时间线
+        await _autoFillPreviousAiTimelineBeforeInjection(chat);
+
         // swipe/regenerate检测
         let skipLast = 0;
-        const chat = horaeManager.getChat();
         if (chat && chat.length > 0) {
             const lastMsg = chat[chat.length - 1];
             if (lastMsg && !lastMsg.is_user && lastMsg.horae_meta && (
@@ -15091,13 +18758,32 @@ async function onPromptReady(eventData) {
             }
         }
 
-        const dataPrompt = horaeManager.generateCompactPrompt(skipLast);
+        const eqAutoApplied = _autoApplyEquipmentTemplatesByRace({ persist: false });
+        if (eqAutoApplied && getContext()?.saveChat) await getContext().saveChat();
+
+        const rawDataPrompt = horaeManager.generateCompactPrompt(skipLast);
+        const timelineMode = settings.timelineInjectionMode === 'separate' ? 'separate' : 'inline';
+        const { mainPrompt: dataPrompt, timelinePrompt } = timelineMode === 'separate'
+            ? _splitTimelineSection(rawDataPrompt)
+            : { mainPrompt: rawDataPrompt, timelinePrompt: '' };
 
         let recallPrompt = '';
         console.log(`[Horae] 向量检查: vectorEnabled=${settings.vectorEnabled}, isReady=${vectorManager.isReady}, vectors=${vectorManager.vectors.size}`);
-        if (settings.vectorEnabled && vectorManager.isReady) {
+        if (skipVectorRecallOnce) {
+            console.log('[Horae] Internal no-recall marker detected, skip vector recall for this request');
+        } else if (settings.vectorEnabled && vectorManager.isReady) {
             try {
-                recallPrompt = await vectorManager.generateRecallPrompt(horaeManager, skipLast, settings);
+                await _ensureVectorIndexBeforeRecall();
+                const promptCoveredChatIndices = _collectPromptCoveredChatIndices(chat, eventData.chat);
+                if (promptCoveredChatIndices.size > 0) {
+                    console.log(`[Horae] Prompt已覆盖楼层: ${promptCoveredChatIndices.size}，召回将排除这些楼层`);
+                }
+                recallPrompt = await vectorManager.generateRecallPrompt(
+                    horaeManager,
+                    skipLast,
+                    settings,
+                    promptCoveredChatIndices
+                );
                 console.log(`[Horae] 向量召回结果: ${recallPrompt ? recallPrompt.length + ' 字符' : '空'}`);
             } catch (err) {
                 console.error('[Horae] 向量召回失败:', err);
@@ -15123,15 +18809,54 @@ async function onPromptReady(eventData) {
         const combinedPrompt = recallPrompt
             ? `${dataPrompt}\n${recallPrompt}${antiParaRef}\n${rulesPrompt}`
             : `${dataPrompt}${antiParaRef}\n${rulesPrompt}`;
+        const positionRaw = parseInt(settings.injectionPosition, 10);
+        const position = Number.isNaN(positionRaw) ? 1 : Math.max(0, positionRaw);
+        const depthSource = settings.injectionDepthSource === 'preset' ? 'preset' : 'system';
 
-        const position = settings.injectionPosition;
-        if (position === 0) {
-            eventData.chat.push({ role: 'system', content: combinedPrompt });
+        if (depthSource === 'preset') {
+            // 预设 @D：不按聊天楼层定位，直接按完整提示词末尾偏移插入
+            if (timelinePrompt) {
+                // 剧情轨迹保持与系统 @D 相同的定位逻辑
+                const markerAction = _resolveTimelineInsertIndexByStartMarker(eventData.chat);
+                if (markerAction?.mode === 'replace') {
+                    eventData.chat[markerAction.index].content = timelinePrompt;
+                    console.log(`[Horae] Story timeline replaced the 2nd [Start a new Chat] marker (preset@D)${skipLast ? ' (skip last message)' : ''}`);
+                } else if (markerAction?.mode === 'insert') {
+                    eventData.chat.splice(markerAction.index, 0, { role: 'system', content: timelinePrompt });
+                    console.log(`[Horae] Story timeline injected after [Start a new Chat] (preset@D)${skipLast ? ' (skip last message)' : ''}`);
+                } else {
+                    const timelineDepth = 99999;
+                    const timelineIdx = _resolveInsertIndexByChatAnchor(chat, eventData.chat, timelineDepth);
+                    eventData.chat.splice(timelineIdx, 0, { role: 'system', content: timelinePrompt });
+                    console.log(`[Horae] Start marker not found, fallback timeline injection at depth -${timelineDepth} (preset@D)${skipLast ? ' (skip last message)' : ''}`);
+                }
+            }
+            const len = Array.isArray(eventData.chat) ? eventData.chat.length : 0;
+            const insertIdx = Math.max(0, len - position);
+            eventData.chat.splice(insertIdx, 0, { role: 'system', content: combinedPrompt });
+            console.log(`[Horae] 已注入上下文（预设@D），位置: -${position}${skipLast ? '（已跳过末尾消息）' : ''}${recallPrompt ? '（含向量召回）' : ''}`);
         } else {
-            eventData.chat.splice(-position, 0, { role: 'system', content: combinedPrompt });
+            // 系统 @D：保留原有按聊天楼层定位的注入逻辑
+            if (timelinePrompt) {
+                const markerAction = _resolveTimelineInsertIndexByStartMarker(eventData.chat);
+                if (markerAction?.mode === 'replace') {
+                    eventData.chat[markerAction.index].content = timelinePrompt;
+                    console.log(`[Horae] Story timeline replaced the 2nd [Start a new Chat] marker${skipLast ? ' (skip last message)' : ''}`);
+                } else if (markerAction?.mode === 'insert') {
+                    eventData.chat.splice(markerAction.index, 0, { role: 'system', content: timelinePrompt });
+                    console.log(`[Horae] Story timeline injected after [Start a new Chat]${skipLast ? ' (skip last message)' : ''}`);
+                } else {
+                    const timelineDepth = 99999;
+                    const timelineIdx = _resolveInsertIndexByChatAnchor(chat, eventData.chat, timelineDepth);
+                    eventData.chat.splice(timelineIdx, 0, { role: 'system', content: timelinePrompt });
+                    console.log(`[Horae] Start marker not found, fallback timeline injection at depth -${timelineDepth}${skipLast ? ' (skip last message)' : ''}`);
+                }
+            }
+
+            const insertIdx = _resolveInsertIndexByChatAnchor(chat, eventData.chat, position);
+            eventData.chat.splice(insertIdx, 0, { role: 'system', content: combinedPrompt });
+            console.log(`[Horae] 已注入上下文，位置: -${position}${skipLast ? '（已跳过末尾消息）' : ''}${recallPrompt ? '（含向量召回）' : ''}`);
         }
-        
-        console.log(`[Horae] 已注入上下文，位置: -${position}${skipLast ? '（已跳过末尾消息）' : ''}${recallPrompt ? '（含向量召回）' : ''}`);
     } catch (error) {
         console.error('[Horae] 注入上下文失败:', error);
     }
@@ -15143,11 +18868,11 @@ async function onPromptReady(eventData) {
 function _rebuildGlobalDataForCurrentChat() {
     const chat = horaeManager.getChat();
     if (!chat?.length) return;
-    
+
     horaeManager.rebuildRelationships();
     horaeManager.rebuildLocationMemory();
     horaeManager.rebuildRpgData();
-    
+
     // 清理孤立摘要：range 超出当前聊天长度的条目
     const sums = chat[0]?.horae_meta?.autoSummaries;
     if (sums?.length) {
@@ -15181,7 +18906,7 @@ function _rebuildGlobalDataForCurrentChat() {
 async function onChatChanged() {
     if (!settings.enabled) return;
     _chatFullyLoaded = false;
-    
+
     try {
         clearTableHistory();
         horaeManager.init(getContext(), settings);
@@ -15208,6 +18933,38 @@ async function onChatChanged() {
             }
         }
 
+        // ── 迁移旧数据：events 中的摘要卡片回流到 autoSummaries.summaryText ──
+        // 旧版只存在 events 卡片中，没写到 autoSummaries[i].summaryText
+        // → 这里一次性补回，让 autoSummaries 成为单一可信源
+        try {
+            const _mig = _mc?.[0]?.horae_meta;
+            if (_mig?.autoSummaries?.length && _mc?.length) {
+                const summaryById = new Map();
+                for (const s of _mig.autoSummaries) {
+                    if (s?.id) summaryById.set(s.id, s);
+                }
+                let backfilled = 0;
+                for (let i = 1; i < _mc.length; i++) {
+                    const evts = _mc[i]?.horae_meta?.events;
+                    if (!evts?.length) continue;
+                    for (const evt of evts) {
+                        if (!evt?.isSummary || !evt._summaryId) continue;
+                        const s = summaryById.get(evt._summaryId);
+                        if (!s) continue;
+                        if (!s.summaryText && evt.summary) {
+                            s.summaryText = evt.summary;
+                            backfilled++;
+                        }
+                    }
+                }
+                if (backfilled > 0) {
+                    console.log(`[Horae] 摘要迁移：从 events 回填 ${backfilled} 条 summaryText 到 autoSummaries`);
+                }
+            }
+        } catch (e) {
+            console.warn('[Horae] 摘要迁移失败：', e);
+        }
+
         _rebuildGlobalDataForCurrentChat();
         refreshAllDisplays();
         renderCustomTablesList();
@@ -15228,7 +18985,7 @@ async function onChatChanged() {
             console.warn('[Horae] 向量加载失败:', err);
         }
     }
-    
+
     setTimeout(() => {
         try {
             horaeManager.init(getContext(), settings);
@@ -15261,7 +19018,7 @@ async function onChatChanged() {
 /** 消息渲染时触发 */
 function onMessageRendered(messageId) {
     if (!settings.enabled) return;
-    
+
     setTimeout(() => {
         try {
             const messageEl = document.querySelector(`.mes[mesid="${messageId}"]`);
@@ -15307,31 +19064,31 @@ function _sanitizeLeakedHoraeTags(messageEl) {
 /** swipe切换分页时触发 — 重置meta、重新解析并刷新所有显示 */
 function onSwipePanel(messageId) {
     if (!settings.enabled) return;
-    
+
     setTimeout(() => {
         try {
             const msg = horaeManager.getChat()[messageId];
             if (!msg || msg.is_user) return;
-            
+
             const savedFlags = _saveCompressedFlags(msg.horae_meta);
             const savedGlobal = messageId === 0 ? _saveGlobalMeta(msg.horae_meta) : null;
             msg.horae_meta = createEmptyMeta();
             horaeManager.processAIResponse(messageId, msg.mes);
             _restoreCompressedFlags(msg.horae_meta, savedFlags);
             if (savedGlobal) _restoreGlobalMeta(msg.horae_meta, savedGlobal);
-            
+
             horaeManager.rebuildTableData();
             horaeManager.rebuildRelationships();
             horaeManager.rebuildLocationMemory();
             horaeManager.rebuildRpgData();
             getContext().saveChat();
-            
+
             refreshAllDisplays();
             renderCustomTablesList();
         } catch (err) {
             console.error(`[Horae] onSwipePanel #${messageId} 失败:`, err);
         }
-        
+
         if (settings.showMessagePanel) {
             const messageEl = document.querySelector(`.mes[mesid="${messageId}"]`);
             if (messageEl) {
@@ -15349,18 +19106,28 @@ function onSwipePanel(messageId) {
 
 function _getTutorialSteps() {
     return [
-        { title: t('tutorial.step1Title'), content: t('tutorial.step1Content'), target: null, action: null },
-        { title: t('tutorial.step2Title'), content: t('tutorial.step2Content'), target: '#horae-btn-ai-scan', action: null },
-        { title: t('tutorial.step3Title'), content: t('tutorial.step3Content'), target: '#horae-autosummary-collapse-toggle',
-          action: () => { const b = document.getElementById('horae-autosummary-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-autosummary-collapse-toggle')?.click(); } },
-        { title: t('tutorial.step4Title'), content: t('tutorial.step4Content'), target: '#horae-vector-collapse-toggle',
-          action: () => { const b = document.getElementById('horae-vector-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-vector-collapse-toggle')?.click(); } },
-        { title: t('tutorial.step5Title'), content: t('tutorial.step5Content'), target: '#horae-setting-context-depth', action: null },
-        { title: t('tutorial.step6Title'), content: t('tutorial.step6Content'), target: '#horae-setting-injection-position', action: null },
-        { title: t('tutorial.step7Title'), content: t('tutorial.step7Content'), target: '#horae-prompt-collapse-toggle',
-          action: () => { const b = document.getElementById('horae-prompt-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-prompt-collapse-toggle')?.click(); } },
-        { title: t('tutorial.step8Title'), content: t('tutorial.step8Content'), target: '#horae-custom-tables-list', action: null },
-        { title: t('tutorial.step9Title'), content: t('tutorial.step9Content'), target: '#horae-setting-send-location-memory', action: null },
+        { title: t('tutorial.step1Title'), content: t('tutorial.step1Content'), tab: 'status', target: null, action: null },
+        { title: t('tutorial.stepStatusTitle'), content: t('tutorial.stepStatusContent'), tab: 'status', target: '#horae-tab-status .horae-state-section', action: null },
+        { title: t('tutorial.stepTimelineTitle'), content: t('tutorial.stepTimelineContent'), tab: 'timeline', target: '.horae-timeline-header', action: null },
+        { title: t('tutorial.stepCharactersTitle'), content: t('tutorial.stepCharactersContent'), tab: 'characters', target: '#horae-tab-characters .horae-subsection', action: null },
+        { title: t('tutorial.stepItemsTitle'), content: t('tutorial.stepItemsContent'), tab: 'items', target: '#horae-tab-items .horae-items-toolbar', action: null },
+        { title: t('tutorial.step2Title'), content: t('tutorial.step2Content'), tab: 'settings', target: '#horae-btn-ai-scan', action: null },
+        {
+            title: t('tutorial.step3Title'), content: t('tutorial.step3Content'), tab: 'settings', target: '#horae-autosummary-collapse-toggle',
+            action: () => { const b = document.getElementById('horae-autosummary-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-autosummary-collapse-toggle')?.click(); }
+        },
+        {
+            title: t('tutorial.step4Title'), content: t('tutorial.step4Content'), tab: 'settings', target: '#horae-vector-collapse-toggle',
+            action: () => { const b = document.getElementById('horae-vector-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-vector-collapse-toggle')?.click(); }
+        },
+        { title: t('tutorial.step5Title'), content: t('tutorial.step5Content'), tab: 'settings', target: '#horae-setting-context-depth', action: null },
+        { title: t('tutorial.step6Title'), content: t('tutorial.step6Content'), tab: 'settings', target: '#horae-setting-injection-position', action: null },
+        {
+            title: t('tutorial.step7Title'), content: t('tutorial.step7Content'), tab: 'settings', target: '#horae-prompt-collapse-toggle',
+            action: () => { const b = document.getElementById('horae-prompt-collapse-body'); if (b && b.style.display === 'none') document.getElementById('horae-prompt-collapse-toggle')?.click(); }
+        },
+        { title: t('tutorial.step8Title'), content: t('tutorial.step8Content'), tab: 'settings', target: '#horae-custom-tables-list', action: null },
+        { title: t('tutorial.step9Title'), content: t('tutorial.step9Content'), tab: 'settings', target: '#horae-setting-send-location-memory', action: null },
         { title: t('tutorial.step10Title'), content: t('tutorial.step10Content'), target: null, action: null }
     ];
 }
@@ -15373,16 +19140,22 @@ async function startTutorial() {
         const step = steps[i];
         const isLast = i === steps.length - 1;
 
-        // 首个需要面板的步骤时打开抽屉并切到设置 tab
-        if (step.target && !drawerOpened) {
+        // 首个需要面板的步骤时打开抽屉；每步按自己的 tab 切换页面。
+        if ((step.target || step.tab) && !drawerOpened) {
             const drawerIcon = $('#horae_drawer_icon');
             if (drawerIcon.hasClass('closedIcon')) {
                 drawerIcon.trigger('click');
                 await new Promise(r => setTimeout(r, 400));
             }
-            $(`.horae-tab[data-tab="settings"]`).trigger('click');
-            await new Promise(r => setTimeout(r, 200));
             drawerOpened = true;
+        }
+
+        if (step.tab) {
+            const tabBtn = $(`.horae-tab[data-tab="${step.tab}"]`);
+            if (tabBtn.length && tabBtn.is(':visible')) {
+                tabBtn.trigger('click');
+                await new Promise(r => setTimeout(r, 200));
+            }
         }
 
         if (step.action) step.action();
@@ -15438,7 +19211,9 @@ function showTutorialStep(step, current, total, isLast) {
         if (insertAfterEl && insertAfterEl.parentNode) {
             insertAfterEl.parentNode.insertBefore(card, insertAfterEl.nextSibling);
         } else {
-            const container = document.getElementById('horae-tab-settings') || document.getElementById('horae_drawer_content');
+            const container = (step.tab && document.getElementById(`horae-tab-${step.tab}`))
+                || document.getElementById('horae-tab-settings')
+                || document.getElementById('horae_drawer_content');
             if (container) {
                 container.insertBefore(card, container.firstChild);
             } else {
@@ -15466,16 +19241,18 @@ function showTutorialStep(step, current, total, isLast) {
 jQuery(async () => {
     console.log(`[Horae] 开始加载 v${VERSION}...`);
 
+    _publishHoraeApi();
+
     await initNavbarFunction();
     loadSettings();
     ensureRegexRules();
 
     const pluginBasePath = `/scripts/extensions/${EXTENSION_FOLDER}`;
     await initI18n(pluginBasePath, settings);
+    _i18nReady = true;
+    await initPromptDefaults(pluginBasePath, detectEffectiveAiLang(settings));
 
-    if (_isFirstTimeUser && !detectEffectiveAiLangIsZh(settings)) {
-        settings.rpgAttributeConfig = _getDefaultRpgAttrConfig();
-        settings.equipmentTemplates = _getDefaultEquipTemplates();
+    if (_ensureLocalizedRpgDefaults({ force: _isFirstTimeUser }) || _normalizeRpgSettingsInPlace()) {
         saveSettings();
     }
 
@@ -15498,9 +19275,9 @@ jQuery(async () => {
         </div>
     `;
     $('#extensions_settings2').append(extToggleHtml);
-    
+
     // 绑定扩展面板内的图标开关（折叠切换由 SillyTavern 全局处理器自动管理）
-    $('#horae-ext-show-top-icon').on('change', function() {
+    $('#horae-ext-show-top-icon').on('change', function () {
         settings.showTopIcon = this.checked;
         saveSettings();
         applyTopIconVisibility();
@@ -15510,9 +19287,11 @@ jQuery(async () => {
     initTabs();
     initSettingsEvents();
     syncSettingsToUI();
-    
+
     horaeManager.init(getContext(), settings);
-    
+    _publishHoraeApi();
+    _portsReady = true;
+
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onMessageReceived);
     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
@@ -15520,11 +19299,23 @@ jQuery(async () => {
     eventSource.on(event_types.MESSAGE_SWIPED, onSwipePanel);
     eventSource.on(event_types.MESSAGE_DELETED, onMessageDeleted);
     eventSource.on(event_types.MESSAGE_EDITED, onMessageEdited);
-    
+
+    eventSource.on(event_types.GENERATION_AFTER_COMMANDS, () => {
+        TavernHelper.injectPrompts([
+            {
+                id: "test_prompt_once",
+                position: "in_chat",
+                depth: 9999,
+                role: "system",
+                content: "[Start a new Chat]"
+            }
+        ], { once: true }); // 在D9999注入一个定位符
+    });
+
     // 并行自动摘要：用户发消息时并行触发（独立API走直接HTTP，不影响主连接）
     if (event_types.USER_MESSAGE_RENDERED) {
         eventSource.on(event_types.USER_MESSAGE_RENDERED, () => {
-            if (!settings.autoSummaryEnabled || !settings.sendTimeline) return;
+            if (!settings.enabled || !settings.autoSummaryEnabled || !settings.sendTimeline) return;
             _autoSummaryRanThisTurn = true;
             checkAutoSummary().catch((e) => {
                 console.warn('[Horae] 并行自动摘要失败，将在AI回复后重试:', e);
@@ -15532,20 +19323,20 @@ jQuery(async () => {
             });
         });
     }
-    
+
     refreshAllDisplays();
 
     if (settings.vectorEnabled) {
         setTimeout(() => _initVectorModel(), 1000);
     }
-    
+
     renderDicePanel();
-    
+
     // 新用户导航教学（仅完全没用过 Horae 的全新用户触发）
     if (_isFirstTimeUser) {
         setTimeout(() => startTutorial(), 800);
     }
-    
+
     isInitialized = true;
     _chatFullyLoaded = true;
     console.log(`[Horae] v${VERSION} 加载完成！作者: SenriYuki`);

@@ -6,6 +6,7 @@
 /* === 变量定义 === */
 #horae_drawer,
 .horae-message-panel,
+.horae-port-bottom-bar,
 .horae-modal,
 .horae-context-menu,
 .horae-progress-overlay {
@@ -32,6 +33,7 @@
 
 /* 非#horae_drawer的容器直接应用主题色 */
 .horae-message-panel,
+.horae-port-bottom-bar,
 .horae-modal,
 .horae-context-menu,
 .horae-progress-overlay {
@@ -128,8 +130,78 @@
 
 #horae_drawer label,
 .horae-message-panel label,
+.horae-port-bottom-bar label,
 .horae-modal label {
     color: var(--horae-text-muted) !important;
+}
+
+/* === 端口容器 === */
+.horae-port-container {
+    box-sizing: border-box;
+}
+
+.horae-port-root {
+    box-sizing: border-box;
+}
+
+.horae-port-status {
+    display: grid;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.horae-port-message-panel {
+    display: grid;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.horae-port-rpg-hud {
+    display: grid;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.horae-port-bottom-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin: 6px auto;
+    padding: 6px 10px;
+    width: 100%;
+    max-width: min(960px, 100%);
+    background: rgba(30, 30, 40, 0.85);
+    border: 1px solid var(--horae-border);
+    border-radius: 12px;
+    color: var(--horae-text);
+}
+
+.horae-port-bottom-bar .horae-port-root {
+    min-width: 0;
+}
+
+/* 当 ST 容器容不下时，自动回退到屏幕底部固定栏样式 */
+body > .horae-port-bottom-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    width: min(960px, calc(100vw - 24px));
+    margin: 0;
+    box-shadow: var(--horae-shadow);
+    backdrop-filter: blur(8px);
+    z-index: 10000;
+}
+
+.horae-port-error {
+    padding: 6px 8px;
+    color: var(--horae-danger);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-radius: var(--horae-radius-sm);
+    background: rgba(239, 68, 68, 0.08);
+    font-size: 12px;
 }
 
 /* 标签页/按钮隔离 */
@@ -434,6 +506,8 @@
     cursor: pointer;
     transition: all 0.2s ease;
     min-height: 70px;
+    font-family: inherit;
+    text-align: center;
 }
 
 .horae-data-btn i {
@@ -445,6 +519,8 @@
 .horae-data-btn span {
     font-size: 12px;
     font-weight: 500;
+    line-height: 1.35;
+    letter-spacing: 0;
 }
 
 .horae-data-btn:hover {
@@ -1165,6 +1241,20 @@
     margin-bottom: 0;
 }
 
+.horae-vector-setting-group {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--horae-border);
+}
+
+.horae-vector-setting-group-title {
+    margin-bottom: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--horae-accent);
+    letter-spacing: 0.02em;
+}
+
 .horae-setting-item label {
     display: flex;
     align-items: center;
@@ -1181,10 +1271,44 @@
     margin-top: 6px;
 }
 
-.horae-setting-item input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--horae-primary);
+#horae_drawer .horae-setting-item input[type="checkbox"] {
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    width: 16px !important;
+    height: 16px !important;
+    min-width: 16px !important;
+    min-height: 16px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 2px solid #888 !important;
+    border-radius: 3px !important;
+    background: #fff !important;
+    background-image: none !important;
+    box-sizing: border-box !important;
+    cursor: pointer !important;
+    display: inline-block !important;
+    flex-shrink: 0 !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    position: static !important;
+    vertical-align: middle !important;
+}
+
+#horae_drawer .horae-setting-item input[type="checkbox"]:checked {
+    background: #fff !important;
+    border-color: #555 !important;
+}
+
+#horae_drawer .horae-setting-item input[type="checkbox"]:checked::after {
+    content: '✓' !important;
+    display: block !important;
+    text-align: center !important;
+    color: #222 !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    line-height: 12px !important;
+    background: none !important;
+    background-image: none !important;
 }
 
 .horae-setting-item input[type="number"] {
@@ -1195,6 +1319,70 @@
     border-radius: var(--horae-radius-sm);
     color: var(--horae-text);
     margin-left: auto;
+}
+
+.horae-setting-control-row {
+    width: 100%;
+}
+
+.horae-setting-control-row > span:first-child {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.horae-setting-control-row select {
+    margin-left: auto;
+    min-width: 150px;
+    max-width: 65%;
+}
+
+.horae-setting-input-unit {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.horae-setting-input-unit input[type="number"] {
+    width: 92px;
+    margin-left: 0;
+}
+
+.horae-setting-input-unit span {
+    font-size: 12px;
+    color: var(--horae-text-muted);
+}
+
+@media (max-width: 480px) {
+    .horae-setting-control-row {
+        gap: 6px;
+    }
+
+    .horae-setting-control-row select {
+        min-width: 132px;
+        max-width: 62%;
+    }
+
+    .horae-setting-input-unit input[type="number"] {
+        width: 86px;
+    }
+}
+
+.horae-setting-inline-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+    margin-left: 24px;
+}
+
+.horae-setting-inline-controls select {
+    min-width: 120px;
+}
+
+.horae-setting-inline-controls input[type="number"] {
+    margin-left: 0;
 }
 
 .horae-setting-hint {
@@ -2469,6 +2657,38 @@
     margin-right: 4px;
 }
 
+.horae-timeline-injection-hint {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.horae-timeline-injection-hint > i {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    margin-right: 0;
+}
+
+.horae-timeline-injection-hint-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.horae-timeline-injection-hint-row {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: 8px;
+    align-items: baseline;
+}
+
+.horae-timeline-injection-hint-row strong {
+    color: var(--horae-text);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
 /* 空列表提示 */
 .horae-cleanup-empty {
     text-align: center;
@@ -3589,14 +3809,16 @@
 /* Checkbox */
 #horae_drawer.horae-light input[type="checkbox"],
 .horae-message-panel.horae-light input[type="checkbox"],
-.horae-modal.horae-light input[type="checkbox"] {
+.horae-modal.horae-light input[type="checkbox"],
+#horae_drawer.horae-light .horae-setting-item input[type="checkbox"] {
     background: #fff !important;
     border-color: #bbb !important;
 }
 
 #horae_drawer.horae-light input[type="checkbox"]:checked,
 .horae-message-panel.horae-light input[type="checkbox"]:checked,
-.horae-modal.horae-light input[type="checkbox"]:checked {
+.horae-modal.horae-light input[type="checkbox"]:checked,
+#horae_drawer.horae-light .horae-setting-item input[type="checkbox"]:checked {
     border-color: var(--horae-primary) !important;
 }
 
@@ -4027,6 +4249,13 @@ body .horae-context-menu {
     opacity: 0.7;
 }
 
+#horae-tab-status .horae-state-section .horae-empty-hint {
+    text-align: left;
+    padding: 8px 0;
+    font-size: 13px;
+    opacity: 0.85;
+}
+
 /* 合并预览 */
 .horae-merge-preview {
     margin-top: 8px;
@@ -4219,6 +4448,101 @@ body .horae-context-menu {
     transform: translateY(0);
 }
 
+/* ========== 向量召回 Debug 面板 ========== */
+.horae-vector-debug-section {
+    border: 1px solid var(--horae-border, rgba(255,255,255,0.08));
+    border-radius: var(--horae-radius, 8px);
+    padding: 8px 10px;
+    background: var(--horae-bg-secondary, rgba(255,255,255,0.02));
+}
+.horae-vector-debug-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--horae-text);
+}
+.horae-vector-debug-content .horae-vector-debug-section {
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: var(--horae-bg-secondary, rgba(255,255,255,0.03));
+    border: 1px solid var(--horae-border, rgba(255,255,255,0.06));
+}
+.horae-vector-debug-meta {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--horae-text-secondary);
+    padding: 4px 0;
+}
+.horae-vector-debug-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: var(--horae-text);
+    opacity: 0.85;
+}
+.horae-vector-debug-row {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    padding: 2px 0;
+    font-size: 12px;
+    border-bottom: 1px dashed var(--horae-border, rgba(255,255,255,0.05));
+}
+.horae-vector-debug-row:last-child { border-bottom: none; }
+.horae-vector-debug-key {
+    flex: 0 0 96px;
+    color: var(--horae-text-secondary);
+    font-size: 11px;
+}
+.horae-vector-debug-val {
+    flex: 1;
+    word-break: break-word;
+    white-space: pre-wrap;
+}
+.horae-vector-debug-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    margin-top: 4px;
+}
+.horae-vector-debug-table th,
+.horae-vector-debug-table td {
+    padding: 3px 6px;
+    border-bottom: 1px solid var(--horae-border, rgba(255,255,255,0.05));
+    text-align: left;
+    vertical-align: top;
+}
+.horae-vector-debug-table th {
+    color: var(--horae-text-secondary);
+    font-weight: 500;
+    background: rgba(255,255,255,0.02);
+}
+.horae-vector-debug-table td:nth-child(1),
+.horae-vector-debug-table td:nth-child(2),
+.horae-vector-debug-table td:nth-child(3) {
+    white-space: nowrap;
+}
+.horae-vector-debug-table tr.horae-vector-debug-dropped {
+    opacity: 0.55;
+}
+.horae-vector-debug-pre {
+    max-height: 220px;
+    overflow: auto;
+    font-size: 11px;
+    line-height: 1.5;
+    background: rgba(0,0,0,0.18);
+    border: 1px solid var(--horae-border, rgba(255,255,255,0.06));
+    border-radius: 6px;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--horae-text);
+}
+
 /* ========== RPG 模式 ========== */
 
 /* 分页区域头 */
@@ -4339,6 +4663,11 @@ body .horae-context-menu {
     border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 .horae-rpg-eq-item:last-child { border-bottom: none; }
+.horae-rpg-eq-item-inactive {
+    border-left: 3px solid var(--horae-warning, #f59e0b);
+    padding-left: 8px;
+    background: color-mix(in srgb, var(--horae-warning, #f59e0b) 10%, transparent);
+}
 .horae-rpg-eq-item-header {
     display: flex;
     align-items: center;
@@ -4368,6 +4697,13 @@ body .horae-context-menu {
     padding: 1px 0 2px 0;
     line-height: 1.4;
 }
+.horae-rpg-eq-item-slot {
+    font-size: .75em;
+    color: var(--horae-text-muted, #94a3b8);
+    border: 1px solid var(--horae-border, rgba(255,255,255,0.08));
+    border-radius: 999px;
+    padding: 1px 6px;
+}
 .horae-rpg-eq-slot-group {
     padding: 3px 0 5px 0;
 }
@@ -4377,6 +4713,61 @@ body .horae-context-menu {
     opacity: .7;
     margin-bottom: 2px;
     display: block;
+}
+.horae-rpg-eq-slot-desc {
+    display: inline-block;
+    margin-left: 6px;
+    font-weight: 400;
+    color: var(--horae-text-muted, #94a3b8);
+    max-width: min(36em, 80%);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+.horae-rpg-eq-form-select {
+    max-width: 140px;
+    min-height: 24px;
+    font-size: 12px;
+    padding: 2px 6px;
+}
+.horae-rpg-eq-form-badge,
+.horae-rpg-eq-inactive-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: .75em;
+    line-height: 1.5;
+    border: 1px solid var(--horae-border, rgba(255,255,255,0.08));
+}
+.horae-rpg-eq-form-badge {
+    color: var(--horae-text-muted, #94a3b8);
+    background: var(--horae-bg-secondary, rgba(255,255,255,0.05));
+}
+.horae-rpg-eq-inactive-badge,
+.horae-rpg-eq-inactive-title {
+    color: var(--horae-warning, #f59e0b);
+}
+.horae-rpg-eq-inactive-badge {
+    border-color: color-mix(in srgb, var(--horae-warning, #f59e0b) 55%, transparent);
+    background: color-mix(in srgb, var(--horae-warning, #f59e0b) 14%, transparent);
+}
+.horae-rpg-eq-inactive-group {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed color-mix(in srgb, var(--horae-warning, #f59e0b) 45%, transparent);
+}
+.horae-rpg-eq-inactive-title {
+    font-size: .82em;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.horae-rpg-eq-inactive-reason {
+    color: var(--horae-warning, #f59e0b);
+    font-size: .78em;
+    line-height: 1.35;
 }
 /* 物品栏装备按钮 */
 .horae-item-equip-btn {
@@ -4856,6 +5247,11 @@ body .horae-context-menu {
     padding: 3px 0;
     border-bottom: 1px solid rgba(255,255,255,0.05);
 }
+.horae-rpg-card-eq-item-inactive {
+    border-left: 3px solid var(--horae-warning, #f59e0b);
+    padding-left: 7px;
+    background: color-mix(in srgb, var(--horae-warning, #f59e0b) 9%, transparent);
+}
 .horae-rpg-card-eq-slot {
     color: var(--horae-accent, #6366f1);
     font-weight: 600;
@@ -5120,6 +5516,7 @@ body .horae-context-menu {
     background: none;
     border: none;
     color: var(--horae-text-muted);
+    font-family: inherit;
     font-size: 11px;
     cursor: pointer;
     padding: 4px 8px;
@@ -5134,6 +5531,7 @@ body .horae-context-menu {
     background: var(--horae-primary);
     color: #fff;
     border: none;
+    font-family: inherit;
     padding: 5px 14px;
     border-radius: var(--horae-radius-sm);
     font-size: 12px;
@@ -5730,10 +6128,33 @@ body .horae-context-menu {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.horae-rpg-tpl-parts {
+    margin-top: 2px;
+    color: var(--horae-warning, #f59e0b);
+    font-size: 10px;
+}
 .horae-rpg-tpl-actions {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
+}
+
+.horae-rpg-bar-config-row .horae-rpg-config-min,
+.horae-rpg-bar-config-row .horae-rpg-config-max,
+.horae-rpg-bar-config-row .horae-rpg-config-default-max {
+    width: 56px;
+}
+.horae-rpg-bar-config-row .horae-rpg-config-desc {
+    flex: 1 1 180px;
+    min-width: 120px;
+}
+.horae-rpg-config-required {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--horae-text-muted, #94a3b8);
+    white-space: nowrap;
 }
 
 /* ── 移动端 RPG 配置行适配 ── */

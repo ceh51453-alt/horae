@@ -4,6 +4,56 @@
 
 ---
 
+## v1.14.0
+
+### 辅助 API
+
+- 新增独立「辅助 API」设置区块，可填写 OpenAI 兼容端点、API Key 与模型，并按用途选择是否启用。
+- 辅助 API 使用范围拆分为三组：
+  - AI 分析、楼层/底部栏魔术棒、发送前自动补全上一条 AI 消息时间线。
+  - 自动总结、二次总结、AI 智能补全。
+  - 手动多选压缩，默认关闭；若辅助 API 破限不足，可关闭此项改走酒馆原生通道并携带主预设。
+- 辅助 API 请求改为串行队列，避免自动总结、魔术棒、智能补全等后台任务并发触发副端点限流。
+- 新增「辅助 API 失败时回退主 API」选项，默认关闭，避免副端点失败后继续消耗主 API 速率。
+- 旧版自动总结副 API 配置会自动迁移到新的辅助 API 栏位，并清空旧字段，避免重复保存密钥。
+- 辅助 API 的地址、密钥、模型不会写入 Horae 配置档导出白名单，防止分享配置时泄露。
+
+---
+
+## v1.13.0
+
+### Horae Port
+
+- 新增 Horae Port 系统，开放 `window.Horae.registerPort()` / `unregisterPort()` / `refreshPorts()`，支持外部组件挂载到底部栏、状态页、抽屉分页、消息面板与 RPG HUD。
+- 新增 Data Provider 机制，开放 `registerDataProvider()` / `unregisterDataProvider()`，第三方脚本可按需桥接自己的状态数据；Horae 不内置任何外部变量系统依赖。
+- 端口上下文提供 Horae 聚合状态、RPG 快照、消息 meta、Provider 快照与常用 helper，支持 `render` / `update` / `dispose` 生命周期。
+- 新增 `portApiVersion`，为后续端口协议兼容提供稳定判断入口。
+
+### 文档
+
+- 新增 `Horae端口系统说明.md`，面向扩展作者说明端口 API、插槽、生命周期、Provider、主题约定与安全边界。
+- 新增 `Horae状态栏接入说明.md`，面向角色卡/正则状态栏作者说明如何通过 `window.parent.Horae` 读取 Horae 状态。
+
+---
+
+## v1.12.0
+
+- 新增公开只读 API（`window.Horae`）：`isEnabled()`、`getLatestState()`、`getEvents()`、`getSettings()`、`version`，供其他扩展和预设脚本读取 Horae 状态；设置变更通过 `eventSource` 广播 `horae:settingsChanged` 事件。
+- 基于 baibai-git 的 PR #5 整合。
+- 针对 issue #4 的需求新增 Gemini Embedding API 兼容。
+- 向量召回查询改为单次 Embedding 的合并格式：
+  - `[当前情境] <time/location/characters/events from latest AI state>`
+  - `[玩家输入] <latest user input>`
+- Rerank 查询同步使用合并后的召回查询，不再只使用玩家输入文本。
+- 状态查询会附带时间信息，优先使用最新 AI 回合时间，缺失时回退到聚合状态时间。
+- 移除向量召回运行时的 fallback 路径，不再用上一条 AI 回复重试召回。
+- 新增向量召回参数预设，可在小模型、大模型、Rerank 建议和用户自定义参数之间快速切换；默认回到小模型建议（Top-K 5 / 阈值 0.72）。
+- 新增有效召回阈值的运行日志，便于调试召回效果。
+- 修复楼层 AI 分析时会触发向量召回的问题。
+- 剧情轨迹注入支持“原版合并注入”和“独立前置注入”双模式，默认保留原版合并注入。
+
+---
+
 ## v1.10.0
 
 全面重构 RPG 系统，新增 6 个 RPG 子模块、据点经营系统、装备多种族模板等功能。
@@ -129,3 +179,4 @@
 - **swipe 适配**
 - **美化兼容**
 - **正则修改**
+

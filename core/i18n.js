@@ -104,7 +104,7 @@ async function _loadLocale(lang) {
     }
 }
 
-function _resolve(data, key) {
+function _resolveNode(data, key) {
     if (!data) return undefined;
     const parts = key.split('.');
     let node = data;
@@ -112,6 +112,11 @@ function _resolve(data, key) {
         if (node == null || typeof node !== 'object') return undefined;
         node = node[p];
     }
+    return node;
+}
+
+function _resolve(data, key) {
+    const node = _resolveNode(data, key);
     return typeof node === 'string' ? node : undefined;
 }
 
@@ -176,6 +181,29 @@ function _pickFallback(lang) {
 }
 
 /**
+ * Translate using a specific loaded locale. Used for data that follows AI output language
+ * rather than the current UI language.
+ */
+export function tForLang(lang, key, vars) {
+    const target = _normalizeLang(lang) || _currentLang || DEFAULT_LANG;
+    let val = _resolve(_localeCache[target], key);
+    if (val === undefined) val = _resolve(_pickFallback(target), key);
+    if (val === undefined) return key;
+    return _interpolate(val, vars);
+}
+
+/**
+ * 取指定语言下的任意节点（字符串 / 数组 / 对象）
+ * 主要用于加载关键词表、正则源等非字符串数据；目标和兜底都缺失时返回 undefined
+ */
+export function tNodeForLang(lang, key) {
+    const target = _normalizeLang(lang) || _currentLang || DEFAULT_LANG;
+    const node = _resolveNode(_localeCache[target], key);
+    if (node !== undefined) return node;
+    return _resolveNode(_pickFallback(target), key);
+}
+
+/**
  * 切换 UI 语言并重新加载翻译
  */
 export async function setLanguage(lang) {
@@ -209,6 +237,7 @@ export async function initI18n(basePath, settings) {
 
     _zhFallback = await _loadLocale('zh-CN') || {};
     _enFallback = await _loadLocale('en') || {};
+    await Promise.all(SUPPORTED_LANGS.map(lang => _loadLocale(lang)));
 
     const detected = _detectLanguage(settings);
 

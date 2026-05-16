@@ -5,8 +5,9 @@
  * 数据按 chatId 隔离，向量存 IndexedDB，轻量索引存 chat[0].horae_meta.vectorIndex
  */
 
-import { calculateDetailedRelativeTime } from '../utils/timeUtils.js';
+import { calculateDetailedRelativeTime, getRelativeTimeMeta } from '../utils/timeUtils.js';
 import { t2s } from '../utils/zhConvert.js';
+import { tNodeForLang, detectEffectiveAiLang } from './i18n.js';
 
 const DB_NAME = 'HoraeVectors';
 const DB_VERSION = 1;
@@ -17,28 +18,30 @@ const MODEL_CONFIG = {
     'Xenova/multilingual-e5-small': { dimensions: 384, prefix: { query: 'query: ', passage: 'passage: ' } },
 };
 
-const TERM_CATEGORIES = {
-    medical: ['包扎', '伤口', '治疗', '救治', '处理伤', '疗伤', '敷药', '上药', '受伤', '负伤', '照料', '护理', '急救', '止血', '绷带', '缝合', '卸甲', '疗养', '中毒', '解毒', '昏迷', '苏醒'],
-    combat: ['打架', '打斗', '战斗', '冲突', '交手', '攻击', '击败', '斩杀', '对抗', '格斗', '厮杀', '砍', '劈', '刺', '伏击', '围攻', '决斗', '比武', '防御', '撤退', '逃跑', '追击'],
-    cooking: ['做饭', '烹饪', '煮', '炒', '烤', '喂食', '吃饭', '喝粥', '餐', '料理', '膳食', '厨房', '食材', '美食', '下厨', '烘焙'],
-    clothing: ['换衣', '更衣', '穿衣', '脱衣', '衣物', '换装', '浴袍', '内衣', '连衣裙', '衬衫'],
-    emotion_positive: ['开心', '高兴', '快乐', '欢喜', '喜悦', '愉快', '满足', '感动', '温馨', '幸福'],
-    emotion_negative: ['生气', '愤怒', '暴怒', '发火', '恼怒', '难过', '伤心', '悲伤', '哭泣', '落泪', '害怕', '恐惧', '惊恐', '委屈', '失落', '焦虑', '羞耻', '愧疚', '崩溃'],
-    movement: ['拖', '搬', '抱', '背', '扶', '抬', '推', '拉', '带走', '转移', '搀扶', '安顿'],
-    social: ['告白', '表白', '道歉', '拥抱', '亲吻', '握手', '初次', '重逢', '求婚', '订婚', '结婚'],
-    gift: ['礼物', '赠送', '送给', '信物', '定情', '戒指', '项链', '手链', '花束', '巧克力', '贺卡', '纪念品', '嫁妆', '聘礼', '徽章', '勋章', '宝石', '收下', '转赠'],
-    ceremony: ['婚礼', '葬礼', '仪式', '典礼', '庆典', '节日', '祭祀', '加冕', '册封', '宣誓', '洗礼', '成人礼', '毕业', '庆祝', '纪念日', '生日', '周年', '祭典', '开幕', '闭幕', '庆功', '宴会', '舞会'],
-    revelation: ['秘密', '真相', '揭露', '坦白', '暴露', '发现', '真实身份', '隐瞒', '谎言', '欺骗', '伪装', '冒充', '真名', '血统', '身世', '卧底', '间谍', '告密', '揭穿', '拆穿'],
-    promise: ['承诺', '誓言', '约定', '保证', '发誓', '立誓', '契约', '盟约', '许诺', '约好', '守护', '效忠', '誓约'],
-    loss: ['死亡', '去世', '牺牲', '离别', '分离', '告别', '失去', '消失', '陨落', '凋零', '永别', '丧失', '阵亡', '殉职', '送别', '诀别', '夭折'],
-    power: ['觉醒', '升级', '进化', '突破', '衰退', '失去能力', '解封', '封印', '变身', '异变', '获得力量', '魔力', '能力', '天赋', '血脉', '继承', '传承', '修炼', '领悟'],
-    intimate: ['亲热', '缠绵', '情事', '春宵', '欢爱', '共度', '同床', '肌肤之亲', '亲密', '暧昧', '挑逗', '诱惑', '勾引', '撩拨', '调情', '情动', '动情', '欲望', '渴望', '贪恋', '索求', '迎合', '纠缠', '痴缠', '沉沦', '迷恋', '沉溺', '喘息', '颤抖', '呻吟', '娇喘', '低吟', '求饶', '失控', '隐忍', '克制', '放纵', '贪婪', '温存', '余韵', '缱绻', '旖旎', '性交', '内射', '颜射', '性行为', '中出', '射精', '性器', '交配', '野合', '欢爱', '高潮'],
-    body_contact: ['抚摸', '触碰', '贴近', '依偎', '搂抱', '吻', '啃咬', '舔', '吮', '摩挲', '揉捏', '按压', '握住', '牵手', '十指相扣', '额头相抵', '耳鬓厮磨', '脸红', '心跳', '身体', '肌肤', '锁骨', '脖颈', '耳垂', '嘴唇', '腰肢', '后背', '发丝', '指尖', '掌心'],
+const EMPTY_KEYWORD_TABLE = {
+    intent: { first: [], last: [] },
+    patterns: {
+        costume: [], mood: [], gift: [],
+        importantItem: [], importantEvent: [],
+        ceremony: [], promise: [], loss: [], revelation: [], power: [],
+    },
+    categories: {},
+    moodWords: [],
+    giftKws: [],
+    costumeFiller: [],
+    eventLevels: { important: [], key: [] },
 };
 
 export class VectorManager {
     constructor() {
         this.worker = null;
+        // 结构化标签需排除在 termCounts 外，避免污染 IDF
+        if (!VectorManager._STRUCT_TAGS_SET) {
+            VectorManager._STRUCT_TAGS_SET = new Set([
+                'Event', 'NPC', 'Location', 'Characters', 'Time', 'RPG',
+                'Structured', 'Context', 'equip', 'unequip', 'base',
+            ]);
+        }
         this.db = null;
         this.chatId = null;
         this.vectors = new Map();
@@ -54,6 +57,16 @@ export class VectorManager {
         this.totalDocuments = 0;
         this._pendingCallbacks = new Map();
         this._callId = 0;
+        this._debugLog = false;
+    }
+
+    /**
+     * 详细调试日志（默认关闭）
+     * 由 recall() 入口从 settings.vectorDebugLog 同步刷新 this._debugLog。
+     * 用于排除原因/阈值过滤/频率过滤/去重过滤等明细日志，避免污染普通用户控制台。
+     */
+    _debug(...args) {
+        if (this._debugLog) console.log(...args);
     }
 
     // ========================================
@@ -197,8 +210,9 @@ export class VectorManager {
                     staleKeys.push(item.messageIndex);
                     continue;
                 }
-                const doc = this.buildVectorDocument(chat[item.messageIndex]?.horae_meta);
-                if (doc && this._hashString(doc) !== item.hash) {
+                const meta = chat[item.messageIndex]?.horae_meta;
+                const doc = this.buildVectorDocument(meta);
+                if (!doc || this._hashString(doc) !== item.hash) {
                     staleKeys.push(item.messageIndex);
                     continue;
                 }
@@ -226,11 +240,16 @@ export class VectorManager {
 
     /**
      * 将 horae_meta 序列化为检索文本
-     * 事件摘要为核心（占主要权重），场景/角色/NPC 为辅
-     * 去掉物品、服装、心情等噪音，让 embedding 集中在语义关键内容
+     * 设计取舍：
+     * - 事件摘要为主权重，独立首段
+     * - 时间/地点/在场角色作为锚点（区分 4/1 vs 6/3 同类事件、跨地点同类事件）
+     * - 不写英文标签（[Event]/[NPC] 等对中文 embedding 是无意义低 IDF token）
+     * - 不写 NPC 外貌/性格/关系/服装/物品/情绪等高重复字段（IDF 噪声重灾区）
+     * - RPG 变更使用中文短句
      */
     buildVectorDocument(meta) {
         if (!meta) return '';
+        if (meta._skipHorae) return '';
 
         const eventTexts = [];
         if (meta.events?.length > 0) {
@@ -240,55 +259,45 @@ export class VectorManager {
             }
         }
 
-        const npcTexts = [];
-        if (meta.npcs) {
-            for (const [name, info] of Object.entries(meta.npcs)) {
-                let s = name;
-                if (info.appearance) s += ` ${info.appearance}`;
-                if (info.relationship) s += ` ${info.relationship}`;
-                npcTexts.push(s);
-            }
-        }
-
-        if (eventTexts.length === 0 && npcTexts.length === 0) return '';
-
-        const parts = [];
-
-        for (const t of eventTexts) parts.push(t);
-
-        for (const t of npcTexts) parts.push(t);
-
-        if (meta.scene?.location) parts.push(meta.scene.location);
-
+        const anchorTokens = [];
+        if (meta.scene?.location) anchorTokens.push(meta.scene.location);
         const chars = meta.scene?.characters_present || [];
-        if (chars.length > 0) parts.push(chars.join(' '));
-
+        if (chars.length > 0) anchorTokens.push(chars.join(' '));
         if (meta.timestamp?.story_date) {
-            parts.push(meta.timestamp.story_time
-                ? `${meta.timestamp.story_date} ${meta.timestamp.story_time}`
-                : meta.timestamp.story_date);
+            anchorTokens.push(
+                meta.timestamp.story_time
+                    ? `${meta.timestamp.story_date} ${meta.timestamp.story_time}`
+                    : meta.timestamp.story_date
+            );
         }
 
-        // RPG milestones: level changes, equipment events, stronghold changes
+        const rpgLines = [];
         const rpg = meta._rpgChanges;
         if (rpg) {
             if (rpg.levels && Object.keys(rpg.levels).length > 0) {
                 for (const [owner, lv] of Object.entries(rpg.levels)) {
-                    parts.push(`${owner} 升级至Lv.${lv}`);
+                    rpgLines.push(`${owner} 等级${lv}`);
                 }
             }
             for (const eq of (rpg.equipment || [])) {
-                parts.push(`${eq.owner} 装备了 ${eq.name}(${eq.slot})`);
+                rpgLines.push(`${eq.owner} 装备 ${eq.name}(${eq.slot})`);
             }
             for (const u of (rpg.unequip || [])) {
-                parts.push(`${u.owner} 卸下 ${u.name}(${u.slot})`);
+                rpgLines.push(`${u.owner} 卸下 ${u.name}(${u.slot})`);
             }
             for (const bc of (rpg.baseChanges || [])) {
-                if (bc.field === 'level') parts.push(`据点 ${bc.path} 升至Lv.${bc.value}`);
+                if (bc.field === 'level') rpgLines.push(`基地 ${bc.path} 等级${bc.value}`);
             }
         }
 
-        return parts.join(' | ');
+        if (eventTexts.length === 0 && anchorTokens.length === 0 && rpgLines.length === 0) return '';
+
+        const blocks = [];
+        if (eventTexts.length > 0) blocks.push(eventTexts.join('\n'));
+        if (anchorTokens.length > 0) blocks.push(anchorTokens.join(' '));
+        if (rpgLines.length > 0) blocks.push(rpgLines.join('\n'));
+
+        return blocks.join('\n\n');
     }
 
     // ========================================
@@ -355,7 +364,7 @@ export class VectorManager {
 
         if (tasks.length === 0) return { indexed: 0, skipped: chat.length };
 
-        const batchSize = this.isApiMode ? 8 : 16;
+        const batchSize = this.isApiMode ? 64 : 16;
         let indexed = 0;
 
         for (let b = 0; b < tasks.length; b += batchSize) {
@@ -411,6 +420,14 @@ export class VectorManager {
     buildStateQuery(currentState, lastMeta) {
         const parts = [];
 
+        // 优先使用上一条 AI 消息时间；无则回退到当前聚合状态时间
+        const storyDate = lastMeta?.timestamp?.story_date || currentState.timestamp?.story_date || '';
+        const storyTime = lastMeta?.timestamp?.story_time || currentState.timestamp?.story_time || '';
+        if (storyDate || storyTime) {
+            const timeText = [storyDate, storyTime].filter(Boolean).join(' ');
+            parts.push(`时间 ${timeText}`);
+        }
+
         if (currentState.scene?.location) parts.push(currentState.scene.location);
 
         const chars = currentState.scene?.characters_present || [];
@@ -426,6 +443,16 @@ export class VectorManager {
         }
 
         return parts.filter(Boolean).join(' ');
+    }
+
+    /**
+     * 构建合并召回查询文本
+     */
+    buildMergedRecallQuery(stateQuery, userQuery) {
+        const sections = [];
+        if (stateQuery) sections.push(`[当前情境] ${stateQuery}`);
+        if (userQuery) sections.push(`[玩家输入] ${userQuery}`);
+        return sections.join('\n').trim();
     }
 
     /**
@@ -452,7 +479,8 @@ export class VectorManager {
         if (!this.isReady || !queryText || this.vectors.size === 0) return [];
 
         const prepared = this._prepareText(queryText, true);
-        console.log('[Horae Vector] 开始 embedding 查询...');
+        this._debug('[Horae Vector] 开始 embedding 查询...');
+        this._debug(`[Horae Vector] 实际检索阈值: ${Number(threshold).toFixed(4)} | topK=${topK} | pureMode=${!!pureMode}`);
         const result = await this._embed([prepared]);
         if (!result?.vectors?.[0]) {
             console.warn('[Horae Vector] embedding 返回空结果:', result);
@@ -460,7 +488,7 @@ export class VectorManager {
         }
 
         const queryVec = result.vectors[0];
-        console.log(`[Horae Vector] 查询向量维度: ${queryVec.length}，开始对比 ${this.vectors.size} 条...`);
+        this._debug(`[Horae Vector] 查询向量维度: ${queryVec.length}，开始对比 ${this.vectors.size} 条...`);
 
         const scored = [];
         const allScored = [];
@@ -478,8 +506,8 @@ export class VectorManager {
 
         allScored.sort((a, b) => b.similarity - a.similarity);
         const bestSim = allScored.length > 0 ? allScored[0].similarity : 0;
-        console.log(`[Horae Vector] 搜索了 ${searchedCount} 条 | 最高相似度=${bestSim.toFixed(4)} | 超过阈值(${threshold}): ${scored.length} 条`);
-        if (scored.length === 0 && allScored.length > 0) {
+        this._debug(`[Horae Vector] 搜索了 ${searchedCount} 条 | 最高相似度=${bestSim.toFixed(4)} | 超过阈值(${threshold}): ${scored.length} 条`);
+        if (this._debugLog && scored.length === 0 && allScored.length > 0) {
             console.log(`[Horae Vector] 阈值下 Top-5 候选:`);
             for (const c of allScored.slice(0, 5)) {
                 console.log(`  #${c.messageIndex} sim=${c.similarity.toFixed(4)} | ${c.document.substring(0, 60)}`);
@@ -489,35 +517,37 @@ export class VectorManager {
         scored.sort((a, b) => b.similarity - a.similarity);
 
         const adjusted = pureMode ? scored : this._adjustThresholdByFrequency(scored, threshold);
-        if (!pureMode) console.log(`[Horae Vector] 频率过滤后: ${adjusted.length} 条`);
+        if (!pureMode) this._debug(`[Horae Vector] 频率过滤后: ${adjusted.length} 条`);
 
         const deduped = this._deduplicateResults(adjusted);
-        console.log(`[Horae Vector] 去重后: ${deduped.length} 条`);
+        this._debug(`[Horae Vector] 去重后: ${deduped.length} 条`);
 
         return deduped.slice(0, topK);
     }
 
     /**
-     * 策略B：高频内容惩罚
-     * 只在文档中 >80% 的词都是公共词（出现在 >60% 文档中）时才轻微提高阈值，
-     * 避免角色名等必然高频词误杀有效结果。
+     * 噪声文档惩罚（IDF）
+     * 平均 IDF 过低说明文档由必然高频词主导（如主角名+场景），略上调阈值
      */
     _adjustThresholdByFrequency(results, baseThreshold) {
         if (results.length < 2 || this.totalDocuments < 10) return results;
 
+        const N = this.totalDocuments;
         return results.filter(r => {
             const terms = this._extractKeyTerms(r.document);
             if (terms.length === 0) return true;
 
-            let commonCount = 0;
+            let idfSum = 0;
             for (const term of terms) {
-                const count = this.termCounts.get(term) || 0;
-                if (count / this.totalDocuments > 0.6) commonCount++;
+                const df = this.termCounts.get(term) || 0;
+                // 平滑 IDF：log((N+1)/(df+1))
+                idfSum += Math.log((N + 1) / (df + 1));
             }
-            const commonRatio = commonCount / terms.length;
+            const avgIdf = idfSum / terms.length;
 
-            if (commonRatio > 0.8) {
-                const penalty = (commonRatio - 0.8) * 0.1;
+            // avgIdf < 0.5 视为通用词主导，按比例上调阈值，封顶 +0.025
+            if (avgIdf < 0.5) {
+                const penalty = (0.5 - avgIdf) * 0.05;
                 return r.similarity >= baseThreshold + penalty;
             }
             return true;
@@ -556,11 +586,27 @@ export class VectorManager {
     /**
      * 智能召回：结构化查询 + 向量搜索并行，合并结果
      */
-    async generateRecallPrompt(horaeManager, skipLast, settings) {
+    async generateRecallPrompt(horaeManager, skipLast, settings, extraExcludeIndices = new Set()) {
+        // 同步详细调试日志开关（每次召回入口刷新一次）
+        this._debugLog = !!settings?.vectorDebugLog;
+
         const chat = horaeManager.getChat();
         const state = horaeManager.getLatestState(skipLast);
         const topK = settings.vectorTopK || 5;
         const threshold = settings.vectorThreshold ?? 0.72;
+
+        // 关键词表随 AI 输出语言加载，中文作兜底
+        this._refreshKeywordTable(settings);
+
+        // 开启 rerank 时 embedding 走宽松召回（低阈值+大候选池），交给 rerank 精排
+        const useRerank = !!(settings.vectorRerankEnabled && settings.vectorRerankModel);
+        const recallTopK = useRerank
+            ? Math.max(topK, settings.vectorRerankCandidates || topK * 5)
+            : topK;
+        // 非 rerank 路径下，索引规模越大相应上调阈值
+        const recallThreshold = useRerank
+            ? (settings.vectorRerankRecallThreshold ?? 0.3)
+            : this._dynamicThreshold(threshold);
 
         let rawUserMsg = '';
         for (let i = chat.length - 1; i >= 0; i--) {
@@ -568,40 +614,59 @@ export class VectorManager {
         }
         const userQuery = this.cleanUserMessage(rawUserMsg);
 
+        // 构建统一查询：使用最近一条 AI 元数据补充“当前情境”
+        let lastMetaForQuery = null;
+        for (let i = chat.length - 1 - skipLast; i >= 0; i--) {
+            if (!chat[i].is_user && chat[i].horae_meta && !chat[i].horae_meta._skipHorae) {
+                lastMetaForQuery = chat[i].horae_meta;
+                break;
+            }
+        }
+        const stateQueryForRecall = this.buildStateQuery(state, lastMetaForQuery);
+        const mergedRecallQuery = this.buildMergedRecallQuery(stateQueryForRecall, userQuery);
+
         const EXCLUDE_RECENT = 5;
         const excludeIndices = new Set();
         for (let i = Math.max(0, chat.length - EXCLUDE_RECENT); i < chat.length; i++) {
             excludeIndices.add(i);
         }
+        if (extraExcludeIndices && typeof extraExcludeIndices[Symbol.iterator] === 'function') {
+            for (const idx of extraExcludeIndices) {
+                if (Number.isInteger(idx) && idx >= 0 && idx < chat.length) {
+                    excludeIndices.add(idx);
+                }
+            }
+        }
+        if (excludeIndices.size > EXCLUDE_RECENT) {
+            this._debug(`[Horae Vector] 额外排除已在Prompt中的楼层: +${excludeIndices.size - EXCLUDE_RECENT}`);
+        }
 
         const merged = new Map();
 
         const pureMode = !!settings.vectorPureMode;
-        if (pureMode) console.log('[Horae Vector] 纯向量模式已启用，跳过关键词启发式');
+        if (pureMode) this._debug('[Horae Vector] 纯向量模式已启用，跳过关键词启发式');
+        if (useRerank) this._debug(`[Horae Vector] Rerank 模式：embedding 召回阈值=${recallThreshold} / 候选=${recallTopK}`);
 
         const structuredResults = this._structuredQuery(userQuery, chat, state, excludeIndices, topK, pureMode);
-        console.log(`[Horae Vector] 结构化查询: ${structuredResults.length} 条命中`);
+        this._debug(`[Horae Vector] 结构化查询: ${structuredResults.length} 条命中`);
         for (const r of structuredResults) {
             merged.set(r.messageIndex, r);
         }
 
-        const hybridResults = await this._hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, topK, threshold, pureMode);
-        console.log(`[Horae Vector] 向量混合搜索: ${hybridResults.length} 条命中`);
+        const hybridResults = await this._hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, recallTopK, recallThreshold, pureMode);
+        this._debug(`[Horae Vector] 向量混合搜索: ${hybridResults.length} 条命中`);
         for (const r of hybridResults) {
             if (!merged.has(r.messageIndex)) {
                 merged.set(r.messageIndex, r);
             }
         }
 
-        // 多人卡角色相关性加权：
-        // 收集"相关角色" = 用户消息中提到的角色 + 当前在场角色
-        // 对涉及相关角色的结果施加小幅正向加权，优先召回相关事件
-        // 不过滤任何结果，确保跨角色引用（如向A提起B）仍能召回
+        // 相关角色 = 用户消息提及 + 当前在场；只用于 RRF 加分，不改 cosine
         const relevantChars = new Set(state.scene?.characters_present || []);
         const allKnownChars = new Set();
         for (let i = 0; i < chat.length; i++) {
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             (m.scene?.characters_present || []).forEach(c => allKnownChars.add(c));
             if (m.npcs) Object.keys(m.npcs).forEach(c => allKnownChars.add(c));
         }
@@ -609,11 +674,24 @@ export class VectorManager {
             if (userQuery && userQuery.includes(c)) relevantChars.add(c);
         }
 
-        let results = Array.from(merged.values());
+        let results = Array.from(merged.values())
+            .filter(r => !chat[r.messageIndex]?.horae_meta?._skipHorae);
+
+        // RRF 融合：结构化、向量、角色相关三路独立排名，score = Σ 1/(K+rank)
+        const RRF_K = 60;
+        const fusionScore = new Map();
+        const addRanker = (list, weight = 1) => {
+            list.forEach((r, idx) => {
+                const cur = fusionScore.get(r.messageIndex) || 0;
+                fusionScore.set(r.messageIndex, cur + weight / (RRF_K + idx));
+            });
+        };
+        addRanker(structuredResults, 1.0);
+        addRanker(hybridResults, 1.0);
         if (relevantChars.size > 0) {
             for (const r of results) {
                 const meta = chat[r.messageIndex]?.horae_meta;
-                if (!meta) continue;
+                if (!meta || meta._skipHorae) continue;
                 const docChars = new Set([
                     ...(meta.scene?.characters_present || []),
                     ...Object.keys(meta.npcs || {}),
@@ -623,69 +701,302 @@ export class VectorManager {
                     if (docChars.has(c)) { hasRelevant = true; break; }
                 }
                 if (hasRelevant) {
-                    r.similarity += 0.03;
+                    const cur = fusionScore.get(r.messageIndex) || 0;
+                    fusionScore.set(r.messageIndex, cur + 1 / (RRF_K + 0));
+                    r.source = (r.source || '') + '+char';
                 }
             }
-            console.log(`[Horae Vector] 角色加权: 相关角色=[${[...relevantChars].join(',')}]`);
+            this._debug(`[Horae Vector] 角色相关性 RRF bonus: 相关角色=[${[...relevantChars].join(',')}]`);
         }
 
-        results.sort((a, b) => b.similarity - a.similarity);
+        for (const r of results) r._fusionScore = fusionScore.get(r.messageIndex) || 0;
+        results.sort((a, b) => (b._fusionScore - a._fusionScore) || (b.similarity - a.similarity));
 
         // Rerank：对候选结果做二次精排
-        if (settings.vectorRerankEnabled && settings.vectorRerankModel && results.length > 1) {
-            const rerankCandidates = results.slice(0, topK * 3);
-            const rerankQuery = userQuery || this.buildStateQuery(state, null);
+        let rerankDebug = null;
+        if (useRerank && results.length > 1) {
+            const rerankCandidates = results.slice(0, recallTopK);
+            const rerankQuery = mergedRecallQuery || userQuery || this.buildStateQuery(state, null);
             if (rerankQuery) {
                 try {
                     const useFullText = !!settings.vectorRerankFullText;
                     const _stripTags = settings.vectorStripTags || '';
+                    const currentDateForRerank = state.timestamp?.story_date;
+                    // Rerank 文档 = 时间头 + 结构化 metadata + 可选全文片段（全文模式下使用整段，由分批 plan 处理超长）
                     const rerankDocs = rerankCandidates.map(r => {
+                        const meta = chat[r.messageIndex]?.horae_meta;
+                        const timeTag = this._buildTimeTag(meta?.timestamp, currentDateForRerank);
+                        const head = timeTag ? `${timeTag}\n` : '';
+                        const baseDoc = r.document || '';
                         if (useFullText) {
                             const fullText = this._extractCleanText(chat[r.messageIndex]?.mes, _stripTags);
-                            return fullText || r.document;
+                            const snippet = fullText || '';
+                            if (snippet) return `${head}${baseDoc}\n---\n${snippet}`;
+                            return `${head}${baseDoc}`;
                         }
-                        return r.document;
+                        return `${head}${baseDoc}`;
                     });
-                    console.log(`[Horae Vector] Rerank 模式: ${useFullText ? '全文精排' : '摘要排序'}`);
+                    console.log(`[Horae Vector] Rerank 输入: ${rerankCandidates.length} 条候选 / 模式=${useFullText ? '全文精排' : '摘要排序'}`);
 
-                    const reranked = await this._rerank(
-                        rerankQuery,
-                        rerankDocs,
-                        topK,
-                        settings
-                    );
+                    let rerankPlan = null;
+                    let rerankDocsForDebug = rerankDocs;
+                    let reranked = [];
+                    if (useFullText) {
+                        // 全文模式按估算 token 预算分批，避免超出 reranker 上下文上限
+                        rerankPlan = this._buildRerankBatchPlan(rerankQuery, rerankDocs, 32768);
+                        rerankDocsForDebug = rerankPlan.documents;
+                        if (rerankPlan.batches.length > 1 || rerankPlan.truncatedCount > 0) {
+                            console.log(`[Horae Vector] Rerank 分批: batches=${rerankPlan.batches.length} / budget=${rerankPlan.docBudget} tokens / query=${rerankPlan.queryTokens} tokens / truncated=${rerankPlan.truncatedCount}`);
+                        }
+
+                        const merged = [];
+                        for (let bi = 0; bi < rerankPlan.batches.length; bi++) {
+                            const batch = rerankPlan.batches[bi];
+                            console.log(`[Horae Vector] Rerank batch ${bi + 1}/${rerankPlan.batches.length}: docs=${batch.documents.length}, estTokens=${batch.estimatedTokens}`);
+                            const batchReranked = await this._rerank(
+                                rerankQuery,
+                                batch.documents,
+                                batch.documents.length,
+                                settings
+                            );
+                            for (const rr of batchReranked) {
+                                const globalIndex = batch.indices[rr.index];
+                                if (globalIndex === undefined) continue;
+                                merged.push({
+                                    index: globalIndex,
+                                    relevance_score: rr.relevance_score,
+                                });
+                            }
+                        }
+
+                        // 跨批次合并：同一条候选在多批中均出现时取最高分
+                        const bestByIndex = new Map();
+                        for (const rr of merged) {
+                            const prev = bestByIndex.get(rr.index);
+                            if (!prev || (rr.relevance_score ?? 0) > (prev.relevance_score ?? 0)) {
+                                bestByIndex.set(rr.index, rr);
+                            }
+                        }
+                        reranked = [...bestByIndex.values()].sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+                    } else {
+                        reranked = await this._rerank(
+                            rerankQuery,
+                            rerankDocs,
+                            rerankCandidates.length,
+                            settings
+                        );
+                    }
                     if (reranked && reranked.length > 0) {
-                        console.log(`[Horae Vector] Rerank 完成: ${reranked.length} 条`);
-                        results = reranked.map(rr => {
+                        const minScore = this._effectiveRerankMinScore(settings);
+                        const passed = reranked.filter(rr => (rr.relevance_score ?? 0) >= minScore);
+                        const dropped = reranked.length - passed.length;
+                        console.log(`[Horae Vector] Rerank 完成: ${reranked.length} 条 → 阈值=${minScore.toFixed(2)} 通过=${passed.length} 丢弃=${dropped}`);
+                        // 全部被阈值砍光、但最高分仍 ≥ 0.35 时保留 Top1，避免完全静默
+                        let finalReranked = passed;
+                        if (passed.length === 0 && reranked[0] && (reranked[0].relevance_score ?? 0) >= 0.35) {
+                            finalReranked = [reranked[0]];
+                            console.log(`[Horae Vector] Rerank 全部被阈值过滤，但最高分=${reranked[0].relevance_score?.toFixed(3)} 仍过保底线，保留 Top1`);
+                        }
+                        results = finalReranked.map(rr => {
                             const original = rerankCandidates[rr.index];
                             return {
                                 ...original,
                                 similarity: rr.relevance_score,
-                                source: original.source + (useFullText ? '+rerank-full' : '+rerank'),
+                                source: (original.source || '') + (useFullText ? '+rerank-full' : '+rerank'),
                             };
                         });
+                        rerankDebug = {
+                            enabled: true,
+                            minScore,
+                            useFullText,
+                            candidates: rerankCandidates.map((r, i) => ({
+                                messageIndex: r.messageIndex,
+                                docPreview: (rerankDocsForDebug[i] || '').substring(0, 120),
+                                priorScore: r.similarity,
+                                source: r.source,
+                            })),
+                            output: reranked.map(rr => ({
+                                index: rr.index,
+                                messageIndex: rerankCandidates[rr.index]?.messageIndex,
+                                relevance: rr.relevance_score,
+                                passed: (rr.relevance_score ?? 0) >= minScore,
+                            })),
+                            passedCount: passed.length,
+                            droppedCount: dropped,
+                            retainedTop1: passed.length === 0 && finalReranked.length > 0,
+                            batching: rerankPlan ? {
+                                contextLimit: rerankPlan.contextLimit,
+                                budgetTokens: rerankPlan.docBudget,
+                                queryTokens: rerankPlan.queryTokens,
+                                batchCount: rerankPlan.batches.length,
+                                truncatedCount: rerankPlan.truncatedCount,
+                                batches: rerankPlan.batches.map((b, idx) => ({
+                                    batch: idx + 1,
+                                    docs: b.documents.length,
+                                    estimatedTokens: b.estimatedTokens,
+                                })),
+                            } : null,
+                        };
                     }
                 } catch (err) {
                     console.warn('[Horae Vector] Rerank 失败，使用原始排序:', err.message);
+                    rerankDebug = { enabled: true, error: err.message };
                 }
             }
         }
 
         results = results.slice(0, topK);
+        // Fallback 机制已移除：主查询已统一为“当前情境 + 玩家输入”
 
         console.log(`[Horae Vector] === 最终合并: ${results.length} 条 ===`);
-        for (const r of results) {
-            console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(3)} [${r.source}]`);
+        if (this._debugLog) {
+            for (const r of results) {
+                console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(3)} [${r.source}]`);
+            }
         }
-
-        if (results.length === 0) return '';
 
         const currentDate = state.timestamp?.story_date;
         const fullTextCount = Math.min(settings.vectorFullTextCount ?? 3, topK);
         const fullTextThreshold = settings.vectorFullTextThreshold ?? 0.9;
-        const recallText = this._buildRecallText(results, currentDate, chat, fullTextCount, fullTextThreshold, settings.vectorStripTags || '');
-        console.log(`[Horae Vector] 召回文本 (${recallText.length}字):\n${recallText}`);
+        const recallText = results.length === 0
+            ? ''
+            : this._buildRecallText(results, currentDate, chat, fullTextCount, fullTextThreshold, settings.vectorStripTags || '');
+        if (recallText) this._debug(`[Horae Vector] 召回文本 (${recallText.length}字):\n${recallText}`);
+
+        this._lastDebugInfo = {
+            timestamp: Date.now(),
+            chatId: this.chatId,
+            indexedCount: this.vectors.size,
+            query: {
+                user: userQuery,
+                state: stateQueryForRecall,
+                merged: mergedRecallQuery,
+            },
+            settings: {
+                topK,
+                threshold,
+                effectiveThreshold: recallThreshold,
+                useRerank,
+                pureMode,
+                rerankCandidates: recallTopK,
+                rerankRecallThreshold: useRerank ? recallThreshold : null,
+                rerankMinScore: useRerank ? this._effectiveRerankMinScore(settings) : null,
+            },
+            structured: structuredResults.map(r => ({
+                messageIndex: r.messageIndex,
+                similarity: r.similarity,
+                source: r.source,
+                docPreview: (r.document || '').substring(0, 120),
+            })),
+            embedding: hybridResults.map(r => ({
+                messageIndex: r.messageIndex,
+                similarity: r.similarity,
+                source: r.source,
+                docPreview: (r.document || '').substring(0, 120),
+            })),
+            relevantChars: [...relevantChars],
+            rerank: rerankDebug,
+            final: results.map(r => ({
+                messageIndex: r.messageIndex,
+                similarity: r.similarity,
+                source: r.source,
+            })),
+            recallText,
+        };
+
         return recallText;
+    }
+
+    // 索引规模越大，噪声越多；非 rerank 路径下随之略提阈值，最多 +0.05
+    _dynamicThreshold(baseThreshold) {
+        const N = this.totalDocuments;
+        if (N <= 50) return baseThreshold;
+        const bump = Math.min(0.05, Math.log10(N / 50) * 0.04);
+        const effective = Math.min(0.95, baseThreshold + bump);
+        if (bump > 0.005) this._debug(`[Horae Vector] 动态阈值: ${baseThreshold} → ${effective.toFixed(3)} (已索引 ${N} 条)`);
+        return effective;
+    }
+
+    _effectiveRerankMinScore(settings) {
+        const v = parseFloat(settings?.vectorRerankMinScore);
+        return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.5;
+    }
+
+    getLastDebugInfo() {
+        return this._lastDebugInfo || null;
+    }
+
+    // ========================================
+    // 关键词表（按 AI 输出语言加载）
+    // ========================================
+
+    _refreshKeywordTable(settings) {
+        let activeLang = 'en';
+        try { activeLang = detectEffectiveAiLang(settings); } catch { /* ignore */ }
+        const primary = tNodeForLang(activeLang, 'vectorKeywords') || {};
+        // 中文词库始终作兜底，兼容繁简混排
+        const fallback = tNodeForLang('zh-CN', 'vectorKeywords') || {};
+        this._keywordTable = this._mergeKeywordTable(primary, fallback);
+        this._activeKeywordLang = activeLang;
+    }
+
+    _getKeywordTable() {
+        return this._keywordTable || EMPTY_KEYWORD_TABLE;
+    }
+
+    _mergeKeywordTable(a, b) {
+        const mergeArr = (x = [], y = []) => {
+            const out = [];
+            const seen = new Set();
+            for (const v of [...(x || []), ...(y || [])]) {
+                if (typeof v !== 'string' || !v) continue;
+                if (seen.has(v)) continue;
+                seen.add(v);
+                out.push(v);
+            }
+            return out;
+        };
+        const mergeMap = (x = {}, y = {}) => {
+            const out = {};
+            const keys = new Set([...Object.keys(x || {}), ...Object.keys(y || {})]);
+            for (const k of keys) out[k] = mergeArr(x?.[k], y?.[k]);
+            return out;
+        };
+        return {
+            intent: mergeMap(a.intent, b.intent),
+            patterns: mergeMap(a.patterns, b.patterns),
+            categories: mergeMap(a.categories, b.categories),
+            moodWords: mergeArr(a.moodWords, b.moodWords),
+            giftKws: mergeArr(a.giftKws, b.giftKws),
+            costumeFiller: mergeArr(a.costumeFiller, b.costumeFiller),
+            eventLevels: mergeMap(a.eventLevels, b.eventLevels),
+        };
+    }
+
+    _anyTermIncluded(text, terms) {
+        if (!text || !Array.isArray(terms)) return false;
+        for (const term of terms) {
+            if (typeof term === 'string' && term && text.includes(term)) return true;
+        }
+        return false;
+    }
+
+    _getRecallLabels() {
+        const lang = this._activeKeywordLang || 'en';
+        const labels = tNodeForLang(lang, 'vectorRecall');
+        const fb = tNodeForLang('en', 'vectorRecall') || {};
+        const pick = (k, def) => {
+            const v = labels?.[k];
+            if (typeof v === 'string' && v) return v;
+            const fv = fb[k];
+            return (typeof fv === 'string' && fv) ? fv : def;
+        };
+        return {
+            header: pick('header', '[Memory Recall — historical fragments related to the current scene, for reference only, not part of the current context]'),
+            fullText: pick('fullText', '[Full text recall]'),
+            scene: pick('scene', 'Scene'),
+            npc: pick('npc', 'NPC'),
+        };
     }
 
     // ========================================
@@ -698,10 +1009,12 @@ export class VectorManager {
     _structuredQuery(userQuery, chat, state, excludeIndices, topK, pureMode = false) {
         if (!userQuery || chat.length === 0) return [];
 
+        const table = this._getKeywordTable();
+
         const knownChars = new Set();
         for (let i = 0; i < chat.length; i++) {
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             (m.scene?.characters_present || []).forEach(c => knownChars.add(c));
             if (m.npcs) Object.keys(m.npcs).forEach(c => knownChars.add(c));
         }
@@ -711,19 +1024,19 @@ export class VectorManager {
             if (userQuery.includes(c)) mentionedChars.push(c);
         }
 
-        const isFirst = /第一次|初次|首次|初见|初見|初遇|最早|一开始|一開始/.test(userQuery);
-        const isLast = /上次|上一次|最后一次|最後一次|最近一次|之前/.test(userQuery);
+        const isFirst = this._anyTermIncluded(userQuery, table.intent?.first);
+        const isLast = this._anyTermIncluded(userQuery, table.intent?.last);
 
-        const hasCostumeKw = /穿|戴|换|換|衣|裙|裤|褲|袍|衫|装|裝|鞋/.test(userQuery);
-        const hasMoodKw = /生气|生氣|愤怒|憤怒|开心|開心|高兴|高興|难过|難過|伤心|傷心|哭|害怕|恐惧|恐懼|害羞|羞耻|羞恥|得意|满足|滿足|嫉妒|悲伤|悲傷|焦虑|焦慮|紧张|緊張|兴奋|興奮|感动|感動|温柔|溫柔|冷漠/.test(userQuery);
-        const hasGiftKw = /礼物|禮物|赠送|贈送|送给|送給|送的|信物|定情|收到|收下|转赠|轉贈|聘礼|聘禮|嫁妆|嫁妝|纪念品|紀念品|贺卡|賀卡/.test(userQuery);
-        const hasImportantItemKw = /重要.{0,2}(物品|东西|東西|道具|宝物|寶物)|关键.{0,2}(物品|东西|東西|道具|宝物|寶物)|關鍵.{0,2}(物品|東西|道具|寶物)|珍贵|珍貴|宝贝|寶貝|宝物|寶物|神器|秘宝|秘寶|圣物|聖物/.test(userQuery);
-        const hasImportantEventKw = /重要.{0,2}(事|事件|经历|經歷)|关键.{0,2}(事|事件|转折|轉折)|關鍵.{0,2}(事|事件|轉折)|大事|转折|轉折|里程碑/.test(userQuery);
-        const hasCeremonyKw = /婚礼|婚禮|葬礼|葬禮|仪式|儀式|典礼|典禮|庆典|慶典|节日|節日|祭祀|加冕|册封|冊封|宣誓|洗礼|洗禮|成人礼|成人禮|庆祝|慶祝|宴会|宴會|舞会|舞會|祭典/.test(userQuery);
-        const hasPromiseKw = /承诺|承諾|誓言|约定|約定|保证|保證|发誓|發誓|立誓|契约|契約|盟约|盟約|许诺|許諾/.test(userQuery);
-        const hasLossKw = /死亡|去世|牺牲|犧牲|离别|離別|分离|分離|告别|告別|失去|消失|陨落|隕落|永别|永別|诀别|訣別|阵亡|陣亡/.test(userQuery);
-        const hasRevelationKw = /秘密|真相|揭露|坦白|暴露|真实身份|真實身份|隐瞒|隱瞞|谎言|謊言|欺骗|欺騙|伪装|偽裝|冒充|真名|血统|血統|身世|揭穿/.test(userQuery);
-        const hasPowerKw = /觉醒|覺醒|升级|升級|进化|進化|突破|衰退|失去能力|解封|封印|变身|變身|异变|異變|获得力量|獲得力量|血脉|血脈|继承|繼承|传承|傳承|领悟|領悟/.test(userQuery);
+        const hasCostumeKw = this._anyTermIncluded(userQuery, table.patterns?.costume);
+        const hasMoodKw = this._anyTermIncluded(userQuery, table.patterns?.mood);
+        const hasGiftKw = this._anyTermIncluded(userQuery, table.patterns?.gift);
+        const hasImportantItemKw = this._anyTermIncluded(userQuery, table.patterns?.importantItem);
+        const hasImportantEventKw = this._anyTermIncluded(userQuery, table.patterns?.importantEvent);
+        const hasCeremonyKw = this._anyTermIncluded(userQuery, table.patterns?.ceremony);
+        const hasPromiseKw = this._anyTermIncluded(userQuery, table.patterns?.promise);
+        const hasLossKw = this._anyTermIncluded(userQuery, table.patterns?.loss);
+        const hasRevelationKw = this._anyTermIncluded(userQuery, table.patterns?.revelation);
+        const hasPowerKw = this._anyTermIncluded(userQuery, table.patterns?.power);
 
         const results = [];
 
@@ -731,8 +1044,8 @@ export class VectorManager {
             for (const charName of mentionedChars) {
                 const idx = this._findFirstAppearance(chat, charName, excludeIndices);
                 if (idx !== -1) {
-                    results.push({ messageIndex: idx, similarity: 1.0, document: `[结构化] ${charName}首次出现`, source: 'structured' });
-                    console.log(`[Horae Vector] 结构化查询: "${charName}" 首次出现于 #${idx}`);
+                    results.push({ messageIndex: idx, similarity: 1.0, document: `[Structured] First appearance of ${charName}`, source: 'structured' });
+                    this._debug(`[Horae Vector] 结构化查询: "${charName}" 首次出现于 #${idx}`);
                 }
             }
         }
@@ -743,8 +1056,8 @@ export class VectorManager {
                 for (const charName of mentionedChars) {
                     const idx = this._findLastCostume(chat, charName, costumeKw, excludeIndices);
                     if (idx !== -1) {
-                        results.push({ messageIndex: idx, similarity: 1.0, document: `[结构化] ${charName}穿${costumeKw}`, source: 'structured' });
-                        console.log(`[Horae Vector] 结构化查询: "${charName}" 上次穿 "${costumeKw}" 于 #${idx}`);
+                        results.push({ messageIndex: idx, similarity: 1.0, document: `[Structured] ${charName} wore ${costumeKw}`, source: 'structured' });
+                        this._debug(`[Horae Vector] 结构化查询: "${charName}" 上次穿 "${costumeKw}" 于 #${idx}`);
                     }
                 }
             }
@@ -755,7 +1068,7 @@ export class VectorManager {
             if (costumeKw) {
                 const matches = this._findCostumeMatches(chat, costumeKw, excludeIndices, topK);
                 for (const m of matches) {
-                    results.push({ messageIndex: m.idx, similarity: 0.95, document: `[结构化] 服装匹配:${costumeKw}`, source: 'structured' });
+                    results.push({ messageIndex: m.idx, similarity: 0.95, document: `[Structured] Costume match: ${costumeKw}`, source: 'structured' });
                 }
             }
         }
@@ -766,8 +1079,8 @@ export class VectorManager {
                 const targetChar = mentionedChars[0] || null;
                 const idx = this._findLastMood(chat, targetChar, moodKw, excludeIndices);
                 if (idx !== -1) {
-                    results.push({ messageIndex: idx, similarity: 1.0, document: `[结构化] 情绪匹配:${moodKw}`, source: 'structured' });
-                    console.log(`[Horae Vector] 结构化查询: 上次 "${moodKw}" 于 #${idx}`);
+                    results.push({ messageIndex: idx, similarity: 1.0, document: `[Structured] Mood match: ${moodKw}`, source: 'structured' });
+                    this._debug(`[Horae Vector] 结构化查询: 上次 "${moodKw}" 于 #${idx}`);
                 }
             }
         }
@@ -776,7 +1089,7 @@ export class VectorManager {
             const giftResults = this._findGiftItems(chat, mentionedChars, excludeIndices, topK);
             for (const r of giftResults) {
                 results.push(r);
-                console.log(`[Horae Vector] 结构化查询: 礼物/赠品 #${r.messageIndex} [${r.document}]`);
+                this._debug(`[Horae Vector] 结构化查询: gift #${r.messageIndex} [${r.document}]`);
             }
         }
 
@@ -784,7 +1097,7 @@ export class VectorManager {
             const impResults = this._findImportantItems(chat, excludeIndices, topK);
             for (const r of impResults) {
                 results.push(r);
-                console.log(`[Horae Vector] 结构化查询: 重要物品 #${r.messageIndex} [${r.document}]`);
+                this._debug(`[Horae Vector] 结构化查询: important item #${r.messageIndex} [${r.document}]`);
             }
         }
 
@@ -792,7 +1105,7 @@ export class VectorManager {
             const evtResults = this._findImportantEvents(chat, excludeIndices, topK);
             for (const r of evtResults) {
                 results.push(r);
-                console.log(`[Horae Vector] 结构化查询: 重要事件 #${r.messageIndex} [${r.document}]`);
+                this._debug(`[Horae Vector] 结构化查询: important event #${r.messageIndex} [${r.document}]`);
             }
         }
 
@@ -805,7 +1118,7 @@ export class VectorManager {
                 }, excludeIndices, topK);
                 for (const r of thematicResults) {
                     results.push(r);
-                    console.log(`[Horae Vector] 结构化查询: 主题事件 #${r.messageIndex} [${r.document}]`);
+                    this._debug(`[Horae Vector] 结构化查询: thematic #${r.messageIndex} [${r.document}]`);
                 }
             }
 
@@ -838,7 +1151,7 @@ export class VectorManager {
                     contextToAdd.push({
                         messageIndex: i,
                         similarity: r.similarity * 0.85,
-                        document: `[上文] #${idx}的前置事件`,
+                        document: `[Context] Pre-context of #${idx}`,
                         source: 'context',
                     });
                     resultIds.add(i);
@@ -853,7 +1166,7 @@ export class VectorManager {
                     contextToAdd.push({
                         messageIndex: i,
                         similarity: r.similarity * 0.85,
-                        document: `[下文] #${idx}的后续事件`,
+                        document: `[Context] Post-context of #${idx}`,
                         source: 'context',
                     });
                     resultIds.add(i);
@@ -863,8 +1176,10 @@ export class VectorManager {
         }
 
         if (contextToAdd.length > 0) {
-            console.log(`[Horae Vector] 上下文扩展: +${contextToAdd.length} 条`);
-            for (const c of contextToAdd) console.log(`  #${c.messageIndex} [${c.document}]`);
+            this._debug(`[Horae Vector] 上下文扩展: +${contextToAdd.length} 条`);
+            if (this._debugLog) {
+                for (const c of contextToAdd) console.log(`  #${c.messageIndex} [${c.document}]`);
+            }
         }
 
         const all = [...results, ...contextToAdd];
@@ -880,13 +1195,13 @@ export class VectorManager {
         if (detected.length === 0) return [];
 
         const expanded = this._expandByCategory(detected);
-        console.log(`[Horae Vector] 事件搜索: 检测到=[${detected.join(',')}] 扩展后=[${expanded.join(',')}]`);
+        this._debug(`[Horae Vector] 事件搜索: 检测到=[${detected.join(',')}] 扩展后=[${expanded.join(',')}]`);
 
         const scored = [];
         for (let i = 0; i < chat.length; i++) {
             if (excludeIndices.has(i) || skipIds.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             const searchText = this._buildSearchableText(meta);
             if (!searchText) continue;
@@ -904,7 +1219,7 @@ export class VectorManager {
                 scored.push({
                     messageIndex: i,
                     similarity: 0.85 + matchCount * 0.02,
-                    document: `[事件匹配] ${matched.join(',')}`,
+                    document: `[Event match] ${matched.join(',')}`,
                     source: 'structured',
                     _matchCount: matchCount,
                 });
@@ -914,8 +1229,10 @@ export class VectorManager {
         scored.sort((a, b) => b._matchCount - a._matchCount || b.similarity - a.similarity);
         const top = scored.slice(0, limit);
         if (top.length > 0) {
-            console.log(`[Horae Vector] 事件搜索命中 ${top.length} 条:`);
-            for (const r of top) console.log(`  #${r.messageIndex} matches=${r._matchCount} [${r.document}]`);
+            this._debug(`[Horae Vector] 事件搜索命中 ${top.length} 条:`);
+            if (this._debugLog) {
+                for (const r of top) console.log(`  #${r.messageIndex} matches=${r._matchCount} [${r.document}]`);
+            }
         }
         return top;
     }
@@ -945,14 +1262,18 @@ export class VectorManager {
     }
 
     /**
-     * 直接从用户文本中扫描 TERM_CATEGORIES 中的已知词汇（无需分词）
+     * 直接从用户文本中扫描已知类别词汇（无需分词）
      */
     _detectCategoryTerms(text) {
         const normalized = t2s(text);
+        const categories = this._getKeywordTable().categories || {};
         const found = [];
-        for (const terms of Object.values(TERM_CATEGORIES)) {
+        for (const terms of Object.values(categories)) {
+            if (!Array.isArray(terms)) continue;
             for (const term of terms) {
-                if (normalized.includes(term)) {
+                if (typeof term !== 'string' || !term) continue;
+                // 中文走 t2s 简体归一，其他语言原样匹配
+                if (normalized.includes(term) || text.includes(term)) {
                     found.push(term);
                 }
             }
@@ -965,9 +1286,10 @@ export class VectorManager {
      */
     _expandByCategory(keywords) {
         const expanded = new Set(keywords);
+        const categories = this._getKeywordTable().categories || {};
         for (const kw of keywords) {
-            for (const terms of Object.values(TERM_CATEGORIES)) {
-                if (terms.includes(kw)) {
+            for (const terms of Object.values(categories)) {
+                if (Array.isArray(terms) && terms.includes(kw)) {
                     for (const t of terms) expanded.add(t);
                 }
             }
@@ -979,7 +1301,7 @@ export class VectorManager {
         for (let i = 0; i < chat.length; i++) {
             if (excludeIndices.has(i)) continue;
             const m = chat[i].horae_meta;
-            if (!m) continue;
+            if (!m || m._skipHorae) continue;
             if (m.npcs && m.npcs[charName]) return i;
             if (m.scene?.characters_present?.includes(charName)) return i;
         }
@@ -989,7 +1311,9 @@ export class VectorManager {
     _findLastCostume(chat, charName, costumeKw, excludeIndices) {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (excludeIndices.has(i)) continue;
-            const costume = chat[i].horae_meta?.costumes?.[charName];
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const costume = meta.costumes?.[charName];
             if (costume && costume.includes(costumeKw)) return i;
         }
         return -1;
@@ -999,7 +1323,9 @@ export class VectorManager {
         const matches = [];
         for (let i = chat.length - 1; i >= 0 && matches.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
-            const costumes = chat[i].horae_meta?.costumes;
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const costumes = meta.costumes;
             if (!costumes) continue;
             for (const v of Object.values(costumes)) {
                 if (v && v.includes(costumeKw)) { matches.push({ idx: i }); break; }
@@ -1011,7 +1337,9 @@ export class VectorManager {
     _findLastMood(chat, charName, moodKw, excludeIndices) {
         for (let i = chat.length - 1; i >= 0; i--) {
             if (excludeIndices.has(i)) continue;
-            const mood = chat[i].horae_meta?.mood;
+            const meta = chat[i].horae_meta;
+            if (!meta || meta._skipHorae) continue;
+            const mood = meta.mood;
             if (!mood) continue;
             if (charName) {
                 if (mood[charName] && mood[charName].includes(moodKw)) return i;
@@ -1027,14 +1355,21 @@ export class VectorManager {
     _extractCostumeKeywords(query, chars) {
         let cleaned = query;
         for (const c of chars) cleaned = cleaned.replace(c, '');
-        cleaned = cleaned.replace(/上次|上一次|最后一次|之前|穿|戴|换|的|了|过|着|那件|那套|那个/g, '').trim();
+        const fillers = this._getKeywordTable().costumeFiller || [];
+        // 长词优先剥离，防止短词先匹配截断长词
+        const sortedFillers = [...fillers].sort((a, b) => b.length - a.length);
+        for (const f of sortedFillers) {
+            if (!f) continue;
+            cleaned = cleaned.split(f).join('');
+        }
+        cleaned = cleaned.trim();
         return cleaned.length >= 2 ? cleaned : '';
     }
 
     _extractMoodKeyword(query) {
-        const moodWords = ['生气', '愤怒', '开心', '高兴', '难过', '伤心', '哭泣', '害怕', '恐惧', '害羞', '羞耻', '得意', '满足', '嫉妒', '悲伤', '焦虑', '紧张', '兴奋', '感动', '温柔', '冷漠', '暴怒', '委屈', '失落'];
+        const moodWords = this._getKeywordTable().moodWords || [];
         for (const w of moodWords) {
-            if (query.includes(w)) return w;
+            if (typeof w === 'string' && w && query.includes(w)) return w;
         }
         return '';
     }
@@ -1044,14 +1379,14 @@ export class VectorManager {
      * 通过 item.holder 变化或事件文本中的赠送关键词定位
      */
     _findGiftItems(chat, mentionedChars, excludeIndices, limit) {
-        const giftKws = ['赠送', '送给', '收到', '收下', '转赠', '信物', '定情', '礼物', '聘礼', '嫁妆'];
+        const giftKws = this._getKeywordTable().giftKws || [];
         const results = [];
         const seen = new Set();
 
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i) || seen.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             let matched = false;
             const matchedItems = [];
@@ -1064,7 +1399,7 @@ export class VectorManager {
 
                     if ((imp === '!' || imp === '!!') && holderMatchesChar) {
                         matched = true;
-                        matchedItems.push(`${imp === '!!' ? '关键' : '重要'}:${name}`);
+                        matchedItems.push(`${imp === '!!' ? 'key' : 'important'}:${name}`);
                     }
                 }
             }
@@ -1087,7 +1422,7 @@ export class VectorManager {
                 results.push({
                     messageIndex: i,
                     similarity: 0.95,
-                    document: `[结构化] 礼物/赠品: ${matchedItems.join('; ')}`,
+                    document: `[Structured] Gift/keepsake: ${matchedItems.join('; ')}`,
                     source: 'structured',
                 });
             }
@@ -1103,7 +1438,7 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.items) continue;
+            if (!meta || meta._skipHorae || !meta.items) continue;
 
             const importantNames = [];
             for (const [name, info] of Object.entries(meta.items)) {
@@ -1115,7 +1450,7 @@ export class VectorManager {
                 results.push({
                     messageIndex: i,
                     similarity: 0.95,
-                    document: `[结构化] 重要物品: ${importantNames.join(', ')}`,
+                    document: `[Structured] Important item: ${importantNames.join(', ')}`,
                     source: 'structured',
                 });
             }
@@ -1127,19 +1462,24 @@ export class VectorManager {
      * 查找重要/关键级别的事件
      */
     _findImportantEvents(chat, excludeIndices, limit) {
+        const levels = this._getKeywordTable().eventLevels || {};
+        const importantLevels = new Set(levels.important || []);
+        const keyLevels = new Set(levels.key || []);
         const results = [];
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.events) continue;
+            if (!meta || meta._skipHorae || !meta.events) continue;
 
             for (const evt of meta.events) {
                 if (evt.isSummary || evt.level === '摘要' || evt._summaryId) continue;
-                if (evt.level === '重要' || evt.level === '关键' || evt.level === '關鍵') {
+                const isKey = keyLevels.has(evt.level);
+                const isImp = importantLevels.has(evt.level);
+                if (isKey || isImp) {
                     results.push({
                         messageIndex: i,
-                        similarity: (evt.level === '关键' || evt.level === '關鍵') ? 1.0 : 0.95,
-                        document: `[结构化] ${evt.level}事件: ${(evt.summary || '').substring(0, 30)}`,
+                        similarity: isKey ? 1.0 : 0.95,
+                        document: `[Structured] ${evt.level} event: ${(evt.summary || '').substring(0, 30)}`,
                         source: 'structured',
                     });
                     break;
@@ -1150,8 +1490,8 @@ export class VectorManager {
     }
 
     /**
-     * 主题事件搜索：仪式/承诺/失去/揭露/能力变化
-     * 结合事件文本和 TERM_CATEGORIES 做精准匹配
+     * 主题事件搜索：仪式 / 承诺 / 失去 / 揭露 / 能力变化
+     * 用当前语言的关键词表做事件文本精准匹配
      */
     _findThematicEvents(chat, flags, excludeIndices, limit) {
         const activeCategories = [];
@@ -1161,11 +1501,11 @@ export class VectorManager {
         if (flags.revelation) activeCategories.push('revelation');
         if (flags.power) activeCategories.push('power');
 
+        const categories = this._getKeywordTable().categories || {};
         const searchTerms = new Set();
         for (const cat of activeCategories) {
-            if (TERM_CATEGORIES[cat]) {
-                for (const t of TERM_CATEGORIES[cat]) searchTerms.add(t);
-            }
+            const terms = categories[cat];
+            if (Array.isArray(terms)) for (const t of terms) searchTerms.add(t);
         }
         if (searchTerms.size === 0) return [];
 
@@ -1173,17 +1513,18 @@ export class VectorManager {
         for (let i = chat.length - 1; i >= 0 && results.length < limit; i--) {
             if (excludeIndices.has(i)) continue;
             const meta = chat[i].horae_meta;
-            if (!meta?.events) continue;
+            if (!meta || meta._skipHorae || !meta.events) continue;
 
             for (const evt of meta.events) {
                 if (evt.isSummary || evt.level === '摘要' || evt._summaryId) continue;
-                const text = t2s(evt.summary || '');
-                const hits = [...searchTerms].filter(t => text.includes(t));
+                const raw = evt.summary || '';
+                const normalized = t2s(raw);
+                const hits = [...searchTerms].filter(t => normalized.includes(t) || raw.includes(t));
                 if (hits.length > 0) {
                     results.push({
                         messageIndex: i,
                         similarity: 0.90 + Math.min(hits.length, 5) * 0.02,
-                        document: `[结构化] 主题事件(${activeCategories.join('+')}): ${hits.join(',')}`,
+                        document: `[Structured] Thematic(${activeCategories.join('+')}): ${hits.join(',')}`,
                         source: 'structured',
                     });
                     break;
@@ -1200,51 +1541,51 @@ export class VectorManager {
     async _hybridSearch(userQuery, state, horaeManager, skipLast, settings, excludeIndices, topK, threshold, pureMode = false) {
         if (!this.isReady || this.vectors.size === 0) return [];
 
-        const lastIdx = Math.max(0, horaeManager.getChat().length - 1 - skipLast);
-        const lastMeta = horaeManager.getMessageMeta(lastIdx);
+        // 跳过 user 消息，取最近一条 AI 消息的完整 meta（含 events）
+        const chat = horaeManager.getChat();
+        let lastMeta = null;
+        for (let i = chat.length - 1 - skipLast; i >= 0; i--) {
+            if (!chat[i].is_user && chat[i].horae_meta && !chat[i].horae_meta._skipHorae) {
+                lastMeta = chat[i].horae_meta;
+                break;
+            }
+        }
+
         const stateQuery = this.buildStateQuery(state, lastMeta);
+        const mergedQuery = this.buildMergedRecallQuery(stateQuery, userQuery);
+        if (!mergedQuery) return [];
 
-        const merged = new Map();
+        // 严格使用用户设置阈值
+        const mergedThreshold = threshold;
 
-        if (userQuery) {
-            const intentThreshold = Math.max(threshold - 0.25, 0.4);
-            const intentResults = await this.search(userQuery, topK * 2, intentThreshold, excludeIndices, pureMode);
-            console.log(`[Horae Vector] 意图搜索: ${intentResults.length} 条`);
-            for (const r of intentResults) {
-                merged.set(r.messageIndex, { ...r, source: 'intent' });
-            }
-        }
+        let results = await this.search(mergedQuery, topK * 2, mergedThreshold, excludeIndices, pureMode);
+        results = results.map(r => ({ ...r, source: 'merged' }));
+        this._debug(`[Horae Vector] 合并查询搜索: ${results.length} 条 | threshold=${mergedThreshold.toFixed(2)}`);
 
-        if (stateQuery) {
-            const stateResults = await this.search(stateQuery, topK * 2, threshold, excludeIndices, pureMode);
-            console.log(`[Horae Vector] 状态搜索: ${stateResults.length} 条`);
-            for (const r of stateResults) {
-                const existing = merged.get(r.messageIndex);
-                if (!existing || r.similarity > existing.similarity) {
-                    merged.set(r.messageIndex, { ...r, source: existing ? 'both' : 'state' });
-                }
-            }
-        }
-
-        let results = Array.from(merged.values());
         results.sort((a, b) => b.similarity - a.similarity);
         results = this._deduplicateResults(results).slice(0, topK);
 
-        console.log(`[Horae Vector] 混合搜索结果: ${results.length} 条`);
-        for (const r of results) {
-            console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(4)} [${r.source}] | ${r.document.substring(0, 80)}`);
+        this._debug(`[Horae Vector] 混合搜索结果: ${results.length} 条`);
+        if (this._debugLog) {
+            for (const r of results) {
+                console.log(`  #${r.messageIndex} sim=${r.similarity.toFixed(4)} [${r.source}] | ${r.document.substring(0, 80)}`);
+            }
         }
 
         return results;
     }
 
     _buildRecallText(results, currentDate, chat, fullTextCount = 3, fullTextThreshold = 0.9, stripTags = '') {
-        const lines = ['[记忆回溯——以下为与当前情境相关的历史片段，仅供参考，非当前上下文]'];
+        const labels = this._getRecallLabels();
+        const lines = [labels.header];
+        const eventLevels = this._getKeywordTable().eventLevels || {};
+        const importantLevels = new Set(eventLevels.important || []);
+        const keyLevels = new Set(eventLevels.key || []);
 
         for (let rank = 0; rank < results.length; rank++) {
             const r = results[rank];
             const meta = chat[r.messageIndex]?.horae_meta;
-            if (!meta) continue;
+            if (!meta || meta._skipHorae) continue;
 
             const isFullText = fullTextCount > 0 && rank < fullTextCount && r.similarity >= fullTextThreshold;
 
@@ -1252,7 +1593,7 @@ export class VectorManager {
                 const rawText = this._extractCleanText(chat[r.messageIndex]?.mes, stripTags);
                 if (rawText) {
                     const timeTag = this._buildTimeTag(meta?.timestamp, currentDate);
-                    lines.push(`#${r.messageIndex} ${timeTag ? timeTag + ' ' : ''}[全文回顾]\n${rawText}`);
+                    lines.push(`#${r.messageIndex} ${timeTag ? timeTag + ' ' : ''}${labels.fullText}\n${rawText}`);
                     continue;
                 }
             }
@@ -1262,7 +1603,7 @@ export class VectorManager {
             const timeTag = this._buildTimeTag(meta?.timestamp, currentDate);
             if (timeTag) parts.push(timeTag);
 
-            if (meta?.scene?.location) parts.push(`场景:${meta.scene.location}`);
+            if (meta?.scene?.location) parts.push(`${labels.scene}:${meta.scene.location}`);
 
             const chars = meta?.scene?.characters_present || [];
             const costumes = meta?.costumes || {};
@@ -1273,14 +1614,14 @@ export class VectorManager {
             if (meta?.events?.length > 0) {
                 for (const evt of meta.events) {
                     if (evt.isSummary || evt.level === '摘要') continue;
-                    const mark = (evt.level === '关键' || evt.level === '關鍵') ? '★' : evt.level === '重要' ? '●' : '○';
+                    const mark = keyLevels.has(evt.level) ? '★' : importantLevels.has(evt.level) ? '●' : '○';
                     if (evt.summary) parts.push(`${mark}${evt.summary}`);
                 }
             }
 
             if (meta?.npcs) {
                 for (const [name, info] of Object.entries(meta.npcs)) {
-                    let s = `NPC:${name}`;
+                    let s = `${labels.npc}:${name}`;
                     if (info.relationship) s += `(${info.relationship})`;
                     parts.push(s);
                 }
@@ -1302,12 +1643,24 @@ export class VectorManager {
         return lines.length > 1 ? lines.join('\n') : '';
     }
 
+    _stripVolatileHoraeLines(text) {
+        return text.replace(/<horae\b[^>]*>([\s\S]*?)<\/horae>/gi, (match, body) => {
+            const kept = String(body || '')
+                .split(/\r?\n/)
+                .filter(line => !/^\s*agenda-?\s*[:：]/i.test(line))
+                .join('\n')
+                .trim();
+            return kept ? `<horae>\n${kept}\n</horae>` : '';
+        });
+    }
+
     _extractCleanText(mes, stripTags) {
         if (!mes) return '';
         let text = mes
             .replace(/<think>[\s\S]*?<\/think>/gi, '')
             .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
             .replace(/<!--[\s\S]*?-->/g, '');
+        text = this._stripVolatileHoraeLines(text);
         if (stripTags) {
             const tags = stripTags.split(/[,，\s]+/).map(t => t.trim()).filter(Boolean);
             for (const tag of tags) {
@@ -1350,23 +1703,22 @@ export class VectorManager {
         const result = calculateDetailedRelativeTime(eventDate, currentDate);
         if (result.days === null || result.days === undefined) return '';
 
-        const { days, fromDate, toDate } = result;
-        if (days === 0) return '(今天)';
-        if (days === 1) return '(昨天)';
-        if (days === 2) return '(前天)';
-        if (days === 3) return '(大前天)';
-        if (days >= 4 && days <= 13 && fromDate) {
-            const WD = ['日', '一', '二', '三', '四', '五', '六'];
-            return `(上周${WD[fromDate.getDay()]})`;
+        const meta = getRelativeTimeMeta(result.days, { fromDate: result.fromDate, toDate: result.toDate });
+        const WD = ['日', '一', '二', '三', '四', '五', '六'];
+        switch (meta.key) {
+            case 'today': return '(今天)';
+            case 'yesterday': return '(昨天)';
+            case 'day_before_yesterday': return '(前天)';
+            case 'three_days_ago': return '(大前天)';
+            case 'last_weekday': return `(上周${WD[meta.weekday]})`;
+            case 'week_before_last_weekday': return `(上上周${WD[meta.weekday]})`;
+            case 'last_month_day': return `(上个月${meta.day}号)`;
+            case 'last_year_date': return `(去年${meta.month}月${meta.day}日)`;
+            case 'year_before_last_date': return `(前年${meta.month}月${meta.day}日)`;
+            case 'days_ago': return `(${meta.value}天前)`;
+            case 'months_ago': return `(${meta.value}个月前)`;
+            case 'years_ago': return `(${meta.years}年前)`;
         }
-        if (days >= 20 && days < 60 && fromDate && toDate && fromDate.getMonth() !== toDate.getMonth()) {
-            return `(上个月${fromDate.getDate()}号)`;
-        }
-        if (days >= 300 && fromDate && toDate && fromDate.getFullYear() < toDate.getFullYear()) {
-            return `(去年${fromDate.getMonth() + 1}月)`;
-        }
-        if (days > 0 && days < 30) return `(${days}天前)`;
-        if (days > 0) return `(${Math.round(days / 30)}个月前)`;
         return '';
     }
 
@@ -1390,11 +1742,27 @@ export class VectorManager {
         });
     }
 
-    async _embedApi(texts) {
-        const endpoint = `${this._apiUrl}/embeddings`;
-        try {
-            const resp = await fetch(endpoint, {
-                method: 'POST',
+    _isGeminiEmbeddingEndpoint() {
+        return /gemini|googleapis|generativelanguage|v1beta/i.test(`${this._apiUrl || ''} ${this._apiModel || ''}`);
+    }
+
+    _isGoogleGenerativeLanguageUrl(rawUrl) {
+        return /googleapis\.com|generativelanguage/i.test(rawUrl || '');
+    }
+
+    _geminiEmbeddingBase() {
+        return String(this._apiUrl || '')
+            .replace(/\/+$/, '')
+            .replace(/\/chat\/completions$/i, '')
+            .replace(/\/embeddings$/i, '')
+            .replace(/\/v\d+(beta\d*|alpha\d*)?(?:\/.*)?$/i, '');
+    }
+
+    _buildApiEmbeddingRequest(texts) {
+        if (!this._isGeminiEmbeddingEndpoint()) {
+            const base = String(this._apiUrl || '').replace(/\/+$/, '').replace(/\/embeddings$/i, '');
+            return {
+                endpoint: `${base}/embeddings`,
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${this._apiKey}`,
@@ -1403,23 +1771,224 @@ export class VectorManager {
                     model: this._apiModel,
                     input: texts,
                 }),
+                parseVectors: json => {
+                    if (!json.data || !Array.isArray(json.data)) {
+                        const wrapped = new Error('API 返回格式异常：缺少 data 数组');
+                        wrapped.code = 'FORMAT';
+                        throw wrapped;
+                    }
+                    return json.data
+                        .sort((a, b) => a.index - b.index)
+                        .map(d => d.embedding);
+                },
+            };
+        }
+
+        const base = this._geminiEmbeddingBase();
+        const modelName = String(this._apiModel || '').startsWith('models/') ? String(this._apiModel) : `models/${this._apiModel}`;
+        const isGoogle = this._isGoogleGenerativeLanguageUrl(base);
+        const endpoint = `${base}/v1beta/${modelName}:batchEmbedContents${isGoogle ? `?key=${encodeURIComponent(this._apiKey)}` : ''}`;
+        const headers = { 'Content-Type': 'application/json' };
+        if (!isGoogle) headers.Authorization = `Bearer ${this._apiKey}`;
+
+        return {
+            endpoint,
+            headers,
+            body: JSON.stringify({
+                requests: texts.map(text => ({
+                    model: modelName,
+                    content: { parts: [{ text }] },
+                })),
+            }),
+            parseVectors: json => {
+                if (!json.embeddings || !Array.isArray(json.embeddings)) {
+                    const wrapped = new Error('Gemini API 返回格式异常：缺少 embeddings 数组');
+                    wrapped.code = 'FORMAT';
+                    throw wrapped;
+                }
+                return json.embeddings.map(e => e.values);
+            },
+        };
+    }
+
+    async _embedApi(texts) {
+        const req = this._buildApiEmbeddingRequest(texts);
+        let resp;
+        try {
+            resp = await fetch(req.endpoint, {
+                method: 'POST',
+                headers: req.headers,
+                body: req.body,
             });
-            if (!resp.ok) {
-                const errText = await resp.text().catch(() => '');
-                throw new Error(`API ${resp.status}: ${errText.slice(0, 200)}`);
+        } catch (err) {
+            console.error('[Horae Vector] API embedding 网络异常:', err);
+            const wrapped = new Error(err?.message || 'Network error');
+            // TypeError 通常是 CORS、DNS 解析失败、连接被拒绝等浏览器层 fetch 失败
+            if (err instanceof TypeError) {
+                wrapped.code = 'NETWORK';
+            } else if (/timeout|timed out/i.test(err?.message || '')) {
+                wrapped.code = 'TIMEOUT';
+            } else if (/socket hang up|ECONNRESET|ECONNREFUSED/i.test(err?.message || '')) {
+                wrapped.code = 'NETWORK';
+            } else {
+                wrapped.code = 'UNKNOWN';
             }
+            wrapped.cause = err;
+            throw wrapped;
+        }
+
+        if (!resp.ok) {
+            const errText = await resp.text().catch(() => '');
+            const wrapped = new Error(`API ${resp.status}: ${errText.slice(0, 200)}`);
+            wrapped.status = resp.status;
+            wrapped.body = errText.slice(0, 500);
+            console.error('[Horae Vector] API embedding HTTP 错误:', wrapped);
+            throw wrapped;
+        }
+
+        try {
             const json = await resp.json();
-            if (!json.data || !Array.isArray(json.data)) {
-                throw new Error('API 返回格式异常：缺少 data 数组');
+            const vectors = req.parseVectors(json);
+            if (!Array.isArray(vectors) || vectors.some(v => !Array.isArray(v))) {
+                const wrapped = new Error('API 返回格式异常：向量数据无效');
+                wrapped.code = 'FORMAT';
+                throw wrapped;
             }
-            const vectors = json.data
-                .sort((a, b) => a.index - b.index)
-                .map(d => d.embedding);
             return { vectors };
         } catch (err) {
-            console.error('[Horae Vector] API embedding 失败:', err);
-            throw err;
+            if (err.code === 'FORMAT') throw err;
+            const wrapped = new Error(err?.message || 'Invalid JSON response');
+            wrapped.code = 'FORMAT';
+            console.error('[Horae Vector] API embedding 响应解析失败:', err);
+            throw wrapped;
         }
+    }
+
+    /**
+     * 估算文本在 reranker 上的 token 数（保守估计）
+     * CJK ≈ 1.35 token / char，其余 ≈ 0.45 token / char，加 18% 安全边际。
+     */
+    _estimateRerankTokens(text) {
+        if (!text) return 0;
+        const str = String(text);
+        let cjkCount = 0;
+        for (const ch of str) {
+            const cp = ch.codePointAt(0);
+            if (
+                (cp >= 0x3400 && cp <= 0x4DBF) ||
+                (cp >= 0x4E00 && cp <= 0x9FFF) ||
+                (cp >= 0xF900 && cp <= 0xFAFF) ||
+                (cp >= 0x3040 && cp <= 0x30FF) ||
+                (cp >= 0xAC00 && cp <= 0xD7AF)
+            ) {
+                cjkCount++;
+            }
+        }
+        const otherCount = Math.max(0, str.length - cjkCount);
+        const rough = (cjkCount * 1.35) + (otherCount * 0.45);
+        return Math.ceil((rough + 8) * 1.18);
+    }
+
+    /**
+     * 按估算 token 数截断文本（二分查找最大可保留长度）
+     */
+    _truncateTextByEstimatedTokens(text, tokenLimit) {
+        if (!text || tokenLimit <= 0) return '';
+        const source = String(text);
+        if (this._estimateRerankTokens(source) <= tokenLimit) return source;
+
+        let low = 0;
+        let high = source.length;
+        let best = 0;
+        while (low <= high) {
+            const mid = Math.floor((low + high) / 2);
+            const candidate = source.substring(0, mid);
+            if (this._estimateRerankTokens(candidate) <= tokenLimit) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return source.substring(0, best).trimEnd();
+    }
+
+    /**
+     * 为全文 Rerank 构建分批方案
+     * @param {string} query
+     * @param {string[]} documents
+     * @param {number} contextLimit 模型上下文上限（默认 32K，对应 Qwen3-Reranker 系列）
+     * @returns {{ documents: string[], batches: Array<{indices:number[], documents:string[], estimatedTokens:number}>, truncatedCount:number, queryTokens:number, docBudget:number, contextLimit:number, safeUsageRatio:number, staticReserve:number }}
+     */
+    _buildRerankBatchPlan(query, documents, contextLimit = 32768) {
+        const safeUsageRatio = 0.68;
+        const staticReserve = 1800;
+        const perDocOverhead = 24;
+
+        const queryTokens = this._estimateRerankTokens(query);
+        const docBudget = Math.max(
+            1024,
+            Math.floor(contextLimit * safeUsageRatio) - staticReserve - queryTokens
+        );
+        const maxSingleDocTokens = Math.max(768, docBudget - 256);
+
+        const normalizedDocs = [];
+        const docTokenEstimates = [];
+        let truncatedCount = 0;
+
+        for (const doc of documents || []) {
+            let text = typeof doc === 'string' ? doc : String(doc ?? '');
+            let estimated = this._estimateRerankTokens(text) + perDocOverhead;
+            if (estimated > maxSingleDocTokens) {
+                const allowedTokens = Math.max(512, maxSingleDocTokens - perDocOverhead);
+                const trimmed = this._truncateTextByEstimatedTokens(text, allowedTokens);
+                if (trimmed && trimmed.length < text.length) {
+                    text = trimmed;
+                    truncatedCount++;
+                }
+                estimated = this._estimateRerankTokens(text) + perDocOverhead;
+            }
+            normalizedDocs.push(text);
+            docTokenEstimates.push(Math.max(perDocOverhead, estimated));
+        }
+
+        const batches = [];
+        let currentIndices = [];
+        let currentDocs = [];
+        let currentTokens = 0;
+        const flush = () => {
+            if (currentIndices.length === 0) return;
+            batches.push({
+                indices: currentIndices,
+                documents: currentDocs,
+                estimatedTokens: currentTokens,
+            });
+            currentIndices = [];
+            currentDocs = [];
+            currentTokens = 0;
+        };
+
+        for (let i = 0; i < normalizedDocs.length; i++) {
+            const nextTokens = docTokenEstimates[i];
+            if (currentIndices.length > 0 && (currentTokens + nextTokens) > docBudget) {
+                flush();
+            }
+            currentIndices.push(i);
+            currentDocs.push(normalizedDocs[i]);
+            currentTokens += nextTokens;
+        }
+        flush();
+
+        return {
+            documents: normalizedDocs,
+            batches,
+            truncatedCount,
+            queryTokens,
+            docBudget,
+            contextLimit,
+            safeUsageRatio,
+            staticReserve,
+        };
     }
 
     /**
@@ -1434,7 +2003,7 @@ export class VectorManager {
         if (!baseUrl || !model) throw new Error('Rerank API 地址或模型未配置');
 
         const endpoint = `${baseUrl}/rerank`;
-        console.log(`[Horae Vector] Rerank 请求: ${documents.length} 条候选 → ${endpoint}`);
+        this._debug(`[Horae Vector] Rerank 请求: ${documents.length} 条候选 → ${endpoint}`);
 
         const resp = await fetch(endpoint, {
             method: 'POST',
@@ -1572,6 +2141,7 @@ export class VectorManager {
     // ========================================
 
     _hasOriginalEvents(meta) {
+        if (meta?._skipHorae) return false;
         if (!meta?.events?.length) return false;
         return meta.events.some(e => !e.isSummary && e.level !== '摘要' && !e._summaryId);
     }
@@ -1593,9 +2163,11 @@ export class VectorManager {
     }
 
     _extractKeyTerms(document) {
+        // 排除结构化前缀，否则会以高频污染 IDF
+        const STRUCT_TAGS = VectorManager._STRUCT_TAGS_SET;
         return document
             .split(/[\s|,，。！？：；、()\[\]（）\n]+/)
-            .filter(t => t.length >= 2 && t.length <= 20);
+            .filter(t => t.length >= 2 && t.length <= 20 && !STRUCT_TAGS.has(t));
     }
 
     _updateTermCounts(document, delta) {
