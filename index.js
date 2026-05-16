@@ -20,7 +20,13 @@ import { initPromptDefaults, ensurePromptDefaults, ensurePresetPrompts, getPromp
 // 常量定义
 // ============================================
 const EXTENSION_NAME = 'horae';
-const EXTENSION_FOLDER = `third-party/SillyTavern-Horae`;
+const EXTENSION_FOLDER = (() => {
+    try {
+        const match = import.meta.url.match(/\/scripts\/extensions\/(third-party\/[^/]+)\//);
+        if (match) return match[1];
+    } catch { /* ignore */ }
+    return 'third-party/SillyTavern-Horae';
+})();
 const TEMPLATE_PATH = `${EXTENSION_FOLDER}/assets/templates`;
 const VERSION = '1.14.0';
 
